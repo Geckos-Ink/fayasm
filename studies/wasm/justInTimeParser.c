@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -9,6 +10,17 @@
 
 // Macro per convertire byte LEB128 a intero
 #define MAX_LEB128_SIZE 5
+
+// Tipi di valore WebAssembly
+typedef enum {
+    VALTYPE_I32 = 0x7F,
+    VALTYPE_I64 = 0x7E,
+    VALTYPE_F32 = 0x7D,
+    VALTYPE_F64 = 0x7C,
+    VALTYPE_V128 = 0x7B,
+    VALTYPE_FUNCREF = 0x70,
+    VALTYPE_EXTERNREF = 0x6F
+} WasmValType;
 
 // Tipi di sezione WASM
 typedef enum {
@@ -33,6 +45,14 @@ typedef struct {
     char* name;            // Solo per sezioni custom
     uint32_t name_len;     // Solo per sezioni custom
 } WasmSection;
+
+// Sezione di memoria
+typedef struct {
+    bool is_memory64;      // true se utilizza indirizzamento a 64 bit
+    uint64_t initial_size; // Dimensione iniziale (in pagine)
+    uint64_t maximum_size; // Dimensione massima (in pagine, opzionale)
+    bool has_max;          // Indica se è specificata una dimensione massima
+} WasmMemory;
 
 typedef struct {
     uint32_t num_params;
@@ -77,12 +97,17 @@ typedef struct {
     WasmExport* exports;
     off_t exports_offset;
 
+    // Memoria
+    uint32_t num_memories;
+    WasmMemory* memories;
+    off_t memories_offset;
+    
     // File handle
     int fd;
     char* filename;
 } WasmModule;
 
-// Legge un valore LEB128 unsigned
+// Legge un valore LEB128 unsigned a 32 bit
 uint32_t read_uleb128(int fd, uint32_t* size_read) {
     uint32_t result = 0;
     uint32_t shift = 0;
@@ -102,7 +127,27 @@ uint32_t read_uleb128(int fd, uint32_t* size_read) {
     return result;
 }
 
-// Legge un valore LEB128 signed
+// Legge un valore LEB128 unsigned a 64 bit
+uint64_t read_uleb128_64(int fd, uint32_t* size_read) {
+    uint64_t result = 0;
+    uint32_t shift = 0;
+    uint8_t byte;
+    *size_read = 0;
+
+    do {
+        if (read(fd, &byte, 1) != 1) {
+            return 0;
+        }
+        (*size_read)++;
+
+        result |= ((uint64_t)(byte & 0x7f) << shift);
+        shift += 7;
+    } while (byte & 0x80 && shift < 64);
+
+    return result;
+}
+
+// Legge un valore LEB128 signed a 32 bit
 int32_t read_sleb128(int fd, uint32_t* size_read) {
     int32_t result = 0;
     uint32_t shift = 0;
@@ -122,6 +167,31 @@ int32_t read_sleb128(int fd, uint32_t* size_read) {
     // Gestisce il segno
     if (shift < 32 && (byte & 0x40)) {
         result |= (~0 << shift);
+    }
+
+    return result;
+}
+
+// Legge un valore LEB128 signed a 64 bit
+int64_t read_sleb128_64(int fd, uint32_t* size_read) {
+    int64_t result = 0;
+    uint32_t shift = 0;
+    uint8_t byte;
+    *size_read = 0;
+
+    do {
+        if (read(fd, &byte, 1) != 1) {
+            return 0;
+        }
+        (*size_read)++;
+
+        result |= ((int64_t)(byte & 0x7f) << shift);
+        shift += 7;
+    } while (byte & 0x80 && shift < 64);
+
+    // Gestisce il segno
+    if (shift < 64 && (byte & 0x40)) {
+        result |= ((int64_t)(~0) << shift);
     }
 
     return result;
@@ -216,6 +286,10 @@ void wasm_module_free(WasmModule* module) {
             }
         }
         free(module->exports);
+    }
+    
+    if (module->memories) {
+        free(module->memories);
     }
     
     free(module);
@@ -481,6 +555,63 @@ int wasm_load_exports(WasmModule* module) {
     return -1;  // Sezione Export non trovata
 }
 
+// Carica le memory dalla sezione Memory
+int wasm_load_memories(WasmModule* module) {
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type == SECTION_MEMORY) {
+            lseek(module->fd, module->sections[i].offset, SEEK_SET);
+            
+            uint32_t size_read;
+            uint32_t count = read_uleb128(module->fd, &size_read);
+            
+            module->num_memories = count;
+            module->memories = (WasmMemory*)malloc(count * sizeof(WasmMemory));
+            if (!module->memories) {
+                return -1;
+            }
+            memset(module->memories, 0, count * sizeof(WasmMemory));
+            
+            module->memories_offset = module->sections[i].offset + size_read;
+            
+            for (uint32_t j = 0; j < count; j++) {
+                // Leggi i limiti
+                uint8_t flags;
+                if (read(module->fd, &flags, 1) != 1) {
+                    return -1;
+                }
+                
+                // Verifica se è memory64 (bit 0x4)
+                module->memories[j].is_memory64 = (flags & 0x4) != 0;
+                
+                // Verifica se ha un valore massimo (bit 0x1)
+                module->memories[j].has_max = (flags & 0x1) != 0;
+                
+                // Leggi la dimensione iniziale
+                if (module->memories[j].is_memory64) {
+                    module->memories[j].initial_size = read_uleb128_64(module->fd, &size_read);
+                } else {
+                    module->memories[j].initial_size = read_uleb128(module->fd, &size_read);
+                }
+                
+                // Leggi la dimensione massima se presente
+                if (module->memories[j].has_max) {
+                    if (module->memories[j].is_memory64) {
+                        module->memories[j].maximum_size = read_uleb128_64(module->fd, &size_read);
+                    } else {
+                        module->memories[j].maximum_size = read_uleb128(module->fd, &size_read);
+                    }
+                }
+            }
+            
+            return 0;
+        }
+    }
+    
+    // È possibile che non ci sia una sezione memory
+    module->num_memories = 0;
+    return 0;
+}
+
 // Carica un byte code di una funzione on-demand
 uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx) {
     if (func_idx >= module->num_functions) {
@@ -533,6 +664,23 @@ void wasm_print_info(WasmModule* module) {
                 printf("%u%s", module->types[i].result_types[j], j < module->types[i].num_results - 1 ? ", " : "");
             }
             printf("]\n");
+        }
+    }
+    
+    if (module->num_memories > 0) {
+        printf("\n=== Memories (%u) ===\n", module->num_memories);
+        for (uint32_t i = 0; i < module->num_memories; i++) {
+            printf("Memory %u: Type=%s, Initial=%lu pages", 
+                   i, 
+                   module->memories[i].is_memory64 ? "Memory64" : "Memory32",
+                   module->memories[i].initial_size);
+            
+            if (module->memories[i].has_max) {
+                printf(", Maximum=%lu pages", module->memories[i].maximum_size);
+            } else {
+                printf(", No maximum");
+            }
+            printf("\n");
         }
     }
     
@@ -589,6 +737,7 @@ int main(int argc, char** argv) {
     wasm_load_types(module);
     wasm_load_functions(module);
     wasm_load_exports(module);
+    wasm_load_memories(module);
     
     // Stampa le informazioni sul modulo
     wasm_print_info(module);
