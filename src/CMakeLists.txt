@@ -1,10 +1,4 @@
 cmake_minimum_required(VERSION 3.10)
-project(fayasm VERSION 0.1.0 DESCRIPTION "Libreria generica per ambienti Unix" LANGUAGES C)
-
-# Opzioni di compilazione
-option(FAYASM_BUILD_SHARED "Build as shared library" ON)
-option(FAYASM_BUILD_STATIC "Build as static library" ON)
-option(FAYASM_BUILD_TESTS "Build tests" OFF) # what tests?
 
 # Impostazioni standard di compilazione
 set(CMAKE_C_STANDARD 99)
@@ -31,9 +25,6 @@ elseif(WIN32)
     add_definitions(-DFAYASM_WINDOWS)
 endif()
 
-# Aggiungi sottodirectory di include al percorso di inclusione
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 # Crea la libreria condivisa
 if(FAYASM_BUILD_SHARED)
     add_library(fayasm SHARED ${FAYASM_SOURCES})
@@ -43,7 +34,7 @@ if(FAYASM_BUILD_SHARED)
         PUBLIC_HEADER "${FAYASM_HEADERS};${FAYASM_HEADERS_EXTRA}"
     )
     target_include_directories(fayasm PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>
     )
 endif()
@@ -56,7 +47,7 @@ if(FAYASM_BUILD_STATIC)
         PUBLIC_HEADER "${FAYASM_HEADERS};${FAYASM_HEADERS_EXTRA}"
     )
     target_include_directories(fayasm_static PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>
     )
 endif()
@@ -81,12 +72,6 @@ if(FAYASM_BUILD_STATIC)
     endif()
 endif()
 
-# Costruzione dei test
-if(FAYASM_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
-
 # Installazione
 include(GNUInstallDirs)
 
@@ -108,34 +93,3 @@ if(FAYASM_BUILD_STATIC)
         PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/fayasm
     )
 endif()
-
-# Configurazione del file di versione
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fayasm-config.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/fayasm-config.cmake
-    @ONLY
-)
-
-# Esporta i target
-install(EXPORT fayasm-targets
-    FILE fayasm-targets.cmake
-    NAMESPACE fayasm::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fayasm
-)
-
-# Installa il file di configurazione
-install(
-    FILES ${CMAKE_CURRENT_BINARY_DIR}/fayasm-config.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fayasm
-)
-
-# Pacchettizzazione
-set(CPACK_PACKAGE_NAME "fayasm")
-set(CPACK_PACKAGE_VENDOR "Gecko's Ink")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "fayasm - WASM-like runtime")
-set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
-set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
-set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
-set(CPACK_GENERATOR "TGZ;DEB;RPM")
-include(CPack)

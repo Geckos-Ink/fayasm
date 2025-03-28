@@ -6,6 +6,7 @@
 //
 
 #include "fa_compile.h"
+#include "esp_log.h"
 
 // Allow using opcodes for compilation process
 #define M3_COMPILE_OPCODES
