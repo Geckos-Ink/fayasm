@@ -100,3 +100,13 @@ typedef struct {
     char* filename;
 } WasmModule;
 
+WasmModule* wasm_module_init(const char* filename);
+void wasm_module_free(WasmModule* module);
+int wasm_load_header(WasmModule* module);
+int wasm_scan_sections(WasmModule* module);
+int wasm_load_types(WasmModule* module);
+int wasm_load_functions(WasmModule* module);
+int wasm_load_exports(WasmModule* module);
+int wasm_load_memories(WasmModule* module);
+uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx);
+void wasm_print_info(WasmModule* module);

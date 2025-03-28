@@ -123,6 +123,10 @@ char* read_string(int fd, uint32_t* len) {
     return str;
 }
 
+///
+///
+///
+
 // Inizializza il modulo WASM
 WasmModule* wasm_module_init(const char* filename) {
     WasmModule* module = (WasmModule*)malloc(sizeof(WasmModule));
@@ -612,7 +616,7 @@ void wasm_print_info(WasmModule* module) {
 }
 
 // Funzione di esempio per utilizzare il parser
-int main(int argc, char** argv) {
+int fa_wasm_example(int argc, char** argv) {
     if (argc < 2) {
         printf("Uso: %s <file.wasm>\n", argv[0]);
         return 1;
