@@ -7,14 +7,30 @@
 
 #pragma once
 
-#include <stdbool.h>
+#include "fa_types.h"
+#include "esp_log.h"
 
-#include "wasm3.h"
-#include "m3_code.h"
-#include "m3_exec_defs.h"
-#include "m3_function.h"
 
-d_m3BeginExternC
+#define WASM_DEBUG 1
+#define WASM_DEBUG_ALL 0
+#define DEBUG_TYPE static bool
+#define WASM3_STATIC static
+#define M3_NOINLINE
+
+typedef char* M3Result;
+typedef void* pc_t;
+typedef void* bytes_t;
+
+#define d_m3Use32BitSlots 1
+# if d_m3Use32BitSlots
+typedef u32                     m3slot_t;
+#define BITS_MUL 1
+# else
+typedef u64                     m3slot_t;
+#define BITS_MUL 2
+# endif
+
+typedef m3slot_t *              m3stack_t;
 
 #if DISABLE_WASM3_INLINE
     #define WASM3_STATIC static
@@ -67,6 +83,22 @@ enum
 
 //-----------------------------------------------------------------------------------------------------------------------------------
 
+typedef struct M3FuncType
+{
+    struct M3FuncType *     next;
+
+    u16                     numRets;
+    u16                     numArgs;
+    u8                      types [];        // returns, then args
+}
+M3FuncType;
+
+typedef M3FuncType *        IM3FuncType;
+
+typedef u16                     m3opcode_t;
+
+////////////////////////////////////////////////////////////////////////
+
 typedef struct M3CompilationScope
 {
     struct M3CompilationScope *     outer;
@@ -87,8 +119,8 @@ typedef M3CompilationScope *        IM3CompilationScope;
 
 typedef struct
 {
-    IM3Runtime          runtime;
-    IM3Module           module;
+    //IM3Runtime          runtime;
+    //IM3Module           module;
 
     bytes_t             wasm;
     bytes_t             wasmEnd;
@@ -96,9 +128,9 @@ typedef struct
 
     M3CompilationScope  block;
 
-    IM3Function         function;
+    //IM3Function         function;
 
-    IM3CodePage         page;
+    //IM3CodePage         page;
 
 #if DEBUG
     u32                 numEmits;
@@ -117,14 +149,14 @@ typedef struct
 
     u16                 maxStackSlots;
 
-    m3slot_t            constants                   [d_m3MaxConstantTableSize];
+    m3slot_t            constants                   [0];
 
     // 'wasmStack' holds slot locations
-    u16                 wasmStack                   [d_m3MaxFunctionStackHeight];
-    u8                  typeStack                   [d_m3MaxFunctionStackHeight];
+    u16                 wasmStack                   [0];
+    u8                  typeStack                   [0];
 
     // 'm3Slots' contains allocation usage counts
-    u8                  m3Slots                     [d_m3MaxFunctionSlots];
+    u8                  m3Slots                     [0];
 
     u16                 slotMaxAllocatedIndexPlusOne;
 
@@ -137,7 +169,6 @@ M3Compilation;
 typedef M3Compilation *                 IM3Compilation;
 
 typedef M3Result (* M3Compiler)         (IM3Compilation, m3opcode_t);
-
 
 //-----------------------------------------------------------------------------------------------------------------------------------
 
@@ -157,7 +188,7 @@ typedef struct M3OpInfo
 
     // for most operations:
     // [0]= top operand in register, [1]= top operand in stack, [2]= both operands in stack
-    IM3Operation            operations [4];
+    //IM3Operation            operations [4];
 
     M3Compiler              compiler;
 }
@@ -168,10 +199,10 @@ typedef const M3OpInfo *    IM3OpInfo;
 IM3OpInfo  GetOpInfo  (m3opcode_t opcode);
 
 // TODO: This helper should be removed, when MultiValue is implemented
-WASM3_STATIC_INLINE
+/*WASM3_STATIC_INLINE
 u8 GetSingleRetType(IM3FuncType ftype) {
     return (ftype && ftype->numRets) ? ftype->types[0] : (u8)c_m3Type_none;
-}
+}*/
 
 WASM3_STATIC const u16 c_m3RegisterUnallocated = 0;
 WASM3_STATIC const u16 c_slotUnused = 0xffff;
@@ -193,10 +224,6 @@ bool  IsStackPolymorphic  (IM3Compilation o)
 {
     return o->block.isPolymorphic;
 }
-
-WASM3_STATIC_INLINE bool  IsRegisterSlotAlias        (u16 i_slot)    { return (i_slot >= d_m3Reg0SlotAlias and i_slot != c_slotUnused); }
-WASM3_STATIC_INLINE bool  IsFpRegisterSlotAlias      (u16 i_slot)    { return (i_slot == d_m3Fp0SlotAlias);  }
-WASM3_STATIC_INLINE bool  IsIntRegisterSlotAlias     (u16 i_slot)    { return (i_slot == d_m3Reg0SlotAlias); }
 
 #if DEBUG
     #if M3_FUNCTIONS_ENUM                  
@@ -227,9 +254,6 @@ u16         GetMaxUsedSlotPlusOne       (IM3Compilation o);
 M3Result    CompileBlock                (IM3Compilation io, IM3FuncType i_blockType, m3opcode_t i_blockOpcode);
 
 M3Result    CompileBlockStatements      (IM3Compilation io);
-M3Result    CompileFunction             (IM3Function io_function);
-
-M3Result    CompileRawFunction          (IM3Module io_module, IM3Function io_function, const void * i_function, const void * i_userdata);
 
 ///
 /// For debug purposes
@@ -237,5 +261,3 @@ M3Result    CompileRawFunction          (IM3Module io_module, IM3Function io_fun
 
 WASM3_STATIC_DEBUG M3Result  Compile_Return  (IM3Compilation o, m3opcode_t i_opcode);
 WASM3_STATIC_DEBUG M3Result  Compile_Const_i32  (IM3Compilation o, m3opcode_t i_opcode);
-
-d_m3EndExternC

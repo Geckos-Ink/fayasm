@@ -7,7 +7,6 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 
 // Legge un valore LEB128 unsigned a 32 bit

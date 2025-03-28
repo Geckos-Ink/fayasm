@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fa_types.h"
 
 // Macro per convertire byte LEB128 a intero
 #define MAX_LEB128_SIZE 5

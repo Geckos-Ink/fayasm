@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+clear
+
 # Colori per output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

@@ -12,8 +12,8 @@ set(FAYASM_HEADERS "fayasm.h")
 file(GLOB FAYASM_HEADERS_EXTRA "fa_*.h")
 
 # Configurazione per le compilazioni di debug e release
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG -Wall -Wextra -Wpedantic")
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG -Wall -Wextra -Wpedantic -ferror-limit=100")
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG -ferror-limit=100")
 
 # Verifica il sistema operativo e imposta macro specifiche
 if(UNIX AND NOT APPLE)
