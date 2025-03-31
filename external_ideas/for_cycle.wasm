@@ -1,0 +1,64 @@
+(module
+  ;; Importa la funzione console.log da JavaScript
+  (import "console" "log" (func $log (param i32)))
+  
+  ;; Funzione principale che implementa il ciclo for
+  (func $main (export "main")
+    ;; Dichiarazione della variabile locale "i" inizializzata a 1
+    (local $i i32)
+    (local.set $i (i32.const 1))
+    
+    ;; Inizio del ciclo for
+    (block $exit_loop
+      (loop $loop
+        ;; Stampa il valore attuale di i
+        (call $log (local.get $i))
+        
+        ;; Incrementa i
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        
+        ;; Controlla se i <= 10, se sì continua il ciclo
+        (br_if $loop (i32.le_s (local.get $i) (i32.const 10)))
+      )
+    )
+  )
+)
+
+;; In series
+
+;;wasm binary module
+module
+  import "console" "log" (func $log (param i32))
+  func $main (export "main")
+    ;; Dichiarazione della variabile locale "i"
+    local $i i32
+    
+    ;; Inizializza i = 1
+    i32.const 1
+    local.set $i
+    
+    ;; Inizio del blocco del ciclo
+    block $exit_loop
+      loop $loop
+        ;; Carica i sullo stack per passarlo a log
+        local.get $i
+        call $log
+        
+        ;; Incrementa i (i = i + 1)
+        local.get $i
+        i32.const 1
+        i32.add
+        local.set $i
+        
+        ;; Controlla se i <= 10
+        local.get $i
+        i32.const 10
+        i32.le_s
+        
+        ;; Se la condizione è vera, torna all'inizio del loop
+        br_if $loop
+      end
+    end
+  end
+end
+
