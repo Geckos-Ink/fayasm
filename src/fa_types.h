@@ -14,3 +14,6 @@ typedef short unsigned  u16;
 typedef short           i16;
 typedef uint8_t         u8;
 typedef int8_t          i8;
+
+typedef uint64_t fa_ptr;
+typedef void* ptr; // just the current system pointer
