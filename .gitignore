@@ -1,5 +1,9 @@
 build/
 CMakeFiles/
+*.cmake
+Makefile
+CMakeCache.txt
+compile_commands.json
 
 # Prerequisites
 *.d
