@@ -8,6 +8,8 @@ typedef uint32_t jobId_t;
 
 typedef struct {
     jobId_t id;
-    fa_ptr data_flow[FA_JOB_DATA_FLOW_WINDOW_SIZE];
+
+    // The data flow window is basically a FIFO pointers register
+    ptr data_flow[FA_JOB_DATA_FLOW_WINDOW_SIZE];
 
 } fa_Job;
