@@ -12,6 +12,8 @@ typedef struct {
 
 typedef uint32_t jobId_t;
 
+//todo: fa_Track: the series of operations to be executed
+
 typedef struct {
     jobId_t id;
 
