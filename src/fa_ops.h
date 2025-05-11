@@ -62,4 +62,6 @@ typedef struct {
     uint8_t num_pull; // how many arguments takes from previous loads etc. on the stack
     uint8_t num_push; // how many arguments to push onto the stack
     uint8_t num_args; // how many arguments in the byte code
+
+    //void (*prepare)(int, double);
 } fa_WasmOp;
