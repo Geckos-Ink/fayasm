@@ -12,7 +12,17 @@ typedef struct {
 
 typedef uint32_t jobId_t;
 
-//todo: fa_Track: the series of operations to be executed
+typedef struct {
+    ptr ptr;
+    fa_ptr offset;
+    uint8_t size;
+} fa_OpCode
+
+typedef struct {
+    ptr ptr;
+    fa_ptr offset;
+    uint8_t size;
+} fa_Track
 
 typedef struct {
     jobId_t id;
