@@ -54,6 +54,8 @@ typedef enum {
     wopt_return = 34
 } fa_WasmOp_type;
 
+typedef void (*Operation)(int, double);
+
 typedef struct {
     uint8_t id;
     fa_WasmType type;
@@ -63,5 +65,5 @@ typedef struct {
     uint8_t num_push; // how many arguments to push onto the stack
     uint8_t num_args; // how many arguments in the byte code
 
-    //void (*prepare)(int, double);
+    Operation operation;
 } fa_WasmOp;
