@@ -30,6 +30,8 @@ typedef struct {
     fa_JobDataFlow dataFlowWindow[FA_JOB_DATA_FLOW_WINDOW_SIZE];
     uint8_t dataFlowOffset;
 
+    fa_ptr pc; // what instruction address is executing
+
 } fa_Job;
 
 void data_push(fa_Job *job, ptr ptr, int size);
