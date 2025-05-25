@@ -1,5 +1,6 @@
 #pragma once
 #include "fa_types.h"
+#include "fa_job.h"
 
 typedef enum {
     wt_void = 0,
