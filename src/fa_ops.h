@@ -55,7 +55,9 @@ typedef enum {
     wopt_return = 34
 } fa_WasmOp_type;
 
-typedef void (*Operation)(int, double);
+#define OP_RETURN_TYPE void
+#define OP_ARGUMENTS fa_Job* job
+typedef OP_RETURN_TYPE (*Operation)(OP_ARGUMENTS);
 
 typedef struct {
     uint8_t id;

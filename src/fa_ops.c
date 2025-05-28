@@ -1,6 +1,12 @@
 
 #include "fa_ops.h"
 
+#define OP_KEYWORD // if necessary add keywords to op functions implementations
+
+OP_KEYWORD OP_RETURN_TYPE op_i64_load(OP_ARGUMENTS){
+    //todo: implement this first example
+}
+
 void fa_instance_ops() {
     fa_WasmOp ops[256] = {0}; // Initialize all to zero
     fa_WasmType i32_type = {wt_integer, 4, true};
@@ -123,6 +129,7 @@ void fa_instance_ops() {
     ops[41].num_pull = 1;  // address
     ops[41].num_push = 1;  // result
     ops[41].num_args = 2;  // align and offset
+    ops[41].operation = op_i64_load;
 
     // 0x2A: f32.load
     ops[42].id = 42;
