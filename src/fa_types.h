@@ -17,3 +17,7 @@ typedef int8_t          i8;
 
 typedef uint64_t fa_ptr;
 typedef void* ptr; // just the current system pointer
+
+// Essential callbacks
+typedef ptr (*fa_Malloc)(int);
+typedef void (*fa_Free)(ptr);

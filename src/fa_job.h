@@ -34,5 +34,5 @@ typedef struct {
 
 } fa_Job;
 
-void data_push(fa_Job *job, ptr ptr, int size);
-fa_JobDataFlow* data_pull(fa_Job *job);
+void fa_JobDataFlow_data_push(fa_Job *job, ptr ptr, int size, fa_Malloc malloc, fa_Free free);
+fa_JobDataFlow* fa_JobDataFlow_data_pull(fa_Job *job);
