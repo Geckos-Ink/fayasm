@@ -1,15 +1,15 @@
 #include "fa_runtime.h"
 
-fa_JobDataFlow fa_JobDataFlow_data_push(fa_Job* job, ptr ptr, int size, fa_Malloc malloc, fa_Free free){
+fa_Job* fa_Job_init(){
+    fa_Job* job = malloc(sizeof(fa_Job));
+    //todo: init vars
+    return job;
+}
+
+fa_JobDataFlow* fa_JobDataFlow_data_push(fa_Job* job, int size){
     fa_JobDataFlow* data = &job.dataFlowWindow[job.dataFlowOffset++ % FA_JOB_DATA_FLOW_WINDOW_SIZE];
 
-    if(data->size != size){
-        if(data->ptr != NULL){
-            free(data->ptr);
-        }
-
-        data->ptr = malloc(size);
-    }
+    // set right pointer and advance
 
     return data;
 }
