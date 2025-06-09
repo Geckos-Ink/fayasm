@@ -7,7 +7,7 @@ fa_Job* fa_Job_init(){
 }
 
 fa_JobDataFlow* fa_JobDataFlow_data_push(fa_Job* job, int size){
-    uint8_t offset = job.dataFlowOffset++ % FA_JOB_DATA_FLOW_WINDOW_SIZE;
+    uint8_t offset = ++job.dataFlowOffset % FA_JOB_DATA_FLOW_WINDOW_SIZE;
     fa_JobDataFlow* data = &job.dataFlowWindow[offset];
 
     data.size = size;
@@ -18,5 +18,5 @@ fa_JobDataFlow* fa_JobDataFlow_data_push(fa_Job* job, int size){
 }
 
 fa_JobDataFlow* fa_JobDataFlow_data_pull(fa_Job* job){
-    return &job.dataFlowWindow[job.dataFlowOffset++ % FA_JOB_DATA_FLOW_WINDOW_SIZE];
+    return &job.dataFlowWindow[job.dataFlowOffset-- % FA_JOB_DATA_FLOW_WINDOW_SIZE];
 }
