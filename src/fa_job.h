@@ -31,7 +31,7 @@ typedef struct {
     uint8_t data[FA_JOB_DATA_FLOW_MAX_SIZE * FA_JOB_DATA_FLOW_WINDOW_SIZE];
     fa_JobDataFlow dataWindows[FA_JOB_DATA_FLOW_WINDOW_SIZE];
     uint8_t dataFlowOffset;
-    uint8_t dataFlowPtrOffset;
+    //uint8_t dataFlowPtrOffset;
 
     fa_ptr instructionPointer; // what instruction address is executing
 

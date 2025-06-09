@@ -7,9 +7,12 @@ fa_Job* fa_Job_init(){
 }
 
 fa_JobDataFlow* fa_JobDataFlow_data_push(fa_Job* job, int size){
-    fa_JobDataFlow* data = &job.dataFlowWindow[job.dataFlowOffset++ % FA_JOB_DATA_FLOW_WINDOW_SIZE];
+    uint8_t offset = job.dataFlowOffset++ % FA_JOB_DATA_FLOW_WINDOW_SIZE;
+    fa_JobDataFlow* data = &job.dataFlowWindow[offset];
 
-    // set right pointer and advance
+    data.size = size;
+    data.offset = offset;
+    data.ptr = &job->dataWindows + (offset * FA_JOB_DATA_FLOW_MAX_SIZE);
 
     return data;
 }
