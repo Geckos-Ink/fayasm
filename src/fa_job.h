@@ -52,5 +52,5 @@ fa_Job* fa_Job_init();
 //fa_JobDataFlow* fa_JobDataFlow_data_pull(fa_Job *job);
 
 fa_JobDataFlow* fa_JobDataFlow_init();
-void fa_JobDataFlow_concat(fa_JobDataFlow* data, fa_JobDataFlow* to);
+void fa_JobDataFlow_push(fa_JobDataFlow* data, fa_JobDataFlow* to);
 fa_JobDataFlow* fa_JobDataFlow_pull(fa_JobDataFlow* from);

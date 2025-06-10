@@ -29,7 +29,7 @@ fa_JobDataFlow* fa_JobDataFlow_init(){
     return data;
 }
 
-void fa_JobDataFlow_concat(fa_JobDataFlow* data, fa_JobDataFlow* to){
+void fa_JobDataFlow_push(fa_JobDataFlow* data, fa_JobDataFlow* to){
     fa_JobDataFlow* cur = to;
     while(cur != NULL){
         if(cur->follows == NULL){
