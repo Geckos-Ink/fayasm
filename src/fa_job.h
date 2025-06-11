@@ -29,13 +29,7 @@ typedef struct {
 
 typedef struct {
     jobId_t id;
-
-    // The data flow window is basically a FIFO pointers register of pointers in use
-    //uint8_t data[FA_JOB_DATA_FLOW_MAX_SIZE * FA_JOB_DATA_FLOW_WINDOW_SIZE];
-    //fa_JobDataFlow dataWindows[FA_JOB_DATA_FLOW_WINDOW_SIZE];
-    //uint8_t dataFlowOffset;
-    //uint8_t dataFlowPtrOffset;
-
+    
     fa_ptr instructionPointer; // what instruction address is executing
 
     // pull and push registers
@@ -45,11 +39,6 @@ typedef struct {
 } fa_Job;
 
 fa_Job* fa_Job_init();
-
-//todo: Determine a more clear mechanism about data flows
-// currently a dynamic pointer is done every time, making optimization useless
-//fa_JobDataFlow* fa_JobDataFlow_data_push(fa_Job *job, int size);
-//fa_JobDataFlow* fa_JobDataFlow_data_pull(fa_Job *job);
 
 fa_JobDataFlow* fa_JobDataFlow_init();
 void fa_JobDataFlow_push(fa_JobDataFlow* data, fa_JobDataFlow* to);
