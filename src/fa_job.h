@@ -33,8 +33,8 @@ typedef struct {
     fa_ptr instructionPointer; // what instruction address is executing
 
     // pull and push registers
-    fa_JobDataFlow* regs;
-    
+    fa_JobDataFlow* reg;
+
 } fa_Job;
 
 fa_Job* fa_Job_init();
