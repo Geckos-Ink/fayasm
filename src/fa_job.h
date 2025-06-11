@@ -29,13 +29,12 @@ typedef struct {
 
 typedef struct {
     jobId_t id;
-    
+
     fa_ptr instructionPointer; // what instruction address is executing
 
     // pull and push registers
-    fa_JobDataFlow* pull;
-    fa_JobDataFlow* push;
-
+    fa_JobDataFlow* regs;
+    
 } fa_Job;
 
 fa_Job* fa_Job_init();
