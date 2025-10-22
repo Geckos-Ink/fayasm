@@ -74,3 +74,4 @@ typedef struct {
 const fa_WasmOp* fa_instance_ops(void);
 const fa_WasmOp* fa_get_op(uint8_t opcode);
 OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Job* job);
+void fa_ops_defs_populate(fa_WasmOp* ops);
