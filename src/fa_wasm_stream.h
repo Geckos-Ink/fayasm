@@ -5,7 +5,7 @@
 #include <stddef.h> // For size_t
 
 // Forward declaration
-typedef struct WasmModule WasmModule;
+//typedef struct WasmModule WasmModule;
 
 /**
  * @brief Represents the state of the WASM instruction stream for execution.
