@@ -6,7 +6,7 @@ Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor f
 
 - **Single-pass loader** – `fa_wasm.c` progressively parses the binary format (magic, sections, tables) without needing a heavyweight engine.
 - **Job-based execution** – `fa_job.*` models the state of a running invocation. Jobs track the instruction pointer, a streaming register window, and a dynamically allocated value stack so the runtime only pays for the data it actually touches.
-- **Opcode catalog** – `fa_ops_defs.c` describes all core WASM instructions, while `fa_ops.c` wires descriptors to the concrete handlers that operate on a `fa_Job`. Each `define_op` entry carries an inline comment with the mnemonic so the table can double as a cheat sheet when scanning the file.
+- **Opcode catalog** – `fa_ops.c` describes all core WASM instructions, while it wires descriptors to the concrete handlers that operate on a `fa_Job`. Each `define_op` entry carries an inline comment with the mnemonic so the table can double as a cheat sheet when scanning the file.
 - **Stream helpers** – `fa_wasm_stream.*` exposes a cursor API that makes stepping through bytecode deterministic and testable.
 
 The project is in active incubation; many operators are still stubs, but the skeleton is in place for a full interpreter.
