@@ -56,10 +56,11 @@ typedef enum {
 } fa_WasmOp_type;
 
 #define OP_RETURN_TYPE void
-#define OP_ARGUMENTS fa_Job* job, const fa_WasmOp* descriptor
+struct fa_WasmOp;
+#define OP_ARGUMENTS fa_Job* job, const struct fa_WasmOp* descriptor
 typedef OP_RETURN_TYPE (*Operation)(OP_ARGUMENTS);
 
-typedef struct {
+typedef struct fa_WasmOp {
     uint8_t id;
     fa_WasmType type;
     fa_WasmOp_type op;

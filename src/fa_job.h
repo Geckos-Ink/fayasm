@@ -47,12 +47,11 @@ typedef struct {
     size_t size;
 } fa_JobStack;
 
-typedef struct fa_JobDataFlow;
-typedef struct {
+typedef struct fa_JobDataFlow {
     ptr ptr;
-    uint8_t size;  
-    fa_JobDataFlow* follows;
-    fa_JobDataFlow* precede; // max precedes: FA_JOB_DATA_FLOW_WINDOW_SIZE
+    uint8_t size;
+    struct fa_JobDataFlow* follows;
+    struct fa_JobDataFlow* precede; // max precedes: FA_JOB_DATA_FLOW_WINDOW_SIZE
 } fa_JobDataFlow;
 
 typedef uint32_t jobId_t;
