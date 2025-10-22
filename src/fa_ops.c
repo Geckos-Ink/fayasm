@@ -74,7 +74,7 @@ static void job_reg_enforce_limit(fa_Job* job) {
     if (!job) {
         return;
     }
-    
+
     fa_JobDataFlow* head = NULL;
     uint8_t count = job_reg_count_and_head(job, &head);
     while (count > FA_JOB_DATA_FLOW_WINDOW_SIZE && head) {
@@ -289,6 +289,7 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     ops[0].num_pull = 0;
     ops[0].num_push = 0;
     ops[0].num_args = 0;
+    //todo: implement ops[n].operation = ...
 
     // 0x01: nop
     ops[1].id = 1;
