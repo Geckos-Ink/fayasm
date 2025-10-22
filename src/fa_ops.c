@@ -74,12 +74,10 @@ static void job_reg_enforce_limit(fa_Job* job) {
     if (!job) {
         return;
     }
-    if (job->regMaxPrecedes == 0) {
-        job->regMaxPrecedes = FA_JOB_DATA_FLOW_WINDOW_SIZE;
-    }
+    
     fa_JobDataFlow* head = NULL;
     uint8_t count = job_reg_count_and_head(job, &head);
-    while (count > job->regMaxPrecedes && head) {
+    while (count > FA_JOB_DATA_FLOW_WINDOW_SIZE && head) {
         fa_JobDataFlow* next = head->follows;
         if (next) {
             next->precede = NULL;

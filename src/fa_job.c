@@ -3,44 +3,84 @@
 
 #include <stdlib.h>
 
-void fa_JobStack_reset(fa_JobStack* stack){
+static void fa_JobStack_clear_nodes(fa_JobStack* stack){
     if (!stack) {
         return;
     }
-    stack->top = 0;
+    fa_JobStackValue* cur = stack->head;
+    while (cur) {
+        fa_JobStackValue* next = cur->next;
+        free(cur);
+        cur = next;
+    }
+    stack->head = NULL;
+    stack->tail = NULL;
+    stack->size = 0;
+}
+
+void fa_JobStack_reset(fa_JobStack* stack){
+    fa_JobStack_clear_nodes(stack);
 }
 
 bool fa_JobStack_push(fa_JobStack* stack, const fa_JobValue* value){
     if (!stack || !value) {
         return false;
     }
-    if (stack->top >= FA_JOB_STACK_MAX_DEPTH) {
+    fa_JobStackValue* node = malloc(sizeof(fa_JobStackValue));
+    if (!node) {
         return false;
     }
-    stack->values[stack->top] = *value;
-    stack->top++;
+    node->value = *value;
+    node->next = NULL;
+    node->prev = stack->tail;
+    if (stack->tail) {
+        stack->tail->next = node;
+    } else {
+        stack->head = node;
+    }
+    stack->tail = node;
+    stack->size++;
     return true;
 }
 
 bool fa_JobStack_pop(fa_JobStack* stack, fa_JobValue* out){
-    if (!stack || stack->top == 0) {
+    if (!stack || !stack->tail) {
         return false;
     }
-    stack->top--;
+    fa_JobStackValue* node = stack->tail;
     if (out) {
-        *out = stack->values[stack->top];
+        *out = node->value;
+    }
+    stack->tail = node->prev;
+    if (stack->tail) {
+        stack->tail->next = NULL;
+    } else {
+        stack->head = NULL;
+    }
+    free(node);
+    if (stack->size > 0) {
+        stack->size--;
     }
     return true;
 }
 
 const fa_JobValue* fa_JobStack_peek(const fa_JobStack* stack, size_t depth){
-    if (!stack || stack->top == 0) {
+    if (!stack || !stack->tail) {
         return NULL;
     }
-    if (depth >= stack->top) {
+    const fa_JobStackValue* node = stack->tail;
+    while (node && depth > 0) {
+        node = node->prev;
+        depth--;
+    }
+    if (!node) {
         return NULL;
     }
-    return &stack->values[stack->top - depth - 1];
+    return &node->value;
+}
+
+void fa_JobStack_free(fa_JobStack* stack){
+    fa_JobStack_clear_nodes(stack);
 }
 
 fa_Job* fa_Job_init(){
@@ -48,7 +88,7 @@ fa_Job* fa_Job_init(){
     if (!job) {
         return NULL;
     }
-    job->regMaxPrecedes = FA_JOB_DATA_FLOW_WINDOW_SIZE;
+    
     job->reg = NULL;
     job->instructionPointer = 0;
     job->id = 0;
