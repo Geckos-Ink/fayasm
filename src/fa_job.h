@@ -44,8 +44,8 @@ typedef struct fa_JobDataFlow;
 typedef struct {
     ptr ptr;
     uint8_t size;  
-    fa_JobDataFlow* follows;
-    fa_JobDataFlow* precede;
+    fa_JobDataFlow* follow;
+    fa_JobDataFlow* precede; // max precedes: FA_JOB_DATA_FLOW_WINDOW_SIZE
 } fa_JobDataFlow;
 
 typedef uint32_t jobId_t;
@@ -57,8 +57,7 @@ typedef struct {
 
     fa_ptr instructionPointer; // what instruction address is executing
 
-    // pull and push registers
-    uint8_t regMaxPrecedes; // Default: 4
+    // pull and push registers    
     fa_JobDataFlow* reg;
 
 } fa_Job;
