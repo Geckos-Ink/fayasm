@@ -1667,156 +1667,156 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     const fa_WasmType type_f32 = {wt_float, 4, false};
     const fa_WasmType type_f64 = {wt_float, 8, false};
 
-    define_op(ops, 0x00, &type_void, wopt_unique, 0, 0, 0, 0, op_control);
-    define_op(ops, 0x01, &type_void, wopt_unique, 0, 0, 0, 0, op_control);
-    define_op(ops, 0x02, &type_void, wopt_unique, 0, 0, 0, 1, op_control);
-    define_op(ops, 0x03, &type_void, wopt_unique, 0, 0, 0, 1, op_control);
-    define_op(ops, 0x04, &type_void, wopt_unique, 0, 1, 0, 1, op_control);
-    define_op(ops, 0x05, &type_void, wopt_unique, 0, 0, 0, 0, op_control);
-    define_op(ops, 0x0B, &type_void, wopt_unique, 0, 0, 0, 0, op_control);
-    define_op(ops, 0x0C, &type_void, wopt_unique, 0, 0, 0, 1, op_control);
-    define_op(ops, 0x0D, &type_void, wopt_unique, 0, 1, 0, 1, op_control);
-    define_op(ops, 0x0E, &type_void, wopt_unique, 0, 1, 0, 1, op_control);
-    define_op(ops, 0x0F, &type_void, wopt_return, 0, 0, 0, 0, op_return);
-    define_op(ops, 0x10, &type_void, wopt_call, 0, 0, 0, 1, op_call);
-    define_op(ops, 0x11, &type_void, wopt_call, 0, 1, 0, 2, op_call_indirect);
-    define_op(ops, 0x1A, &type_void, wopt_drop, 0, 1, 0, 0, op_drop);
-    define_op(ops, 0x1B, &type_void, wopt_select, 0, 3, 1, 0, op_select);
-    define_op(ops, 0x28, &type_i32, wopt_load, 32, 1, 1, 2, op_load);
-    define_op(ops, 0x29, &type_i64, wopt_load, 64, 1, 1, 2, op_load);
-    define_op(ops, 0x2A, &type_f32, wopt_load, 32, 1, 1, 2, op_load);
-    define_op(ops, 0x2B, &type_f64, wopt_load, 64, 1, 1, 2, op_load);
-    define_op(ops, 0x2C, &type_i32, wopt_load, 8, 1, 1, 2, op_load);
-    define_op(ops, 0x2D, &type_u32, wopt_load, 8, 1, 1, 2, op_load);
-    define_op(ops, 0x2E, &type_i32, wopt_load, 16, 1, 1, 2, op_load);
-    define_op(ops, 0x2F, &type_u32, wopt_load, 16, 1, 1, 2, op_load);
-    define_op(ops, 0x30, &type_i64, wopt_load, 8, 1, 1, 2, op_load);
-    define_op(ops, 0x31, &type_u64, wopt_load, 8, 1, 1, 2, op_load);
-    define_op(ops, 0x32, &type_i64, wopt_load, 16, 1, 1, 2, op_load);
-    define_op(ops, 0x33, &type_u64, wopt_load, 16, 1, 1, 2, op_load);
-    define_op(ops, 0x34, &type_i64, wopt_load, 32, 1, 1, 2, op_load);
-    define_op(ops, 0x35, &type_u64, wopt_load, 32, 1, 1, 2, op_load);
-    define_op(ops, 0x36, &type_i32, wopt_store, 32, 2, 0, 2, op_store);
-    define_op(ops, 0x37, &type_i64, wopt_store, 64, 2, 0, 2, op_store);
-    define_op(ops, 0x38, &type_f32, wopt_store, 32, 2, 0, 2, op_store);
-    define_op(ops, 0x39, &type_f64, wopt_store, 64, 2, 0, 2, op_store);
-    define_op(ops, 0x3A, &type_i32, wopt_store, 8, 2, 0, 2, op_store);
-    define_op(ops, 0x3B, &type_i32, wopt_store, 16, 2, 0, 2, op_store);
-    define_op(ops, 0x3C, &type_i64, wopt_store, 8, 2, 0, 2, op_store);
-    define_op(ops, 0x3D, &type_i64, wopt_store, 16, 2, 0, 2, op_store);
-    define_op(ops, 0x3E, &type_i64, wopt_store, 32, 2, 0, 2, op_store);
-    define_op(ops, 0x41, &type_i32, wopt_const, 32, 0, 1, 1, op_const);
-    define_op(ops, 0x42, &type_i64, wopt_const, 64, 0, 1, 1, op_const);
-    define_op(ops, 0x43, &type_f32, wopt_const, 32, 0, 1, 1, op_const);
-    define_op(ops, 0x44, &type_f64, wopt_const, 64, 0, 1, 1, op_const);
-    define_op(ops, 0x45, &type_i32, wopt_eqz, 0, 1, 1, 0, op_eqz);
-    define_op(ops, 0x50, &type_i64, wopt_eqz, 0, 1, 1, 0, op_eqz);
-    define_op(ops, 0x46, &type_i32, wopt_eq, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x47, &type_i32, wopt_ne, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x48, &type_i32, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x49, &type_u32, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4A, &type_i32, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4B, &type_u32, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4C, &type_i32, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4D, &type_u32, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4E, &type_i32, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x4F, &type_u32, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x51, &type_i64, wopt_eq, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x52, &type_i64, wopt_ne, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x53, &type_i64, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x54, &type_u64, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x55, &type_i64, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x56, &type_u64, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x57, &type_i64, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x58, &type_u64, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x59, &type_i64, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5A, &type_u64, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5B, &type_f32, wopt_eq, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5C, &type_f32, wopt_ne, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5D, &type_f32, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5E, &type_f32, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x5F, &type_f32, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x60, &type_f32, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x61, &type_f64, wopt_eq, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x62, &type_f64, wopt_ne, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x63, &type_f64, wopt_lt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x64, &type_f64, wopt_gt, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x65, &type_f64, wopt_le, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x66, &type_f64, wopt_ge, 0, 2, 1, 0, op_compare);
-    define_op(ops, 0x6A, &type_i32, wopt_add, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x6B, &type_i32, wopt_sub, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x6C, &type_i32, wopt_mul, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x6D, &type_i32, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x6E, &type_u32, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x6F, &type_i32, wopt_rem, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x70, &type_u32, wopt_rem, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x79, &type_i64, wopt_add, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7A, &type_i64, wopt_sub, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7B, &type_i64, wopt_mul, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7C, &type_i64, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7D, &type_u64, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7E, &type_i64, wopt_rem, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x7F, &type_u64, wopt_rem, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x8A, &type_f32, wopt_add, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x8B, &type_f32, wopt_sub, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x8C, &type_f32, wopt_mul, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x8D, &type_f32, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x91, &type_f64, wopt_add, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x92, &type_f64, wopt_sub, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x93, &type_f64, wopt_mul, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x94, &type_f64, wopt_div, 0, 2, 1, 0, op_arithmetic);
-    define_op(ops, 0x71, &type_i32, wopt_and, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x72, &type_i32, wopt_or, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x73, &type_i32, wopt_xor, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x80, &type_i64, wopt_and, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x81, &type_i64, wopt_or, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x82, &type_i64, wopt_xor, 0, 2, 1, 0, op_bitwise);
-    define_op(ops, 0x74, &type_i32, wopt_shl, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x75, &type_i32, wopt_shr, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x76, &type_u32, wopt_shr, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x83, &type_i64, wopt_shl, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x84, &type_i64, wopt_shr, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x85, &type_u64, wopt_shr, 0, 2, 1, 0, op_shift);
-    define_op(ops, 0x77, &type_i32, wopt_rotl, 0, 2, 1, 0, op_rotate);
-    define_op(ops, 0x78, &type_i32, wopt_rotr, 0, 2, 1, 0, op_rotate);
-    define_op(ops, 0x86, &type_i64, wopt_rotl, 0, 2, 1, 0, op_rotate);
-    define_op(ops, 0x87, &type_i64, wopt_rotr, 0, 2, 1, 0, op_rotate);
-    define_op(ops, 0x8E, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x8F, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x90, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x95, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x96, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x97, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special);
-    define_op(ops, 0x98, &type_i32, wopt_wrap, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x99, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9A, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9B, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9C, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9D, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9E, &type_u64, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0x9F, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA0, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA1, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA2, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA3, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA4, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA5, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA6, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA7, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA8, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xA9, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xAA, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xAB, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xAC, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xC0, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xC1, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xC2, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xC3, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xC4, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert);
-    define_op(ops, 0xAD, &type_i32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret);
-    define_op(ops, 0xAE, &type_i64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret);
-    define_op(ops, 0xAF, &type_f32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret);
-    define_op(ops, 0xB0, &type_f64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret);
-    define_op(ops, 0x3F, &type_i32, wopt_unique, 0, 0, 1, 1, op_memory_size);
-    define_op(ops, 0x40, &type_i32, wopt_unique, 0, 1, 1, 1, op_memory_grow);
+    define_op(ops, 0x00, &type_void, wopt_unique, 0, 0, 0, 0, op_control); // unreachable
+    define_op(ops, 0x01, &type_void, wopt_unique, 0, 0, 0, 0, op_control); // nop
+    define_op(ops, 0x02, &type_void, wopt_unique, 0, 0, 0, 1, op_control); // block
+    define_op(ops, 0x03, &type_void, wopt_unique, 0, 0, 0, 1, op_control); // loop
+    define_op(ops, 0x04, &type_void, wopt_unique, 0, 1, 0, 1, op_control); // if
+    define_op(ops, 0x05, &type_void, wopt_unique, 0, 0, 0, 0, op_control); // else
+    define_op(ops, 0x0B, &type_void, wopt_unique, 0, 0, 0, 0, op_control); // end
+    define_op(ops, 0x0C, &type_void, wopt_unique, 0, 0, 0, 1, op_control); // br
+    define_op(ops, 0x0D, &type_void, wopt_unique, 0, 1, 0, 1, op_control); // br_if
+    define_op(ops, 0x0E, &type_void, wopt_unique, 0, 1, 0, 1, op_control); // br_table
+    define_op(ops, 0x0F, &type_void, wopt_return, 0, 0, 0, 0, op_return); // return
+    define_op(ops, 0x10, &type_void, wopt_call, 0, 0, 0, 1, op_call); // call
+    define_op(ops, 0x11, &type_void, wopt_call, 0, 1, 0, 2, op_call_indirect); // call_indirect
+    define_op(ops, 0x1A, &type_void, wopt_drop, 0, 1, 0, 0, op_drop); // drop
+    define_op(ops, 0x1B, &type_void, wopt_select, 0, 3, 1, 0, op_select); // select
+    define_op(ops, 0x28, &type_i32, wopt_load, 32, 1, 1, 2, op_load); // i32.load
+    define_op(ops, 0x29, &type_i64, wopt_load, 64, 1, 1, 2, op_load); // i64.load
+    define_op(ops, 0x2A, &type_f32, wopt_load, 32, 1, 1, 2, op_load); // f32.load
+    define_op(ops, 0x2B, &type_f64, wopt_load, 64, 1, 1, 2, op_load); // f64.load
+    define_op(ops, 0x2C, &type_i32, wopt_load, 8, 1, 1, 2, op_load); // i32.load8_s
+    define_op(ops, 0x2D, &type_u32, wopt_load, 8, 1, 1, 2, op_load); // i32.load8_u
+    define_op(ops, 0x2E, &type_i32, wopt_load, 16, 1, 1, 2, op_load); // i32.load16_s
+    define_op(ops, 0x2F, &type_u32, wopt_load, 16, 1, 1, 2, op_load); // i32.load16_u
+    define_op(ops, 0x30, &type_i64, wopt_load, 8, 1, 1, 2, op_load); // i64.load8_s
+    define_op(ops, 0x31, &type_u64, wopt_load, 8, 1, 1, 2, op_load); // i64.load8_u
+    define_op(ops, 0x32, &type_i64, wopt_load, 16, 1, 1, 2, op_load); // i64.load16_s
+    define_op(ops, 0x33, &type_u64, wopt_load, 16, 1, 1, 2, op_load); // i64.load16_u
+    define_op(ops, 0x34, &type_i64, wopt_load, 32, 1, 1, 2, op_load); // i64.load32_s
+    define_op(ops, 0x35, &type_u64, wopt_load, 32, 1, 1, 2, op_load); // i64.load32_u
+    define_op(ops, 0x36, &type_i32, wopt_store, 32, 2, 0, 2, op_store); // i32.store
+    define_op(ops, 0x37, &type_i64, wopt_store, 64, 2, 0, 2, op_store); // i64.store
+    define_op(ops, 0x38, &type_f32, wopt_store, 32, 2, 0, 2, op_store); // f32.store
+    define_op(ops, 0x39, &type_f64, wopt_store, 64, 2, 0, 2, op_store); // f64.store
+    define_op(ops, 0x3A, &type_i32, wopt_store, 8, 2, 0, 2, op_store); // i32.store8
+    define_op(ops, 0x3B, &type_i32, wopt_store, 16, 2, 0, 2, op_store); // i32.store16
+    define_op(ops, 0x3C, &type_i64, wopt_store, 8, 2, 0, 2, op_store); // i64.store8
+    define_op(ops, 0x3D, &type_i64, wopt_store, 16, 2, 0, 2, op_store); // i64.store16
+    define_op(ops, 0x3E, &type_i64, wopt_store, 32, 2, 0, 2, op_store); // i64.store32
+    define_op(ops, 0x41, &type_i32, wopt_const, 32, 0, 1, 1, op_const); // i32.const
+    define_op(ops, 0x42, &type_i64, wopt_const, 64, 0, 1, 1, op_const); // i64.const
+    define_op(ops, 0x43, &type_f32, wopt_const, 32, 0, 1, 1, op_const); // f32.const
+    define_op(ops, 0x44, &type_f64, wopt_const, 64, 0, 1, 1, op_const); // f64.const
+    define_op(ops, 0x45, &type_i32, wopt_eqz, 0, 1, 1, 0, op_eqz); // i32.eqz
+    define_op(ops, 0x50, &type_i64, wopt_eqz, 0, 1, 1, 0, op_eqz); // i64.eqz
+    define_op(ops, 0x46, &type_i32, wopt_eq, 0, 2, 1, 0, op_compare); // i32.eq
+    define_op(ops, 0x47, &type_i32, wopt_ne, 0, 2, 1, 0, op_compare); // i32.ne
+    define_op(ops, 0x48, &type_i32, wopt_lt, 0, 2, 1, 0, op_compare); // i32.lt_s
+    define_op(ops, 0x49, &type_u32, wopt_lt, 0, 2, 1, 0, op_compare); // i32.lt_u
+    define_op(ops, 0x4A, &type_i32, wopt_gt, 0, 2, 1, 0, op_compare); // i32.gt_s
+    define_op(ops, 0x4B, &type_u32, wopt_gt, 0, 2, 1, 0, op_compare); // i32.gt_u
+    define_op(ops, 0x4C, &type_i32, wopt_le, 0, 2, 1, 0, op_compare); // i32.le_s
+    define_op(ops, 0x4D, &type_u32, wopt_le, 0, 2, 1, 0, op_compare); // i32.le_u
+    define_op(ops, 0x4E, &type_i32, wopt_ge, 0, 2, 1, 0, op_compare); // i32.ge_s
+    define_op(ops, 0x4F, &type_u32, wopt_ge, 0, 2, 1, 0, op_compare); // i32.ge_u
+    define_op(ops, 0x51, &type_i64, wopt_eq, 0, 2, 1, 0, op_compare); // i64.eq
+    define_op(ops, 0x52, &type_i64, wopt_ne, 0, 2, 1, 0, op_compare); // i64.ne
+    define_op(ops, 0x53, &type_i64, wopt_lt, 0, 2, 1, 0, op_compare); // i64.lt_s
+    define_op(ops, 0x54, &type_u64, wopt_lt, 0, 2, 1, 0, op_compare); // i64.lt_u
+    define_op(ops, 0x55, &type_i64, wopt_gt, 0, 2, 1, 0, op_compare); // i64.gt_s
+    define_op(ops, 0x56, &type_u64, wopt_gt, 0, 2, 1, 0, op_compare); // i64.gt_u
+    define_op(ops, 0x57, &type_i64, wopt_le, 0, 2, 1, 0, op_compare); // i64.le_s
+    define_op(ops, 0x58, &type_u64, wopt_le, 0, 2, 1, 0, op_compare); // i64.le_u
+    define_op(ops, 0x59, &type_i64, wopt_ge, 0, 2, 1, 0, op_compare); // i64.ge_s
+    define_op(ops, 0x5A, &type_u64, wopt_ge, 0, 2, 1, 0, op_compare); // i64.ge_u
+    define_op(ops, 0x5B, &type_f32, wopt_eq, 0, 2, 1, 0, op_compare); // f32.eq
+    define_op(ops, 0x5C, &type_f32, wopt_ne, 0, 2, 1, 0, op_compare); // f32.ne
+    define_op(ops, 0x5D, &type_f32, wopt_lt, 0, 2, 1, 0, op_compare); // f32.lt
+    define_op(ops, 0x5E, &type_f32, wopt_gt, 0, 2, 1, 0, op_compare); // f32.gt
+    define_op(ops, 0x5F, &type_f32, wopt_le, 0, 2, 1, 0, op_compare); // f32.le
+    define_op(ops, 0x60, &type_f32, wopt_ge, 0, 2, 1, 0, op_compare); // f32.ge
+    define_op(ops, 0x61, &type_f64, wopt_eq, 0, 2, 1, 0, op_compare); // f64.eq
+    define_op(ops, 0x62, &type_f64, wopt_ne, 0, 2, 1, 0, op_compare); // f64.ne
+    define_op(ops, 0x63, &type_f64, wopt_lt, 0, 2, 1, 0, op_compare); // f64.lt
+    define_op(ops, 0x64, &type_f64, wopt_gt, 0, 2, 1, 0, op_compare); // f64.gt
+    define_op(ops, 0x65, &type_f64, wopt_le, 0, 2, 1, 0, op_compare); // f64.le
+    define_op(ops, 0x66, &type_f64, wopt_ge, 0, 2, 1, 0, op_compare); // f64.ge
+    define_op(ops, 0x6A, &type_i32, wopt_add, 0, 2, 1, 0, op_arithmetic); // i32.add
+    define_op(ops, 0x6B, &type_i32, wopt_sub, 0, 2, 1, 0, op_arithmetic); // i32.sub
+    define_op(ops, 0x6C, &type_i32, wopt_mul, 0, 2, 1, 0, op_arithmetic); // i32.mul
+    define_op(ops, 0x6D, &type_i32, wopt_div, 0, 2, 1, 0, op_arithmetic); // i32.div_s
+    define_op(ops, 0x6E, &type_u32, wopt_div, 0, 2, 1, 0, op_arithmetic); // i32.div_u
+    define_op(ops, 0x6F, &type_i32, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i32.rem_s
+    define_op(ops, 0x70, &type_u32, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i32.rem_u
+    define_op(ops, 0x79, &type_i64, wopt_add, 0, 2, 1, 0, op_arithmetic); // i64.add
+    define_op(ops, 0x7A, &type_i64, wopt_sub, 0, 2, 1, 0, op_arithmetic); // i64.sub
+    define_op(ops, 0x7B, &type_i64, wopt_mul, 0, 2, 1, 0, op_arithmetic); // i64.mul
+    define_op(ops, 0x7C, &type_i64, wopt_div, 0, 2, 1, 0, op_arithmetic); // i64.div_s
+    define_op(ops, 0x7D, &type_u64, wopt_div, 0, 2, 1, 0, op_arithmetic); // i64.div_u
+    define_op(ops, 0x7E, &type_i64, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i64.rem_s
+    define_op(ops, 0x7F, &type_u64, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i64.rem_u
+    define_op(ops, 0x8A, &type_f32, wopt_add, 0, 2, 1, 0, op_arithmetic); // f32.add
+    define_op(ops, 0x8B, &type_f32, wopt_sub, 0, 2, 1, 0, op_arithmetic); // f32.sub
+    define_op(ops, 0x8C, &type_f32, wopt_mul, 0, 2, 1, 0, op_arithmetic); // f32.mul
+    define_op(ops, 0x8D, &type_f32, wopt_div, 0, 2, 1, 0, op_arithmetic); // f32.div
+    define_op(ops, 0x91, &type_f64, wopt_add, 0, 2, 1, 0, op_arithmetic); // f64.add
+    define_op(ops, 0x92, &type_f64, wopt_sub, 0, 2, 1, 0, op_arithmetic); // f64.sub
+    define_op(ops, 0x93, &type_f64, wopt_mul, 0, 2, 1, 0, op_arithmetic); // f64.mul
+    define_op(ops, 0x94, &type_f64, wopt_div, 0, 2, 1, 0, op_arithmetic); // f64.div
+    define_op(ops, 0x71, &type_i32, wopt_and, 0, 2, 1, 0, op_bitwise); // i32.and
+    define_op(ops, 0x72, &type_i32, wopt_or, 0, 2, 1, 0, op_bitwise); // i32.or
+    define_op(ops, 0x73, &type_i32, wopt_xor, 0, 2, 1, 0, op_bitwise); // i32.xor
+    define_op(ops, 0x80, &type_i64, wopt_and, 0, 2, 1, 0, op_bitwise); // i64.and
+    define_op(ops, 0x81, &type_i64, wopt_or, 0, 2, 1, 0, op_bitwise); // i64.or
+    define_op(ops, 0x82, &type_i64, wopt_xor, 0, 2, 1, 0, op_bitwise); // i64.xor
+    define_op(ops, 0x74, &type_i32, wopt_shl, 0, 2, 1, 0, op_shift); // i32.shl
+    define_op(ops, 0x75, &type_i32, wopt_shr, 0, 2, 1, 0, op_shift); // i32.shr_s
+    define_op(ops, 0x76, &type_u32, wopt_shr, 0, 2, 1, 0, op_shift); // i32.shr_u
+    define_op(ops, 0x83, &type_i64, wopt_shl, 0, 2, 1, 0, op_shift); // i64.shl
+    define_op(ops, 0x84, &type_i64, wopt_shr, 0, 2, 1, 0, op_shift); // i64.shr_s
+    define_op(ops, 0x85, &type_u64, wopt_shr, 0, 2, 1, 0, op_shift); // i64.shr_u
+    define_op(ops, 0x77, &type_i32, wopt_rotl, 0, 2, 1, 0, op_rotate); // i32.rotl
+    define_op(ops, 0x78, &type_i32, wopt_rotr, 0, 2, 1, 0, op_rotate); // i32.rotr
+    define_op(ops, 0x86, &type_i64, wopt_rotl, 0, 2, 1, 0, op_rotate); // i64.rotl
+    define_op(ops, 0x87, &type_i64, wopt_rotr, 0, 2, 1, 0, op_rotate); // i64.rotr
+    define_op(ops, 0x8E, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.min
+    define_op(ops, 0x8F, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.max
+    define_op(ops, 0x90, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.copysign
+    define_op(ops, 0x95, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.min
+    define_op(ops, 0x96, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.max
+    define_op(ops, 0x97, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.copysign
+    define_op(ops, 0x98, &type_i32, wopt_wrap, 0, 1, 1, 0, op_convert); // i32.wrap_i64
+    define_op(ops, 0x99, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f32_s
+    define_op(ops, 0x9A, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f32_u
+    define_op(ops, 0x9B, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f64_s
+    define_op(ops, 0x9C, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f64_u
+    define_op(ops, 0x9D, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend_i32_s
+    define_op(ops, 0x9E, &type_u64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend_i32_u
+    define_op(ops, 0x9F, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f32_s
+    define_op(ops, 0xA0, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f32_u
+    define_op(ops, 0xA1, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f64_s
+    define_op(ops, 0xA2, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f64_u
+    define_op(ops, 0xA3, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i32_s
+    define_op(ops, 0xA4, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i32_u
+    define_op(ops, 0xA5, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i64_s
+    define_op(ops, 0xA6, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i64_u
+    define_op(ops, 0xA7, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.demote_f64
+    define_op(ops, 0xA8, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i32_s
+    define_op(ops, 0xA9, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i32_u
+    define_op(ops, 0xAA, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i64_s
+    define_op(ops, 0xAB, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i64_u
+    define_op(ops, 0xAC, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.promote_f32
+    define_op(ops, 0xC0, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert); // i32.extend8_s
+    define_op(ops, 0xC1, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert); // i32.extend16_s
+    define_op(ops, 0xC2, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend8_s
+    define_op(ops, 0xC3, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend16_s
+    define_op(ops, 0xC4, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend32_s
+    define_op(ops, 0xAD, &type_i32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i32.reinterpret_f32
+    define_op(ops, 0xAE, &type_i64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i64.reinterpret_f64
+    define_op(ops, 0xAF, &type_f32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f32.reinterpret_i32
+    define_op(ops, 0xB0, &type_f64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f64.reinterpret_i64
+    define_op(ops, 0x3F, &type_i32, wopt_unique, 0, 0, 1, 1, op_memory_size); // memory.size
+    define_op(ops, 0x40, &type_i32, wopt_unique, 0, 1, 1, 1, op_memory_grow); // memory.grow
 }
