@@ -9,30 +9,20 @@ typedef struct {
     ptr ptr;
     uint8_t size;  
     fa_JobDataFlow* follows;
+    fa_JobDataFlow* precede;
 } fa_JobDataFlow;
 
 typedef uint32_t jobId_t;
 
-// unused
-typedef struct {
-    ptr ptr;
-    fa_ptr offset;
-    uint8_t size;
-} fa_OpCode;
-
-// unused
-typedef struct {
-    ptr ptr;
-    fa_ptr offset;
-    uint8_t size;
-} fa_Track;
-
 typedef struct {
     jobId_t id;
+
+    //HERE: ADD (and define struct) SUPPORT TO STACKs
 
     fa_ptr instructionPointer; // what instruction address is executing
 
     // pull and push registers
+    uint8_t regMaxPrecedes; // Default: 4
     fa_JobDataFlow* reg;
 
 } fa_Job;
