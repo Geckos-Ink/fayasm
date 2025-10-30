@@ -1,6 +1,6 @@
 # fayasm
 
-Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor focused on transparency over raw speed. The codebase is intentionally small and educational, showcasing how modules can be decoded and scheduled on top of a minimal runtime.
+Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor focused on transparency and portability over raw speed. The codebase is intentionally small and educational, showcasing how modules can be decoded and scheduled on top of a minimal runtime, aiming to be portable on embedded devices with an adaptable footprint on RAM in real time through offloads.
 
 ## Overview
 
