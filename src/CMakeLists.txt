@@ -12,6 +12,15 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 file(GLOB FAYASM_SOURCES "fa_*.c")
 set(FAYASM_HEADERS "fayasm.h")
 file(GLOB FAYASM_HEADERS_EXTRA "fa_*.h")
+file(GLOB FAYASM_HEADERS_EXTRA "helpers/*.h")
+
+## Advised best practice to include files
+#set(FAYASM_HEADERS_EXTRA
+#    helpers/file1.h
+#    helpers/file2.h
+#    helpers/another_file.h
+#)
+#add_library(my_lib ${FAYASM_HEADERS_EXTRA})
 
 # Configurazione per le compilazioni di debug e release
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG -Wall -Wextra -Wpedantic -ferror-limit=100")
