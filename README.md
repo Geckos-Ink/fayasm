@@ -37,3 +37,7 @@ The repository ships with a small C test harness under `test/` to exercise the w
 3. Expand the parser tests so every WASM section has deterministic coverage.
 
 Contributions, experiments, and curious questions are welcome. The aim is for fayasm to remain approachable for anyone interested in the internals of WebAssembly execution.
+
+_Inspired by WASM3 project_
+
+**Credit: Riccardo Cecchini 2025 (License: MIT)**
