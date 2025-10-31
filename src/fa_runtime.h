@@ -27,7 +27,6 @@ typedef struct {
     uint32_t max_call_depth;
 } fa_Runtime;
 
-//todo
 fa_Runtime* fa_Runtime_init(void);
 void fa_Runtime_free(fa_Runtime* runtime);
 
