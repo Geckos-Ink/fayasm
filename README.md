@@ -1,40 +1,59 @@
 # fayasm 🔥
 
-Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor focused on transparency and portability over raw speed. The codebase is intentionally small and educational, showcasing how modules can be decoded and scheduled on top of a minimal runtime, aiming to be portable on embedded devices with an adaptable footprint on RAM in real time through offloads.
+Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor focused on transparency and portability over raw speed. The codebase is intentionally small and educational, showing how modules can be decoded and scheduled on top of a minimal runtime so it stays approachable on constrained systems.
 
-## Overview
+## Current Status
 
-- **Single-pass loader** – `fa_wasm.c` progressively parses the binary format (magic, sections, tables) without needing a heavyweight engine.
-- **Job-based execution** – `fa_job.*` models the state of a running invocation. Jobs track the instruction pointer, a streaming register window, and a dynamically allocated value stack so the runtime only pays for the data it actually touches.
-- **Opcode catalog** – `fa_ops.c` describes all core WASM instructions, while it wires descriptors to the concrete handlers that operate on a `fa_Job`. Each `define_op` entry carries an inline comment with the mnemonic so the table can double as a cheat sheet when scanning the file.
-- **Stream helpers** – `fa_wasm_stream.*` exposes a cursor API that makes stepping through bytecode deterministic and testable.
+- `fa_wasm.*` streams WebAssembly binaries from disk, validates headers, decodes sections (types, functions, exports, memory), and keeps the descriptors alive for the runtime.
+- `fa_runtime.*` owns execution jobs, call frames, and memory management hooks; it already implements the operand stack, a tiny register-forwarding window, and helpers for LEB128 decoding.
+- `fa_ops.*` enumerates the opcode catalogue and wires delegates for the instructions that are currently implemented. The tables double as a reference when expanding the interpreter.
+- `fa_wasm_stream.*` offers a deterministic cursor API that the tests exercise to guarantee byte-accurate traversal.
+- `test/` contains unit tests for the stream helpers and early parser branches; the harness builds alongside the library through CMake or the provided `build.sh`.
 
-The project is in active incubation; many operators are still stubs, but the skeleton is in place for a full interpreter.
+Plenty of operators still map to TODO handlers and host integration is minimal, but the runtime skeleton is stable enough to iterate on opcode support, validation, and scheduling behaviour.
 
-## Runtime Data Structures
+## Repository Layout
 
-- `fa_JobDataFlow` – a tiny doubly linked list used as the scratchpad/forwarding window for intermediate values produced by recently executed instructions.
-- `fa_JobStack` – a linked structure mirroring the WASM operand stack. Each `fa_JobStackValue` is heap-backed, so the stack grows and shrinks without a static allocation footprint.
-- `fa_WasmOp` – metadata describing each opcode (type, arity, bytecode arguments) and an optional delegate function pointer for handlers implemented in C.
-
-These pieces are assembled in `fa_Job`, which can be handed to op delegates to mutate the execution state safely.
+- `src/` – core runtime sources
+  - `fa_runtime.*` – job lifecycle, stack management, call frames
+  - `fa_job.*` – operand stack and dataflow window primitives
+  - `fa_ops.*` – opcode metadata and delegate lookup
+  - `fa_wasm.*` – module loader that reads directly from file descriptors
+  - `fa_wasm_stream.*` – byte stream utilities and tests’ flight recorder
+  - `helpers/dynamic_list.h` – header-only pointer vector used by tooling
+- `test/` – CMake-driven unit tests (`fayasm_test_main`) for stream and parser helpers
+- `studies/` – research notes, prototypes, and reference material grouped by topic (`asm`, `runtime`, `wasm`, …)
+- `build.sh` – convenience wrapper that regenerates `build/`, rebuilds the library (shared + static), and runs the test harness
 
 ## Building
+
+The project relies on CMake (≥ 3.10) and a C99 compiler. Toggle the shared/static artefacts or tests with the `FAYASM_BUILD_*` options.
 
 ```bash
 mkdir -p build
 cd build
-cmake ..
+cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON
 cmake --build .
 ```
 
-The repository ships with a small C test harness under `test/` to exercise the wasm stream loader. You can enable it by configuring CMake with `-DFA_ENABLE_TESTS=ON` (flag to be wired up once the harness is extended).
+Alternatively, `./build.sh` performs a clean rebuild and executes the test binary at `build/bin/fayasm_test_main`.
 
-## Current Focus
+## Running Tests
 
-1. Harden the opcode delegates with thorough validation (bounds checks, trap semantics, memory abstraction).
-2. Backfill automated tests so every arithmetic, comparison, and memory helper is exercised.
-3. Expand the parser tests so every WASM section has deterministic coverage.
+Inside the build directory, use either the generated binary or CTest:
+
+```bash
+cd build
+bin/fayasm_test_main
+# or
+ctest --output-on-failure
+```
+
+## Roadmap
+
+1. Flesh out the opcode delegates with proper trapping semantics, bounds checks, and host hooks.
+2. Expand the automated tests to cover arithmetic, memory, and control instructions end-to-end.
+3. Introduce a module configuration API so the runtime can be embedded without touching the filesystem.
 
 Contributions, experiments, and curious questions are welcome. The aim is for fayasm to remain approachable for anyone interested in the internals of WebAssembly execution.
 
