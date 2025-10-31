@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(fayasm VERSION 0.1.0 DESCRIPTION "Libreria generica per ambienti Unix" LANGUAGES C)
+project(fayasm VERSION 0.1.0 DESCRIPTION "Experimental, lightweight WebAssembly executor focused on transparency and portability over raw speed." LANGUAGES C)
 
 # Opzioni di compilazione
 option(FAYASM_BUILD_SHARED "Build as shared library" ON)
