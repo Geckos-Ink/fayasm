@@ -28,9 +28,10 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ### Gaps Worth Watching
 
-- Many opcode handlers are placeholders; when fleshing them out, add targeted tests.
-- Module loading currently depends on file descriptors; embedding scenarios may require in-memory alternatives.
-- Memory and trap semantics are preliminary—plan for bounds checking and better error propagation.
+- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`. Arithmetic/memory handlers need fuller stack interaction and trap semantics.
+- The runtime expects to read modules from disk; embedding scenarios will require an in-memory loader or VFS shim.
+- Memory/trap semantics are bare bones: grow/size instructions just push immediates, and the runtime lacks bounds-checked linear memory operations.
+- Tests currently cover the instruction stream; interpreter behaviours (stack effects, call depth, trapping) need dedicated regression suites as functionality lands.
 
 ## Research Archive (studies/)
 
