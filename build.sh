@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
-clear
+if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+    clear
+fi
 
 # Colori per output
 RED='\033[0;31m'

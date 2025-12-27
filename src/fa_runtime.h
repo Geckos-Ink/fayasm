@@ -1,7 +1,7 @@
 #pragma once
 
 #include "fa_types.h"
-#include "dynamic_list.h"
+#include "helpers/dynamic_list.h"
 #include "fa_job.h"
 #include "fa_wasm_stream.h"
 
@@ -27,7 +27,7 @@ typedef struct {
     bool is_memory64;
 } fa_RuntimeMemory;
 
-typedef struct {
+typedef struct fa_Runtime {
     fa_Malloc malloc;
     fa_Free free;
 

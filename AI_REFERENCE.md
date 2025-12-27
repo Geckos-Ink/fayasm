@@ -11,7 +11,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Build & Test Checklist
 
 - Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
-- Invoke the provided helper: `./build.sh` (cleans `build/`, regenerates, runs tests).
+- Invoke the provided helper: `./build.sh` (cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
 - Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory.
 - Ensure new tests land alongside new features; runtime code lacks extensive coverage, so favour regression tests around control flow and stack behaviour.
 
@@ -19,11 +19,11 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, linear memory provisioning.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` – opcode descriptors plus the delegate table; unimplemented handlers are clearly marked for future work.
+- `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, traps).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, numeric unary ops, traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 typedef struct {
     uint8_t* data;
@@ -79,6 +80,12 @@ static int bb_write_uleb(ByteBuffer* buffer, uint32_t value) {
         }
     } while (value != 0);
     return 1;
+}
+
+static int bb_write_f32(ByteBuffer* buffer, float value) {
+    uint8_t bytes[sizeof(value)];
+    memcpy(bytes, &value, sizeof(value));
+    return bb_write_bytes(buffer, bytes, sizeof(bytes));
 }
 
 static int bb_write_sleb32(ByteBuffer* buffer, int32_t value) {
@@ -439,6 +446,84 @@ static int test_memory_grow_failure(void) {
     return 0;
 }
 
+static int test_i32_clz(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x67);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 31) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_f32_abs(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x43);
+    bb_write_f32(&instructions, -1.5f);
+    bb_write_byte(&instructions, 0x8B);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_f32 || fabsf(value->payload.f32_value - 1.5f) > 0.0001f) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -460,6 +545,14 @@ int main(void) {
     }
     if (test_memory_grow_failure() != 0) {
         printf("FAIL: test_memory_grow_failure\n");
+        failures++;
+    }
+    if (test_i32_clz() != 0) {
+        printf("FAIL: test_i32_clz\n");
+        failures++;
+    }
+    if (test_f32_abs() != 0) {
+        printf("FAIL: test_f32_abs\n");
         failures++;
     }
 

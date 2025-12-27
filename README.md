@@ -6,10 +6,10 @@ Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor d
 
 - fayasm can parse real `.wasm` binaries using a file-descriptor driven loader (`fa_wasm.*`) or in-memory buffers via `wasm_module_init_from_memory`. Sections for types, functions, exports, and memories are decoded, cached, and exposed through descriptors that the runtime consumes.
 - The execution runtime (`fa_runtime.*`) owns job creation, call-frame allocation, operand stack reset, a small data-flow register window, and linear memory provisioning from the module memory section. It can stream a function body, decode immediates (LEB128 helpers, const payloads, memory operands), dispatch into the opcode table, and propagate traps (e.g., divide-by-zero, out-of-bounds memory).
-- Opcode metadata lives in `fa_ops.*`. The table contains size/signing metadata, stack effects, and function pointers. Arithmetic and control opcodes are progressively being implemented; unsupported ones surface as `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`, keeping the interpreter honest.
+- Opcode metadata lives in `fa_ops.*`. The table contains size/signing metadata, stack effects, and function pointers. Integer bitcount and float unary opcodes are now implemented alongside arithmetic; unsupported ones surface as `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`, keeping the interpreter honest.
 - `fa_job.*` provides the doubly-linked operand stack plus a fixed-size “register window” (recent values slide through `fa_JobDataFlow`). The runtime resets and reuses jobs to amortize allocations.
 - A deterministic instruction stream helper (`fa_wasm_stream.*`) sits between the module parser and the tests, making it easy to assert cursor positions and encoded immediates.
-- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, and trap paths (division by zero, memory bounds).
+- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, numeric unary ops, and trap paths (division by zero, memory bounds).
 
 The interpreter deliberately stops short of executing a full program: many opcodes have placeholders, traps are surfaced as error codes, and host integration is minimal. Even so, the scaffolding for job management, frame unwinding, and constant decoding is in place and stable for further opcode work.
 
@@ -33,6 +33,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
   cmake --build .
   ```
 - `./build.sh` automates the rebuild: it nukes `build/`, configures with the same flags, builds shared + static libraries, compiles `fayasm_test_main`, and executes it.
+- `build.sh` skips terminal clear when `TERM` is unset/dumb, so it can run in non-interactive shells.
 - Tests live under `test/` and cover cursor behaviour in `fa_wasm_stream`, branch navigation scenarios, plus interpreter regressions (stack arithmetic, call depth, traps). Run them with `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside `build/`.
 
 ## Repository Layout
