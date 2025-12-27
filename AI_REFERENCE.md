@@ -65,10 +65,14 @@ Keep this index synchronized when new material lands in `studies/`.
 - Validate whether relevant studies already cover the topic; if not, add a new entry both under `studies/` and above.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
-# Next steps
+## Next steps
 1. Extend opcode coverage for locals/globals/control flow (e.g., local.get, br_if) with proper stack effects and traps.
 2. Add conversion-trap regression tests (NaN/overflow) and coverage for new i64/float opcodes.
 3. Clean up the fa_wasm.c printf format warnings using PRIu64/PRIx64 or %lld-style specifiers.
+
+### General next steps
+1. Improve traps to allow real time write and move of volatile data on another storage system
+2. Implement macros for handling compilation on different architecture (x86, x86_64, ESP32, ..)
 
 ## Contact & Credits
 
