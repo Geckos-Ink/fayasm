@@ -2,6 +2,8 @@
 
 #include "fa_types.h"
 
+#include <stddef.h>
+
 // Macro per convertire byte LEB128 a intero
 #define MAX_LEB128_SIZE 5
 
@@ -99,9 +101,17 @@ typedef struct {
     // File handle
     int fd;
     char* filename;
+
+    // Optional in-memory backing store (used when fd < 0)
+    const uint8_t* buffer;
+    size_t buffer_size;
+    bool buffer_owned;
+    off_t cursor;
+    off_t stream_size;
 } WasmModule;
 
 WasmModule* wasm_module_init(const char* filename);
+WasmModule* wasm_module_init_from_memory(const uint8_t* data, size_t size);
 void wasm_module_free(WasmModule* module);
 int wasm_load_header(WasmModule* module);
 int wasm_scan_sections(WasmModule* module);

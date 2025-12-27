@@ -1,10 +1,12 @@
 #include "fa_ops.h"
+#include "fa_runtime.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #define OP_KEYWORD
 
@@ -206,11 +208,27 @@ static bool push_bool_value(fa_Job* job, bool truthy) {
     return push_int_value(job, truthy ? 1U : 0U, 32U, false);
 }
 
+static int push_int_checked(fa_Job* job, u64 value, uint8_t bit_width, bool is_signed) {
+    return push_int_value(job, value, bit_width, is_signed) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+}
+
+static int push_float_checked(fa_Job* job, double value, bool is_64) {
+    return push_float_value(job, value, is_64) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+}
+
+static int push_bool_checked(fa_Job* job, bool truthy) {
+    return push_bool_value(job, truthy) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+}
+
 static bool pop_stack_value(fa_Job* job, fa_JobValue* out) {
     if (!job) {
         return false;
     }
     return fa_JobStack_pop(&job->stack, out);
+}
+
+static int pop_stack_checked(fa_Job* job, fa_JobValue* out) {
+    return pop_stack_value(job, out) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
 }
 
 static void restore_stack_value(fa_Job* job, const fa_JobValue* value) {
@@ -373,6 +391,10 @@ static bool pop_reg_u64(fa_Job* job, u64* out) {
     return ok;
 }
 
+static int pop_reg_u64_checked(fa_Job* job, u64* out) {
+    return pop_reg_u64(job, out) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
+}
+
 static void discard_reg_arguments(fa_Job* job, uint8_t count) {
     if (!job) {
         return;
@@ -391,20 +413,36 @@ static bool pop_address_value(fa_Job* job, fa_ptr* out) {
         return false;
     }
     fa_JobValue addr_value;
-    if (pop_stack_value(job, &addr_value)) {
-        u64 raw = 0;
-        if (job_value_to_u64(&addr_value, &raw)) {
-            *out = (fa_ptr)raw;
-            return true;
-        }
-        restore_stack_value(job, &addr_value);
+    if (!pop_stack_value(job, &addr_value)) {
+        return false;
     }
     u64 raw = 0;
-    if (!pop_reg_u64(job, &raw)) {
+    if (!job_value_to_u64(&addr_value, &raw)) {
+        restore_stack_value(job, &addr_value);
         return false;
     }
     *out = (fa_ptr)raw;
     return true;
+}
+
+static int pop_address_checked(fa_Job* job, fa_ptr* out) {
+    return pop_address_value(job, out) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
+}
+
+static int memory_bounds_check(const fa_RuntimeMemory* memory, u64 addr, size_t size) {
+    if (!memory || !memory->data) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (size == 0) {
+        return FA_RUNTIME_OK;
+    }
+    if (addr > UINT64_MAX - size) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (addr + size > memory->size_bytes) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
 }
 
 static u32 rotl32(u32 value, uint8_t amount) {
@@ -440,94 +478,109 @@ static u64 rotr64(u64 value, uint8_t amount) {
 }
 
 static OP_RETURN_TYPE op_control(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
 
     switch (descriptor->id) {
         case 0x00: /* unreachable */
             fa_JobStack_reset(&job->stack);
             job->instructionPointer = 0;
-            break;
+            return FA_RUNTIME_ERR_TRAP;
         case 0x01: /* nop */
-            break;
+            return FA_RUNTIME_OK;
         case 0x02: /* block */
         case 0x03: /* loop */
             discard_reg_arguments(job, descriptor->num_args);
-            break;
+            return FA_RUNTIME_OK;
         case 0x04: /* if */
         {
             discard_reg_arguments(job, descriptor->num_args);
             fa_JobValue cond;
-            if (pop_stack_value(job, &cond)) {
-                (void)job_value_truthy(&cond);
+            if (pop_stack_checked(job, &cond) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
             }
-            break;
+            (void)job_value_truthy(&cond);
+            return FA_RUNTIME_OK;
         }
         case 0x05: /* else */
         case 0x0B: /* end */
-            break;
+            return FA_RUNTIME_OK;
         case 0x0C: /* br */
         {
             u64 label = 0;
-            if (pop_reg_u64(job, &label)) {
-                job->instructionPointer = (fa_ptr)label;
+            if (pop_reg_u64_checked(job, &label) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
             }
-            break;
+            job->instructionPointer = (fa_ptr)label;
+            return FA_RUNTIME_OK;
         }
         case 0x0D: /* br_if */
         {
             fa_JobValue cond;
-            if (!pop_stack_value(job, &cond)) {
-                break;
+            if (pop_stack_checked(job, &cond) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
             }
             const bool truthy = job_value_truthy(&cond);
             u64 label = 0;
-            pop_reg_u64(job, &label);
+            if (pop_reg_u64_checked(job, &label) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
             if (truthy) {
                 job->instructionPointer = (fa_ptr)label;
             }
-            break;
+            return FA_RUNTIME_OK;
         }
         case 0x0E: /* br_table */
         {
             fa_JobValue index;
-            if (pop_stack_value(job, &index)) {
-                (void)job_value_truthy(&index);
+            if (pop_stack_checked(job, &index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
             }
             u64 default_label = 0;
-            pop_reg_u64(job, &default_label);
+            if (pop_reg_u64_checked(job, &default_label) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
             job->instructionPointer = (fa_ptr)default_label;
-            break;
+            return FA_RUNTIME_OK;
         }
         case 0x0F: /* return */
             job->instructionPointer = 0;
-            break;
+            return FA_RUNTIME_OK;
         default:
-            break;
+            return FA_RUNTIME_OK;
     }
 }
 
 static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
-    if (!job || !descriptor) {
-        return;
+    if (!runtime || !job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
 
     u64 offset = 0;
     if (descriptor->num_args > 0) {
-        pop_reg_u64(job, &offset);
+        if (pop_reg_u64_checked(job, &offset) != FA_RUNTIME_OK) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
     }
     if (descriptor->num_args > 1) {
         u64 align = 0;
-        pop_reg_u64(job, &align);
+        if (pop_reg_u64_checked(job, &align) != FA_RUNTIME_OK) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
     }
 
     fa_ptr base = 0;
-    if (!pop_address_value(job, &base)) {
-        return;
+    if (pop_address_checked(job, &base) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
 
-    const fa_ptr addr = base + offset;
+    u64 addr = (u64)base;
+    if (offset > UINT64_MAX - addr) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    addr += offset;
     size_t bits_to_read = descriptor->size_arg ? descriptor->size_arg : (descriptor->type.size ? descriptor->type.size * 8U : 64U);
     if (bits_to_read == 0U) {
         bits_to_read = 8U;
@@ -537,20 +590,23 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
         bytes_to_read = sizeof(u64);
     }
 
+    if (memory_bounds_check(&runtime->memory, addr, bytes_to_read) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
     u64 raw = 0;
-    memcpy(&raw, (const void*)(uintptr_t)addr, bytes_to_read);
+    memcpy(&raw, runtime->memory.data + (size_t)addr, bytes_to_read);
 
     if (descriptor->type.type == wt_float) {
         if (descriptor->type.size == 8) {
             f64 value = 0.0;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, true);
+            return push_float_checked(job, value, true);
         } else {
             f32 value = 0.0f;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, false);
+            return push_float_checked(job, value, false);
         }
-        return;
     }
 
     const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
@@ -560,33 +616,44 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
         raw = mask_unsigned_value(raw, (uint8_t)bits_to_read);
     }
     const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : (uint8_t)bits_to_read;
-    push_int_value(job, raw, result_bits, is_signed);
+    return push_int_checked(job, raw, result_bits, is_signed);
 }
 
 static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
-    if (!job || !descriptor) {
-        return;
+    if (!runtime || !job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue value;
-    if (!pop_stack_value(job, &value)) {
-        return;
+    if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 offset = 0;
     if (descriptor->num_args > 0) {
-        pop_reg_u64(job, &offset);
+        if (pop_reg_u64_checked(job, &offset) != FA_RUNTIME_OK) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
     }
     if (descriptor->num_args > 1) {
         u64 align = 0;
-        pop_reg_u64(job, &align);
+        if (pop_reg_u64_checked(job, &align) != FA_RUNTIME_OK) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
     }
 
     fa_ptr base = 0;
-    if (!pop_address_value(job, &base)) {
+    if (pop_address_checked(job, &base) != FA_RUNTIME_OK) {
         restore_stack_value(job, &value);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
-    const fa_ptr addr = base + offset;
+    u64 addr = (u64)base;
+    if (offset > UINT64_MAX - addr) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    addr += offset;
 
     size_t bits_to_write = descriptor->size_arg ? descriptor->size_arg : (descriptor->type.size ? descriptor->type.size * 8U : 64U);
     if (bits_to_write == 0U) {
@@ -597,56 +664,64 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
         bytes_to_write = sizeof(u64);
     }
 
+    if (memory_bounds_check(&runtime->memory, addr, bytes_to_write) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
     if (descriptor->type.type == wt_float) {
         if (descriptor->type.size == 8) {
             f64 data = 0.0;
             if (!job_value_to_f64(&value, &data)) {
                 restore_stack_value(job, &value);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            memcpy((void*)(uintptr_t)addr, &data, sizeof(data));
+            memcpy(runtime->memory.data + (size_t)addr, &data, sizeof(data));
         } else {
             f32 data = 0.0f;
             if (!job_value_to_f32(&value, &data)) {
                 restore_stack_value(job, &value);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            memcpy((void*)(uintptr_t)addr, &data, sizeof(data));
+            memcpy(runtime->memory.data + (size_t)addr, &data, sizeof(data));
         }
-        return;
+        return FA_RUNTIME_OK;
     }
 
     u64 raw = 0;
     if (!job_value_to_u64(&value, &raw)) {
         restore_stack_value(job, &value);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
     raw = mask_unsigned_value(raw, (uint8_t)bits_to_write);
-    memcpy((void*)(uintptr_t)addr, &raw, bytes_to_write);
+    memcpy(runtime->memory.data + (size_t)addr, &raw, bytes_to_write);
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_const(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
 
     const size_t target_bits = descriptor->type.size ? descriptor->type.size * 8U : (descriptor->size_arg ? descriptor->size_arg : (uint8_t)(sizeof(u64) * 8U));
     const size_t target_bytes = (target_bits + 7U) / 8U;
 
     u64 raw = 0;
-    pop_reg_to_buffer(job, &raw, target_bytes > sizeof(raw) ? sizeof(raw) : target_bytes);
+    if (!pop_reg_to_buffer(job, &raw, target_bytes > sizeof(raw) ? sizeof(raw) : target_bytes)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
 
     if (descriptor->type.type == wt_float) {
         if (descriptor->type.size == 8) {
             f64 value = 0.0;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, true);
+            return push_float_checked(job, value, true);
         } else {
             f32 value = 0.0f;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, false);
+            return push_float_checked(job, value, false);
         }
-        return;
     }
 
     const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
@@ -656,32 +731,34 @@ static OP_RETURN_TYPE op_const(OP_ARGUMENTS) {
     } else {
         value = mask_unsigned_value(raw, (uint8_t)target_bits);
     }
-    push_int_value(job, value, (uint8_t)target_bits, is_signed);
+    return push_int_checked(job, value, (uint8_t)target_bits, is_signed);
 }
 
 static OP_RETURN_TYPE op_eqz(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue value;
-    if (!pop_stack_value(job, &value)) {
-        return;
+    if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
-    push_bool_value(job, !job_value_truthy(&value));
+    return push_bool_checked(job, !job_value_truthy(&value));
 }
 
 static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     bool result = false;
@@ -691,7 +768,7 @@ static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
         if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         switch (descriptor->op) {
             case wopt_eq:
@@ -723,7 +800,7 @@ static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
             if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             switch (descriptor->op) {
                 case wopt_eq:
@@ -753,7 +830,7 @@ static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
             if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             switch (descriptor->op) {
                 case wopt_eq:
@@ -780,21 +857,22 @@ static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
         }
     }
 
-    push_bool_value(job, result);
+    return push_bool_checked(job, result);
 }
 
 static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     if (descriptor->type.type == wt_float) {
@@ -803,7 +881,7 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
         if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         double result = 0.0;
         switch (descriptor->op) {
@@ -817,15 +895,14 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
                 result = left * right;
                 break;
             case wopt_div:
-                result = right == 0.0 ? 0.0 : left / right;
+                result = left / right;
                 break;
             default:
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
         }
-        push_float_value(job, result, descriptor->type.size == 8);
-        return;
+        return push_float_checked(job, result, descriptor->type.size == 8);
     }
 
     const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
@@ -837,7 +914,7 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
         if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         i64 outcome = 0;
         switch (descriptor->op) {
@@ -854,7 +931,13 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
                 if (right == 0) {
                     restore_stack_value(job, &lhs);
                     restore_stack_value(job, &rhs);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
+                }
+                if ((result_bits == 32U && left == (i64)INT32_MIN && right == -1) ||
+                    (result_bits == 64U && left == (i64)INT64_MIN && right == -1)) {
+                    restore_stack_value(job, &lhs);
+                    restore_stack_value(job, &rhs);
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 outcome = left / right;
                 break;
@@ -862,23 +945,23 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
                 if (right == 0) {
                     restore_stack_value(job, &lhs);
                     restore_stack_value(job, &rhs);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 outcome = left % right;
                 break;
             default:
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
         }
-        push_int_value(job, (u64)outcome, result_bits, true);
+        return push_int_checked(job, (u64)outcome, result_bits, true);
     } else {
         u64 right = 0;
         u64 left = 0;
         if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         u64 outcome = 0;
         switch (descriptor->op) {
@@ -895,7 +978,7 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
                 if (right == 0) {
                     restore_stack_value(job, &lhs);
                     restore_stack_value(job, &rhs);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 outcome = left / right;
                 break;
@@ -903,31 +986,32 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
                 if (right == 0) {
                     restore_stack_value(job, &lhs);
                     restore_stack_value(job, &rhs);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 outcome = left % right;
                 break;
             default:
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
         }
-        push_int_value(job, outcome, result_bits, false);
+        return push_int_checked(job, outcome, result_bits, false);
     }
 }
 
 static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 right = 0;
@@ -935,7 +1019,7 @@ static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
     if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
         restore_stack_value(job, &lhs);
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 outcome = 0;
@@ -952,32 +1036,33 @@ static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
         default:
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
     }
     const uint8_t bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
     const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-    push_int_value(job, mask_unsigned_value(outcome, bits), bits, is_signed);
+    return push_int_checked(job, mask_unsigned_value(outcome, bits), bits, is_signed);
 }
 
 static OP_RETURN_TYPE op_shift(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 amount_raw = 0;
     if (!job_value_to_u64(&rhs, &amount_raw)) {
         restore_stack_value(job, &lhs);
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
@@ -990,13 +1075,13 @@ static OP_RETURN_TYPE op_shift(OP_ARGUMENTS) {
             if (!job_value_to_i64(&lhs, &left_signed)) {
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
         } else {
             if (!job_value_to_u64(&lhs, &left_unsigned)) {
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
         }
         const uint8_t mask = 31U;
@@ -1012,98 +1097,99 @@ static OP_RETURN_TYPE op_shift(OP_ARGUMENTS) {
             const u32 base = (u32)left_unsigned;
             result = base >> amount;
         }
-        push_int_value(job, result, width, is_signed);
-    } else {
-        i64 left_signed = 0;
-        u64 left_unsigned = 0;
-        if (is_signed) {
-            if (!job_value_to_i64(&lhs, &left_signed)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return;
-            }
-        } else {
-            if (!job_value_to_u64(&lhs, &left_unsigned)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return;
-            }
-        }
-        const uint8_t mask = 63U;
-        const uint8_t amount = (uint8_t)(amount_raw & mask);
-        u64 result = 0;
-        if (descriptor->op == wopt_shl) {
-            const u64 base = is_signed ? (u64)left_signed : left_unsigned;
-            result = base << amount;
-        } else if (is_signed) {
-            result = (u64)(left_signed >> amount);
-        } else {
-            result = left_unsigned >> amount;
-        }
-        push_int_value(job, result, width, is_signed);
+        return push_int_checked(job, result, width, is_signed);
     }
+
+    i64 left_signed = 0;
+    u64 left_unsigned = 0;
+    if (is_signed) {
+        if (!job_value_to_i64(&lhs, &left_signed)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    } else {
+        if (!job_value_to_u64(&lhs, &left_unsigned)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    const uint8_t mask = 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 result = 0;
+    if (descriptor->op == wopt_shl) {
+        const u64 base = is_signed ? (u64)left_signed : left_unsigned;
+        result = base << amount;
+    } else if (is_signed) {
+        result = (u64)(left_signed >> amount);
+    } else {
+        result = left_unsigned >> amount;
+    }
+    return push_int_checked(job, result, width, is_signed);
 }
 
 static OP_RETURN_TYPE op_rotate(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 amount_raw = 0;
     if (!job_value_to_u64(&rhs, &amount_raw)) {
         restore_stack_value(job, &lhs);
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
     if (width <= 32U) {
         u64 value_raw = 0;
         if (!job_value_to_u64(&lhs, &value_raw)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         const u32 value = (u32)value_raw;
         const uint8_t amount = (uint8_t)(amount_raw & 31U);
         u32 result = descriptor->op == wopt_rotl ? rotl32(value, amount) : rotr32(value, amount);
-        const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-        push_int_value(job, result, width, is_signed);
-    } else {
-        u64 value = 0;
-        if (!job_value_to_u64(&lhs, &value)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return;
-        }
-        const uint8_t amount = (uint8_t)(amount_raw & 63U);
-        u64 result = descriptor->op == wopt_rotl ? rotl64(value, amount) : rotr64(value, amount);
-        const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-        push_int_value(job, result, width, is_signed);
+        return push_int_checked(job, result, width, is_signed);
     }
+
+    u64 value = 0;
+    if (!job_value_to_u64(&lhs, &value)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t amount = (uint8_t)(amount_raw & 63U);
+    u64 result = descriptor->op == wopt_rotl ? rotl64(value, amount) : rotr64(value, amount);
+    return push_int_checked(job, result, width, is_signed);
 }
 
 static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue rhs;
-    if (!pop_stack_value(job, &rhs)) {
-        return;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue lhs;
-    if (!pop_stack_value(job, &lhs)) {
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
         restore_stack_value(job, &rhs);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     if (descriptor->type.size == 8) {
@@ -1112,7 +1198,7 @@ static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
         if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         f64 result = 0.0;
         switch (descriptor->id) {
@@ -1128,16 +1214,16 @@ static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
             default:
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
         }
-        push_float_value(job, result, true);
+        return push_float_checked(job, result, true);
     } else {
         f32 right = 0.0f;
         f32 left = 0.0f;
         if (!job_value_to_f32(&rhs, &right) || !job_value_to_f32(&lhs, &left)) {
             restore_stack_value(job, &lhs);
             restore_stack_value(job, &rhs);
-            return;
+            return FA_RUNTIME_ERR_TRAP;
         }
         f32 result = 0.0f;
         switch (descriptor->id) {
@@ -1153,19 +1239,20 @@ static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
             default:
                 restore_stack_value(job, &lhs);
                 restore_stack_value(job, &rhs);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
         }
-        push_float_value(job, result, false);
+        return push_float_checked(job, result, false);
     }
 }
 
 static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue source;
-    if (!pop_stack_value(job, &source)) {
-        return;
+    if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     switch (descriptor->id) {
@@ -1174,283 +1261,258 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, (u32)value, 32U, true);
-            break;
+            return push_int_checked(job, (u32)value, 32U, true);
         }
         case 0x99: /* i32.trunc_f32_s */
         {
             f32 value = 0.0f;
             if (!job_value_to_f32(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, (i32)value, 32U, true);
-            break;
+            return push_int_checked(job, (i32)value, 32U, true);
         }
         case 0x9A: /* i32.trunc_f32_u */
         {
             f32 value = 0.0f;
             if (!job_value_to_f32(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             u32 truncated = value < 0.0f ? 0U : (u32)value;
-            push_int_value(job, truncated, 32U, false);
-            break;
+            return push_int_checked(job, truncated, 32U, false);
         }
         case 0x9B: /* i32.trunc_f64_s */
         {
             f64 value = 0.0;
             if (!job_value_to_f64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, (i32)value, 32U, true);
-            break;
+            return push_int_checked(job, (i32)value, 32U, true);
         }
         case 0x9C: /* i32.trunc_f64_u */
         {
             f64 value = 0.0;
             if (!job_value_to_f64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             u32 truncated = value < 0.0 ? 0U : (u32)value;
-            push_int_value(job, truncated, 32U, false);
-            break;
+            return push_int_checked(job, truncated, 32U, false);
         }
         case 0x9D: /* i64.extend_i32_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, sign_extend_value((u64)value, 32U), 64U, true);
-            break;
+            return push_int_checked(job, sign_extend_value((u64)value, 32U), 64U, true);
         }
         case 0x9E: /* i64.extend_i32_u */
         {
             u64 value = 0;
             if (!job_value_to_u64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, mask_unsigned_value(value, 32U), 64U, false);
-            break;
+            return push_int_checked(job, mask_unsigned_value(value, 32U), 64U, false);
         }
         case 0x9F: /* i64.trunc_f32_s */
         {
             f32 value = 0.0f;
             if (!job_value_to_f32(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, (i64)value, 64U, true);
-            break;
+            return push_int_checked(job, (i64)value, 64U, true);
         }
         case 0xA0: /* i64.trunc_f32_u */
         {
             f32 value = 0.0f;
             if (!job_value_to_f32(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             u64 truncated = value < 0.0f ? 0ULL : (u64)value;
-            push_int_value(job, truncated, 64U, false);
-            break;
+            return push_int_checked(job, truncated, 64U, false);
         }
         case 0xA1: /* i64.trunc_f64_s */
         {
             f64 value = 0.0;
             if (!job_value_to_f64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_int_value(job, (i64)value, 64U, true);
-            break;
+            return push_int_checked(job, (i64)value, 64U, true);
         }
         case 0xA2: /* i64.trunc_f64_u */
         {
             f64 value = 0.0;
             if (!job_value_to_f64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             u64 truncated = value < 0.0 ? 0ULL : (u64)value;
-            push_int_value(job, truncated, 64U, false);
-            break;
+            return push_int_checked(job, truncated, 64U, false);
         }
         case 0xA3: /* f32.convert_i32_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f32)value, false);
-            break;
+            return push_float_checked(job, (f32)value, false);
         }
         case 0xA4: /* f32.convert_i32_u */
         {
             u64 value = 0;
             if (!job_value_to_u64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f32)value, false);
-            break;
+            return push_float_checked(job, (f32)value, false);
         }
         case 0xA5: /* f32.convert_i64_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f32)value, false);
-            break;
+            return push_float_checked(job, (f32)value, false);
         }
         case 0xA6: /* f32.convert_i64_u */
         {
             u64 value = 0;
             if (!job_value_to_u64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f32)value, false);
-            break;
+            return push_float_checked(job, (f32)value, false);
         }
         case 0xA7: /* f32.demote_f64 */
         {
             f64 value = 0.0;
             if (!job_value_to_f64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f32)value, false);
-            break;
+            return push_float_checked(job, (f32)value, false);
         }
         case 0xA8: /* f64.convert_i32_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f64)value, true);
-            break;
+            return push_float_checked(job, (f64)value, true);
         }
         case 0xA9: /* f64.convert_i32_u */
         {
             u64 value = 0;
             if (!job_value_to_u64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f64)value, true);
-            break;
+            return push_float_checked(job, (f64)value, true);
         }
         case 0xAA: /* f64.convert_i64_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f64)value, true);
-            break;
+            return push_float_checked(job, (f64)value, true);
         }
         case 0xAB: /* f64.convert_i64_u */
         {
             u64 value = 0;
             if (!job_value_to_u64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f64)value, true);
-            break;
+            return push_float_checked(job, (f64)value, true);
         }
         case 0xAC: /* f64.promote_f32 */
         {
             f32 value = 0.0f;
             if (!job_value_to_f32(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
-            push_float_value(job, (f64)value, true);
-            break;
+            return push_float_checked(job, (f64)value, true);
         }
         case 0xC0: /* i32.extend8_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             i32 extended = (i32)(int8_t)(value & 0xFF);
-            push_int_value(job, (u32)extended, 32U, true);
-            break;
+            return push_int_checked(job, (u32)extended, 32U, true);
         }
         case 0xC1: /* i32.extend16_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             i32 extended = (i32)(int16_t)(value & 0xFFFF);
-            push_int_value(job, (u32)extended, 32U, true);
-            break;
+            return push_int_checked(job, (u32)extended, 32U, true);
         }
         case 0xC2: /* i64.extend8_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             i64 extended = (i64)(int8_t)(value & 0xFF);
-            push_int_value(job, (u64)extended, 64U, true);
-            break;
+            return push_int_checked(job, (u64)extended, 64U, true);
         }
         case 0xC3: /* i64.extend16_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             i64 extended = (i64)(int16_t)(value & 0xFFFF);
-            push_int_value(job, (u64)extended, 64U, true);
-            break;
+            return push_int_checked(job, (u64)extended, 64U, true);
         }
         case 0xC4: /* i64.extend32_s */
         {
             i64 value = 0;
             if (!job_value_to_i64(&source, &value)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             i64 extended = (i64)(int32_t)(value & 0xFFFFFFFFULL);
-            push_int_value(job, (u64)extended, 64U, true);
-            break;
+            return push_int_checked(job, (u64)extended, 64U, true);
         }
         default:
             restore_stack_value(job, &source);
-            break;
+            return FA_RUNTIME_ERR_TRAP;
     }
 }
 
 static OP_RETURN_TYPE op_reinterpret(OP_ARGUMENTS) {
+    (void)runtime;
     if (!job || !descriptor) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue source;
-    if (!pop_stack_value(job, &source)) {
-        return;
+    if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
 
     switch (descriptor->id) {
@@ -1463,12 +1525,11 @@ static OP_RETURN_TYPE op_reinterpret(OP_ARGUMENTS) {
                 f32 value = 0.0f;
                 if (!job_value_to_f32(&source, &value)) {
                     restore_stack_value(job, &source);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 memcpy(&raw, &value, sizeof(raw));
             }
-            push_int_value(job, raw, 32U, true);
-            break;
+            return push_int_checked(job, raw, 32U, true);
         }
         case 0xAE: /* i64.reinterpret_f64 */
         {
@@ -1479,122 +1540,245 @@ static OP_RETURN_TYPE op_reinterpret(OP_ARGUMENTS) {
                 f64 value = 0.0;
                 if (!job_value_to_f64(&source, &value)) {
                     restore_stack_value(job, &source);
-                    return;
+                    return FA_RUNTIME_ERR_TRAP;
                 }
                 memcpy(&raw, &value, sizeof(raw));
             }
-            push_int_value(job, raw, 64U, true);
-            break;
+            return push_int_checked(job, raw, 64U, true);
         }
         case 0xAF: /* f32.reinterpret_i32 */
         {
             u64 raw64 = 0;
             if (!job_value_to_u64(&source, &raw64)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             const u32 raw = (u32)raw64;
             f32 value = 0.0f;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, false);
-            break;
+            return push_float_checked(job, value, false);
         }
         case 0xB0: /* f64.reinterpret_i64 */
         {
             u64 raw = 0;
             if (!job_value_to_u64(&source, &raw)) {
                 restore_stack_value(job, &source);
-                return;
+                return FA_RUNTIME_ERR_TRAP;
             }
             f64 value = 0.0;
             memcpy(&value, &raw, sizeof(value));
-            push_float_value(job, value, true);
-            break;
+            return push_float_checked(job, value, true);
         }
         default:
             restore_stack_value(job, &source);
-            break;
+            return FA_RUNTIME_ERR_TRAP;
     }
 }
 
 static OP_RETURN_TYPE op_drop(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)descriptor;
     if (!job) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue value;
-    pop_stack_value(job, &value);
+    if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_select(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)descriptor;
     if (!job) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue condition;
-    if (!pop_stack_value(job, &condition)) {
-        return;
+    if (pop_stack_checked(job, &condition) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue value_false;
-    if (!pop_stack_value(job, &value_false)) {
+    if (pop_stack_checked(job, &value_false) != FA_RUNTIME_OK) {
         restore_stack_value(job, &condition);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue value_true;
-    if (!pop_stack_value(job, &value_true)) {
+    if (pop_stack_checked(job, &value_true) != FA_RUNTIME_OK) {
         restore_stack_value(job, &value_false);
         restore_stack_value(job, &condition);
-        return;
+        return FA_RUNTIME_ERR_TRAP;
     }
     const bool truthy = job_value_truthy(&condition);
     const fa_JobValue* chosen = truthy ? &value_true : &value_false;
-    fa_JobStack_push(&job->stack, chosen);
+    if (!fa_JobStack_push(&job->stack, chosen)) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_call(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)descriptor;
     if (!job) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     u64 func_index = 0;
-    pop_reg_u64(job, &func_index);
+    if (pop_reg_u64_checked(job, &func_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
     job->instructionPointer = (fa_ptr)func_index;
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_call_indirect(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)descriptor;
     if (!job) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue table_index;
-    if (pop_stack_value(job, &table_index)) {
-        u64 ignored = 0;
-        (void)job_value_to_u64(&table_index, &ignored);
+    if (pop_stack_checked(job, &table_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
     }
+    u64 ignored = 0;
+    (void)job_value_to_u64(&table_index, &ignored);
     u64 type_index = 0;
-    pop_reg_u64(job, &type_index);
+    if (pop_reg_u64_checked(job, &type_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
     u64 reserved = 0;
-    pop_reg_u64(job, &reserved);
+    if (pop_reg_u64_checked(job, &reserved) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
     job->instructionPointer = (fa_ptr)type_index;
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_return(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)descriptor;
     if (!job) {
-        return;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     job->instructionPointer = 0;
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_memory_grow(fa_Runtime* runtime, u32 delta_pages, u32* prev_pages_out, bool* grew_out) {
+    if (!runtime || !prev_pages_out || !grew_out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeMemory* memory = &runtime->memory;
+    if (memory->is_memory64) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    const uint64_t prev_pages = memory->size_bytes / FA_WASM_PAGE_SIZE;
+    if (prev_pages > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    *prev_pages_out = (u32)prev_pages;
+    *grew_out = false;
+    if (delta_pages == 0) {
+        *grew_out = true;
+        return FA_RUNTIME_OK;
+    }
+    const uint64_t new_pages = prev_pages + delta_pages;
+    if (new_pages < prev_pages) {
+        return FA_RUNTIME_OK;
+    }
+    if (memory->has_max) {
+        const uint64_t max_pages = memory->max_size_bytes / FA_WASM_PAGE_SIZE;
+        if (new_pages > max_pages) {
+            return FA_RUNTIME_OK;
+        }
+    }
+    if (new_pages > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+        return FA_RUNTIME_OK;
+    }
+    const uint64_t new_size_bytes = new_pages * FA_WASM_PAGE_SIZE;
+    if (new_size_bytes > SIZE_MAX || new_size_bytes > (uint64_t)INT_MAX) {
+        return FA_RUNTIME_OK;
+    }
+    uint8_t* new_data = (uint8_t*)runtime->malloc((int)new_size_bytes);
+    if (!new_data) {
+        return FA_RUNTIME_OK;
+    }
+    if (memory->data && memory->size_bytes > 0) {
+        memcpy(new_data, memory->data, (size_t)memory->size_bytes);
+    }
+    if (new_size_bytes > memory->size_bytes) {
+        memset(new_data + memory->size_bytes, 0, (size_t)(new_size_bytes - memory->size_bytes));
+    }
+    if (memory->data) {
+        runtime->free(memory->data);
+    }
+    memory->data = new_data;
+    memory->size_bytes = new_size_bytes;
+    *grew_out = true;
+    return FA_RUNTIME_OK;
 }
 
 static OP_RETURN_TYPE op_memory_size(OP_ARGUMENTS) {
-    if (!job) {
-        return;
+    if (!runtime || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    push_int_value(job, 0, 32U, false);
+    if (!runtime->module || runtime->module->num_memories == 0) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t bits = descriptor ? (descriptor->type.size ? (uint8_t)(descriptor->type.size * 8U) : 32U) : 32U;
+    const bool is_signed = descriptor ? descriptor->type.is_signed : false;
+    u64 mem_index = 0;
+    if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (mem_index != 0) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    const uint64_t pages = runtime->memory.size_bytes / FA_WASM_PAGE_SIZE;
+    if (pages > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    return push_int_checked(job, (u32)pages, bits, is_signed);
 }
 
 static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
-    if (!job) {
-        return;
+    if (!runtime || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->module || runtime->module->num_memories == 0) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t bits = descriptor ? (descriptor->type.size ? (uint8_t)(descriptor->type.size * 8U) : 32U) : 32U;
+    const bool is_signed = descriptor ? descriptor->type.is_signed : true;
+    u64 mem_index = 0;
+    if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (mem_index != 0) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
     }
     fa_JobValue delta;
-    pop_stack_value(job, &delta);
-    push_int_value(job, (u64)UINT32_MAX, 32U, true);
+    if (pop_stack_checked(job, &delta) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 delta_pages_raw = 0;
+    if (!job_value_to_u64(&delta, &delta_pages_raw)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (delta_pages_raw > UINT32_MAX) {
+        return push_int_checked(job, (u32)UINT32_MAX, bits, is_signed);
+    }
+    u32 prev_pages = 0;
+    bool grew = false;
+    const int status = runtime_memory_grow(runtime, (u32)delta_pages_raw, &prev_pages, &grew);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    if (!grew) {
+        return push_int_checked(job, (u32)UINT32_MAX, bits, is_signed);
+    }
+    return push_int_checked(job, prev_pages, bits, is_signed);
 }
 
 static void define_op(
@@ -1645,12 +1829,12 @@ const fa_WasmOp* fa_get_op(uint8_t opcode) {
     return &g_ops[opcode];
 }
 
-OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Job* job) {
+OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Runtime* runtime, fa_Job* job) {
     const fa_WasmOp* op = fa_get_op(opcode);
     if (!op || !op->operation) {
-        return;
+        return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
     }
-    op->operation(job, op);
+    return op->operation(runtime, job, op);
 }
 
 void fa_ops_defs_populate(fa_WasmOp* ops) {

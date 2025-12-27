@@ -17,21 +17,21 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset.
+- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, linear memory provisioning.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; unimplemented handlers are clearly marked for future work.
-- `src/fa_wasm.*` – file-descriptor driven parser for module sections (types, functions, exports, memories).
+- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `test/` – CMake target `fayasm_test_main` with coverage for wasm stream navigation and parser branches.
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
-- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`. Arithmetic/memory handlers need fuller stack interaction and trap semantics.
-- The runtime expects to read modules from disk; embedding scenarios will require an in-memory loader or VFS shim.
-- Memory/trap semantics are bare bones: grow/size instructions just push immediates, and the runtime lacks bounds-checked linear memory operations.
-- Tests currently cover the instruction stream; interpreter behaviours (stack effects, call depth, trapping) need dedicated regression suites as functionality lands.
+- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (locals, globals, control flow, tables).
+- Memory64 and multi-memory are unsupported; linear memory operations currently target memory index 0 only.
+- Trap semantics cover divide-by-zero and bounds checking, but conversion traps and structured control flow remain unimplemented.
+- Interpreter tests now cover stack effects, call depth, and basic traps; expand into locals/globals, branching, and multi-value returns.
 
 ## Research Archive (studies/)
 

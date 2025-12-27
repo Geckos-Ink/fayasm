@@ -9,15 +9,84 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+static ssize_t wasm_stream_read(WasmModule* module, void* out, size_t size) {
+    if (!module || !out || size == 0) {
+        return 0;
+    }
+    if (module->fd >= 0) {
+        const ssize_t read_bytes = read(module->fd, out, size);
+        if (read_bytes > 0) {
+            module->cursor += read_bytes;
+        }
+        return read_bytes;
+    }
+    if (!module->buffer || module->buffer_size == 0) {
+        return -1;
+    }
+    if (module->cursor < 0 || (size_t)module->cursor >= module->buffer_size) {
+        return 0;
+    }
+    size_t remaining = module->buffer_size - (size_t)module->cursor;
+    if (size > remaining) {
+        size = remaining;
+    }
+    memcpy(out, module->buffer + module->cursor, size);
+    module->cursor += (off_t)size;
+    return (ssize_t)size;
+}
+
+static off_t wasm_stream_seek(WasmModule* module, off_t offset, int whence) {
+    if (!module) {
+        return -1;
+    }
+    if (module->fd >= 0) {
+        const off_t pos = lseek(module->fd, offset, whence);
+        if (pos >= 0) {
+            module->cursor = pos;
+        }
+        return pos;
+    }
+    off_t base = 0;
+    switch (whence) {
+        case SEEK_SET:
+            base = 0;
+            break;
+        case SEEK_CUR:
+            base = module->cursor;
+            break;
+        case SEEK_END:
+            base = (off_t)module->buffer_size;
+            break;
+        default:
+            return -1;
+    }
+    off_t pos = base + offset;
+    if (pos < 0 || (size_t)pos > module->buffer_size) {
+        return -1;
+    }
+    module->cursor = pos;
+    return pos;
+}
+
+static off_t wasm_stream_size(const WasmModule* module) {
+    if (!module) {
+        return 0;
+    }
+    if (module->fd >= 0) {
+        return module->stream_size;
+    }
+    return (off_t)module->buffer_size;
+}
+
 // Legge un valore LEB128 unsigned a 32 bit
-uint32_t read_uleb128(int fd, uint32_t* size_read) {
+uint32_t read_uleb128(WasmModule* module, uint32_t* size_read) {
     uint32_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
 
     do {
-        if (read(fd, &byte, 1) != 1) {
+        if (wasm_stream_read(module, &byte, 1) != 1) {
             return 0;
         }
         (*size_read)++;
@@ -30,14 +99,14 @@ uint32_t read_uleb128(int fd, uint32_t* size_read) {
 }
 
 // Legge un valore LEB128 unsigned a 64 bit
-uint64_t read_uleb128_64(int fd, uint32_t* size_read) {
+uint64_t read_uleb128_64(WasmModule* module, uint32_t* size_read) {
     uint64_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
 
     do {
-        if (read(fd, &byte, 1) != 1) {
+        if (wasm_stream_read(module, &byte, 1) != 1) {
             return 0;
         }
         (*size_read)++;
@@ -50,14 +119,14 @@ uint64_t read_uleb128_64(int fd, uint32_t* size_read) {
 }
 
 // Legge un valore LEB128 signed a 32 bit
-int32_t read_sleb128(int fd, uint32_t* size_read) {
+int32_t read_sleb128(WasmModule* module, uint32_t* size_read) {
     int32_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
 
     do {
-        if (read(fd, &byte, 1) != 1) {
+        if (wasm_stream_read(module, &byte, 1) != 1) {
             return 0;
         }
         (*size_read)++;
@@ -75,14 +144,14 @@ int32_t read_sleb128(int fd, uint32_t* size_read) {
 }
 
 // Legge un valore LEB128 signed a 64 bit
-int64_t read_sleb128_64(int fd, uint32_t* size_read) {
+int64_t read_sleb128_64(WasmModule* module, uint32_t* size_read) {
     int64_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
 
     do {
-        if (read(fd, &byte, 1) != 1) {
+        if (wasm_stream_read(module, &byte, 1) != 1) {
             return 0;
         }
         (*size_read)++;
@@ -100,9 +169,9 @@ int64_t read_sleb128_64(int fd, uint32_t* size_read) {
 }
 
 // Legge una stringa (lunghezza + dati)
-char* read_string(int fd, uint32_t* len) {
+char* read_string(WasmModule* module, uint32_t* len) {
     uint32_t size_read;
-    *len = read_uleb128(fd, &size_read);
+    *len = read_uleb128(module, &size_read);
     
     if (*len == 0) {
         return NULL;
@@ -113,7 +182,7 @@ char* read_string(int fd, uint32_t* len) {
         return NULL;
     }
     
-    if (read(fd, str, *len) != *len) {
+    if (wasm_stream_read(module, str, *len) != (ssize_t)*len) {
         free(str);
         return NULL;
     }
@@ -142,7 +211,43 @@ WasmModule* wasm_module_init(const char* filename) {
         free(module);
         return NULL;
     }
+
+    struct stat st;
+    if (fstat(module->fd, &st) != 0) {
+        close(module->fd);
+        free(module->filename);
+        free(module);
+        return NULL;
+    }
+    module->cursor = 0;
+    module->stream_size = st.st_size;
     
+    return module;
+}
+
+WasmModule* wasm_module_init_from_memory(const uint8_t* data, size_t size) {
+    if (!data || size == 0) {
+        return NULL;
+    }
+    WasmModule* module = (WasmModule*)malloc(sizeof(WasmModule));
+    if (!module) {
+        return NULL;
+    }
+    memset(module, 0, sizeof(WasmModule));
+
+    uint8_t* copy = (uint8_t*)malloc(size);
+    if (!copy) {
+        free(module);
+        return NULL;
+    }
+    memcpy(copy, data, size);
+    module->buffer = copy;
+    module->buffer_size = size;
+    module->buffer_owned = true;
+    module->cursor = 0;
+    module->stream_size = (off_t)size;
+    module->fd = -1;
+    module->filename = strdup("<memory>");
     return module;
 }
 
@@ -154,6 +259,11 @@ void wasm_module_free(WasmModule* module) {
     
     if (module->fd >= 0) {
         close(module->fd);
+    }
+
+    if (module->buffer_owned && module->buffer) {
+        free((void*)module->buffer);
+        module->buffer = NULL;
     }
     
     if (module->filename) {
@@ -205,9 +315,11 @@ void wasm_module_free(WasmModule* module) {
 int wasm_load_header(WasmModule* module) {
     uint32_t magic, version;
     
-    lseek(module->fd, 0, SEEK_SET);
+    if (wasm_stream_seek(module, 0, SEEK_SET) < 0) {
+        return -1;
+    }
     
-    if (read(module->fd, &magic, 4) != 4) {
+    if (wasm_stream_read(module, &magic, 4) != 4) {
         return -1;
     }
     
@@ -215,7 +327,7 @@ int wasm_load_header(WasmModule* module) {
         return -1;
     }
     
-    if (read(module->fd, &version, 4) != 4) {
+    if (wasm_stream_read(module, &version, 4) != 4) {
         return -1;
     }
     
@@ -231,29 +343,32 @@ int wasm_load_header(WasmModule* module) {
 
 // Elenca le sezioni nel file WASM senza caricare i loro contenuti
 int wasm_scan_sections(WasmModule* module) {
-    lseek(module->fd, 8, SEEK_SET);  // Salta l'intestazione
+    if (wasm_stream_seek(module, 8, SEEK_SET) < 0) {  // Salta l'intestazione
+        return -1;
+    }
     
     // Conteggio preliminare delle sezioni
     off_t pos = 8;
-    struct stat st;
-    fstat(module->fd, &st);
+    const off_t stream_size = wasm_stream_size(module);
     uint32_t count = 0;
     
-    while (pos < st.st_size) {
+    while (pos < stream_size) {
         uint8_t section_id;
         uint32_t section_size;
         uint32_t size_read;
         
-        if (read(module->fd, &section_id, 1) != 1) {
+        if (wasm_stream_read(module, &section_id, 1) != 1) {
             break;
         }
         pos += 1;
         
-        section_size = read_uleb128(module->fd, &size_read);
+        section_size = read_uleb128(module, &size_read);
         pos += size_read;
         
         // Salta il contenuto della sezione
-        lseek(module->fd, section_size, SEEK_CUR);
+        if (wasm_stream_seek(module, section_size, SEEK_CUR) < 0) {
+            break;
+        }
         pos += section_size;
         
         count++;
@@ -267,7 +382,9 @@ int wasm_scan_sections(WasmModule* module) {
     memset(module->sections, 0, count * sizeof(WasmSection));
     
     // Ora leggi i metadati delle sezioni
-    lseek(module->fd, 8, SEEK_SET);
+    if (wasm_stream_seek(module, 8, SEEK_SET) < 0) {
+        return -1;
+    }
     pos = 8;
     
     for (uint32_t i = 0; i < count; i++) {
@@ -275,12 +392,12 @@ int wasm_scan_sections(WasmModule* module) {
         uint32_t section_size;
         uint32_t size_read;
         
-        if (read(module->fd, &section_id, 1) != 1) {
+        if (wasm_stream_read(module, &section_id, 1) != 1) {
             break;
         }
         pos += 1;
         
-        section_size = read_uleb128(module->fd, &size_read);
+        section_size = read_uleb128(module, &size_read);
         pos += size_read;
         
         module->sections[i].type = (WasmSectionType)section_id;
@@ -289,14 +406,12 @@ int wasm_scan_sections(WasmModule* module) {
         
         // Se è una sezione custom, leggi il nome
         if (section_id == SECTION_CUSTOM) {
-            module->sections[i].name = read_string(module->fd, &module->sections[i].name_len);
-            pos += module->sections[i].name_len + size_read;  // +size_read per la lunghezza codificata
-            lseek(module->fd, module->sections[i].offset + module->sections[i].size, SEEK_SET);
-        } else {
-            lseek(module->fd, module->sections[i].offset + module->sections[i].size, SEEK_SET);
+            module->sections[i].name = read_string(module, &module->sections[i].name_len);
         }
-        
-        pos += section_size;
+        if (wasm_stream_seek(module, module->sections[i].offset + module->sections[i].size, SEEK_SET) < 0) {
+            break;
+        }
+        pos = module->sections[i].offset + module->sections[i].size;
     }
     
     module->num_sections = count;
@@ -307,10 +422,12 @@ int wasm_scan_sections(WasmModule* module) {
 int wasm_load_types(WasmModule* module) {
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_TYPE) {
-            lseek(module->fd, module->sections[i].offset, SEEK_SET);
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
             
             uint32_t size_read;
-            uint32_t count = read_uleb128(module->fd, &size_read);
+            uint32_t count = read_uleb128(module, &size_read);
             
             module->num_types = count;
             module->types = (WasmFunctionType*)malloc(count * sizeof(WasmFunctionType));
@@ -323,12 +440,12 @@ int wasm_load_types(WasmModule* module) {
             
             for (uint32_t j = 0; j < count; j++) {
                 uint8_t form;
-                if (read(module->fd, &form, 1) != 1 || form != 0x60) {
+                if (wasm_stream_read(module, &form, 1) != 1 || form != 0x60) {
                     return -1;  // Attualmente, solo il form 0x60 (func) è supportato
                 }
                 
                 // Leggi i tipi dei parametri
-                module->types[j].num_params = read_uleb128(module->fd, &size_read);
+                module->types[j].num_params = read_uleb128(module, &size_read);
                 if (module->types[j].num_params > 0) {
                     module->types[j].param_types = (uint32_t*)malloc(module->types[j].num_params * sizeof(uint32_t));
                     if (!module->types[j].param_types) {
@@ -337,7 +454,7 @@ int wasm_load_types(WasmModule* module) {
                     
                     for (uint32_t k = 0; k < module->types[j].num_params; k++) {
                         uint8_t param_type;
-                        if (read(module->fd, &param_type, 1) != 1) {
+                        if (wasm_stream_read(module, &param_type, 1) != 1) {
                             return -1;
                         }
                         module->types[j].param_types[k] = param_type;
@@ -345,7 +462,7 @@ int wasm_load_types(WasmModule* module) {
                 }
                 
                 // Leggi i tipi dei risultati
-                module->types[j].num_results = read_uleb128(module->fd, &size_read);
+                module->types[j].num_results = read_uleb128(module, &size_read);
                 if (module->types[j].num_results > 0) {
                     module->types[j].result_types = (uint32_t*)malloc(module->types[j].num_results * sizeof(uint32_t));
                     if (!module->types[j].result_types) {
@@ -354,7 +471,7 @@ int wasm_load_types(WasmModule* module) {
                     
                     for (uint32_t k = 0; k < module->types[j].num_results; k++) {
                         uint8_t result_type;
-                        if (read(module->fd, &result_type, 1) != 1) {
+                        if (wasm_stream_read(module, &result_type, 1) != 1) {
                             return -1;
                         }
                         module->types[j].result_types[k] = result_type;
@@ -373,10 +490,12 @@ int wasm_load_types(WasmModule* module) {
 int wasm_load_functions(WasmModule* module) {
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_FUNCTION) {
-            lseek(module->fd, module->sections[i].offset, SEEK_SET);
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
             
             uint32_t size_read;
-            uint32_t count = read_uleb128(module->fd, &size_read);
+            uint32_t count = read_uleb128(module, &size_read);
             
             module->num_functions = count;
             module->functions = (WasmFunction*)malloc(count * sizeof(WasmFunction));
@@ -388,15 +507,17 @@ int wasm_load_functions(WasmModule* module) {
             module->functions_offset = module->sections[i].offset + size_read;
             
             for (uint32_t j = 0; j < count; j++) {
-                module->functions[j].type_index = read_uleb128(module->fd, &size_read);
+                module->functions[j].type_index = read_uleb128(module, &size_read);
             }
             
             // Ora carica gli offset dei corpi delle funzioni dalla sezione Code
             for (uint32_t j = 0; j < module->num_sections; j++) {
                 if (module->sections[j].type == SECTION_CODE) {
-                    lseek(module->fd, module->sections[j].offset, SEEK_SET);
+                    if (wasm_stream_seek(module, module->sections[j].offset, SEEK_SET) < 0) {
+                        return -1;
+                    }
                     
-                    uint32_t code_count = read_uleb128(module->fd, &size_read);
+                    uint32_t code_count = read_uleb128(module, &size_read);
                     off_t current_offset = module->sections[j].offset + size_read;
                     
                     if (code_count != count) {
@@ -404,14 +525,16 @@ int wasm_load_functions(WasmModule* module) {
                     }
                     
                     for (uint32_t k = 0; k < code_count; k++) {
-                        uint32_t body_size = read_uleb128(module->fd, &size_read);
+                        uint32_t body_size = read_uleb128(module, &size_read);
                         current_offset += size_read;
                         
                         module->functions[k].body_offset = current_offset;
                         module->functions[k].body_size = body_size;
                         
                         // Salta il corpo della funzione
-                        lseek(module->fd, body_size, SEEK_CUR);
+                        if (wasm_stream_seek(module, body_size, SEEK_CUR) < 0) {
+                            return -1;
+                        }
                         current_offset += body_size;
                     }
                     
@@ -430,10 +553,12 @@ int wasm_load_functions(WasmModule* module) {
 int wasm_load_exports(WasmModule* module) {
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_EXPORT) {
-            lseek(module->fd, module->sections[i].offset, SEEK_SET);
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
             
             uint32_t size_read;
-            uint32_t count = read_uleb128(module->fd, &size_read);
+            uint32_t count = read_uleb128(module, &size_read);
             
             module->num_exports = count;
             module->exports = (WasmExport*)malloc(count * sizeof(WasmExport));
@@ -445,13 +570,13 @@ int wasm_load_exports(WasmModule* module) {
             module->exports_offset = module->sections[i].offset + size_read;
             
             for (uint32_t j = 0; j < count; j++) {
-                module->exports[j].name = read_string(module->fd, &module->exports[j].name_len);
+                module->exports[j].name = read_string(module, &module->exports[j].name_len);
                 
-                if (read(module->fd, &module->exports[j].kind, 1) != 1) {
+                if (wasm_stream_read(module, &module->exports[j].kind, 1) != 1) {
                     return -1;
                 }
                 
-                module->exports[j].index = read_uleb128(module->fd, &size_read);
+                module->exports[j].index = read_uleb128(module, &size_read);
             }
             
             return 0;
@@ -465,10 +590,12 @@ int wasm_load_exports(WasmModule* module) {
 int wasm_load_memories(WasmModule* module) {
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_MEMORY) {
-            lseek(module->fd, module->sections[i].offset, SEEK_SET);
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
             
             uint32_t size_read;
-            uint32_t count = read_uleb128(module->fd, &size_read);
+            uint32_t count = read_uleb128(module, &size_read);
             
             module->num_memories = count;
             module->memories = (WasmMemory*)malloc(count * sizeof(WasmMemory));
@@ -482,7 +609,7 @@ int wasm_load_memories(WasmModule* module) {
             for (uint32_t j = 0; j < count; j++) {
                 // Leggi i limiti
                 uint8_t flags;
-                if (read(module->fd, &flags, 1) != 1) {
+                if (wasm_stream_read(module, &flags, 1) != 1) {
                     return -1;
                 }
                 
@@ -494,17 +621,17 @@ int wasm_load_memories(WasmModule* module) {
                 
                 // Leggi la dimensione iniziale
                 if (module->memories[j].is_memory64) {
-                    module->memories[j].initial_size = read_uleb128_64(module->fd, &size_read);
+                    module->memories[j].initial_size = read_uleb128_64(module, &size_read);
                 } else {
-                    module->memories[j].initial_size = read_uleb128(module->fd, &size_read);
+                    module->memories[j].initial_size = read_uleb128(module, &size_read);
                 }
                 
                 // Leggi la dimensione massima se presente
                 if (module->memories[j].has_max) {
                     if (module->memories[j].is_memory64) {
-                        module->memories[j].maximum_size = read_uleb128_64(module->fd, &size_read);
+                        module->memories[j].maximum_size = read_uleb128_64(module, &size_read);
                     } else {
-                        module->memories[j].maximum_size = read_uleb128(module->fd, &size_read);
+                        module->memories[j].maximum_size = read_uleb128(module, &size_read);
                     }
                 }
             }
@@ -530,8 +657,11 @@ uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx) {
         return NULL;
     }
     
-    lseek(module->fd, func->body_offset, SEEK_SET);
-    if (read(module->fd, body, func->body_size) != func->body_size) {
+    if (wasm_stream_seek(module, func->body_offset, SEEK_SET) < 0) {
+        free(body);
+        return NULL;
+    }
+    if (wasm_stream_read(module, body, func->body_size) != (ssize_t)func->body_size) {
         free(body);
         return NULL;
     }

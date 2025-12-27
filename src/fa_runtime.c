@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 typedef struct {
     uint32_t func_index;
@@ -20,6 +21,69 @@ static ptr fa_default_malloc(int size) {
 
 static void fa_default_free(ptr region) {
     free(region);
+}
+
+static void runtime_memory_reset(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->memory.data) {
+        runtime->free(runtime->memory.data);
+        runtime->memory.data = NULL;
+    }
+    runtime->memory.size_bytes = 0;
+    runtime->memory.max_size_bytes = 0;
+    runtime->memory.has_max = false;
+    runtime->memory.is_memory64 = false;
+}
+
+static int runtime_memory_init(fa_Runtime* runtime, const WasmModule* module) {
+    if (!runtime || !module) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    runtime_memory_reset(runtime);
+    if (module->num_memories == 0 || !module->memories) {
+        return FA_RUNTIME_OK;
+    }
+    const WasmMemory* memory = &module->memories[0];
+    runtime->memory.is_memory64 = memory->is_memory64;
+    runtime->memory.has_max = memory->has_max;
+    if (memory->is_memory64) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (memory->initial_size > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (memory->has_max && memory->maximum_size > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    const uint64_t max_pages = memory->has_max ? memory->maximum_size : 0;
+    if (memory->has_max) {
+        if (max_pages > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+        runtime->memory.max_size_bytes = max_pages * FA_WASM_PAGE_SIZE;
+    }
+
+    if (memory->initial_size == 0) {
+        runtime->memory.size_bytes = 0;
+        return FA_RUNTIME_OK;
+    }
+    if (memory->initial_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    const uint64_t size_bytes = memory->initial_size * FA_WASM_PAGE_SIZE;
+    if (size_bytes > SIZE_MAX || size_bytes > (uint64_t)INT_MAX) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    uint8_t* data = (uint8_t*)runtime->malloc((int)size_bytes);
+    if (!data) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    memset(data, 0, (size_t)size_bytes);
+    runtime->memory.data = data;
+    runtime->memory.size_bytes = size_bytes;
+    return FA_RUNTIME_OK;
 }
 
 static void runtime_job_reg_clear(fa_Job* job) {
@@ -304,6 +368,13 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
         runtime->module = NULL;
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
+    int status = runtime_memory_init(runtime, module);
+    if (status != FA_RUNTIME_OK) {
+        wasm_instruction_stream_free(runtime->stream);
+        runtime->stream = NULL;
+        runtime->module = NULL;
+        return status;
+    }
     return FA_RUNTIME_OK;
 }
 
@@ -315,6 +386,7 @@ void fa_Runtime_detach_module(fa_Runtime* runtime) {
         wasm_instruction_stream_free(runtime->stream);
         runtime->stream = NULL;
     }
+    runtime_memory_reset(runtime);
     runtime->module = NULL;
 }
 
@@ -395,7 +467,7 @@ static int runtime_decode_instruction(const uint8_t* body,
         case 0x0E: /* br_table */
             return FA_RUNTIME_ERR_UNSUPPORTED;
         case 0x00: // unreachable
-            return FA_RUNTIME_ERR_UNSUPPORTED;
+            return FA_RUNTIME_OK;
         case 0x01: // nop
             return FA_RUNTIME_OK;
         case 0x0B: // end
@@ -561,7 +633,10 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
             break;
         }
 
-        fa_execute_op(opcode, job);
+        status = fa_execute_op(opcode, runtime, job);
+        if (status != FA_RUNTIME_OK) {
+            break;
+        }
 
         if (ctx.has_call) {
             job->instructionPointer = 0;

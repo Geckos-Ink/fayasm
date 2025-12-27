@@ -55,9 +55,10 @@ typedef enum {
     wopt_return = 34
 } fa_WasmOp_type;
 
-#define OP_RETURN_TYPE void
+#define OP_RETURN_TYPE int
+struct fa_Runtime;
 struct fa_WasmOp;
-#define OP_ARGUMENTS fa_Job* job, const struct fa_WasmOp* descriptor
+#define OP_ARGUMENTS struct fa_Runtime* runtime, fa_Job* job, const struct fa_WasmOp* descriptor
 typedef OP_RETURN_TYPE (*Operation)(OP_ARGUMENTS);
 
 typedef struct fa_WasmOp {
@@ -74,5 +75,5 @@ typedef struct fa_WasmOp {
 
 const fa_WasmOp* fa_instance_ops(void);
 const fa_WasmOp* fa_get_op(uint8_t opcode);
-OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Job* job);
+OP_RETURN_TYPE fa_execute_op(uint8_t opcode, struct fa_Runtime* runtime, fa_Job* job);
 void fa_ops_defs_populate(fa_WasmOp* ops);
