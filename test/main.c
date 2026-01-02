@@ -19,6 +19,15 @@ typedef struct {
     uint32_t result_count;
 } TypeSpec;
 
+typedef int (*TestFn)(void);
+
+typedef struct {
+    const char* name;
+    const char* area;
+    const char* hint;
+    TestFn fn;
+} TestCase;
+
 static const uint8_t kResultI32[] = { VALTYPE_I32 };
 static const uint8_t kResultI64[] = { VALTYPE_I64 };
 static const uint8_t kResultF32[] = { VALTYPE_F32 };
@@ -3015,178 +3024,140 @@ static int test_local_f32_default(void) {
     return 0;
 }
 
-int main(void) {
+#define TEST_CASE(name, area, hint, fn) { name, area, hint, fn }
+static const TestCase kTestCases[] = {
+    TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
+    TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
+    TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
+    TEST_CASE("test_call_depth_trap", "control", "src/fa_runtime.c (call depth)", test_call_depth_trap),
+    TEST_CASE("test_memory_oob_trap", "memory", "src/fa_ops.c (load/store), src/fa_runtime.c (bounds)", test_memory_oob_trap),
+    TEST_CASE("test_memory_grow_failure", "memory", "src/fa_ops.c (memory.grow), src/fa_runtime.c (grow)", test_memory_grow_failure),
+    TEST_CASE("test_memory64_grow_size", "memory64", "src/fa_ops.c (memory.grow), src/fa_runtime.c (grow)", test_memory64_grow_size),
+    TEST_CASE("test_multi_memory_memarg", "memory", "src/fa_runtime.c (memarg decode), src/fa_ops.c (load/store)", test_multi_memory_memarg),
+    TEST_CASE("test_bulk_memory_copy_fill", "bulk-memory", "src/fa_ops.c (op_bulk_memory)", test_bulk_memory_copy_fill),
+    TEST_CASE("test_data_segment_init", "bulk-memory", "src/fa_ops.c (memory.init), src/fa_runtime.c (segments)", test_data_segment_init),
+    TEST_CASE("test_data_segment_active", "bulk-memory", "src/fa_runtime.c (segments init)", test_data_segment_active),
+    TEST_CASE("test_data_drop_trap", "bulk-memory", "src/fa_ops.c (data.drop)", test_data_drop_trap),
+    TEST_CASE("test_table_init_copy", "table", "src/fa_ops.c (table.init/copy), src/fa_runtime.c (tables)", test_table_init_copy),
+    TEST_CASE("test_table_fill_size", "table", "src/fa_ops.c (table.fill/size)", test_table_fill_size),
+    TEST_CASE("test_elem_drop_trap", "table", "src/fa_ops.c (elem.drop)", test_elem_drop_trap),
+    TEST_CASE("test_table_grow", "table", "src/fa_ops.c (table.grow)", test_table_grow),
+    TEST_CASE("test_simd_v128_const", "simd", "src/fa_runtime.c (simd decode), src/fa_ops.c (op_simd)", test_simd_v128_const),
+    TEST_CASE("test_simd_i32x4_splat", "simd", "src/fa_ops.c (op_simd splat)", test_simd_i32x4_splat),
+    TEST_CASE("test_i32_clz", "arith", "src/fa_ops.c (i32 clz)", test_i32_clz),
+    TEST_CASE("test_f32_abs", "arith", "src/fa_ops.c (f32 abs)", test_f32_abs),
+    TEST_CASE("test_local_get_set", "locals", "src/fa_ops.c (local.get/set)", test_local_get_set),
+    TEST_CASE("test_local_tee", "locals", "src/fa_ops.c (local.tee)", test_local_tee),
+    TEST_CASE("test_br_if_stack_effect", "control", "src/fa_runtime.c (control stack)", test_br_if_stack_effect),
+    TEST_CASE("test_i64_add", "arith", "src/fa_ops.c (i64 add)", test_i64_add),
+    TEST_CASE("test_f64_mul", "arith", "src/fa_ops.c (f64 mul)", test_f64_mul),
+    TEST_CASE("test_trunc_f32_nan_trap", "conversion", "src/fa_ops.c (trunc f32->i)", test_trunc_f32_nan_trap),
+    TEST_CASE("test_trunc_f32_overflow_trap", "conversion", "src/fa_ops.c (trunc f32->i)", test_trunc_f32_overflow_trap),
+    TEST_CASE("test_trunc_f64_overflow_trap", "conversion", "src/fa_ops.c (trunc f64->i)", test_trunc_f64_overflow_trap),
+    TEST_CASE("test_if_else_false", "control", "src/fa_runtime.c (if/else)", test_if_else_false),
+    TEST_CASE("test_block_result_br", "control", "src/fa_runtime.c (block results)", test_block_result_br),
+    TEST_CASE("test_block_result_arity_trap", "control", "src/fa_runtime.c (arity checks)", test_block_result_arity_trap),
+    TEST_CASE("test_br_to_end", "control", "src/fa_runtime.c (br)", test_br_to_end),
+    TEST_CASE("test_br_table_branch", "control", "src/fa_runtime.c (br_table)", test_br_table_branch),
+    TEST_CASE("test_loop_label_result", "control", "src/fa_runtime.c (loop label types)", test_loop_label_result),
+    TEST_CASE("test_loop_label_type_mismatch_trap", "control", "src/fa_runtime.c (loop label types)", test_loop_label_type_mismatch_trap),
+    TEST_CASE("test_global_get_set", "globals", "src/fa_ops.c (global.get/set)", test_global_get_set),
+    TEST_CASE("test_global_get_initializer", "globals", "src/fa_runtime.c (global init)", test_global_get_initializer),
+    TEST_CASE("test_global_import_initializer", "globals", "src/fa_runtime.c (imported globals)", test_global_import_initializer),
+    TEST_CASE("test_global_set_immutable_trap", "globals", "src/fa_ops.c (global.set)", test_global_set_immutable_trap),
+    TEST_CASE("test_global_set_type_mismatch_trap", "globals", "src/fa_ops.c (global.set type check)", test_global_set_type_mismatch_trap),
+    TEST_CASE("test_local_f32_default", "locals", "src/fa_runtime.c (locals init)", test_local_f32_default),
+};
+#undef TEST_CASE
+
+static int test_matches_filter(const TestCase* test, const char* filter) {
+    if (!test) {
+        return 0;
+    }
+    if (!filter || filter[0] == '\0') {
+        return 1;
+    }
+    if (strstr(test->name, filter)) {
+        return 1;
+    }
+    if (test->area && strstr(test->area, filter)) {
+        return 1;
+    }
+    if (test->hint && strstr(test->hint, filter)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void print_usage(const char* exe) {
+    const char* name = (exe && exe[0] != '\0') ? exe : "fayasm_test_main";
+    printf("Usage: %s [--list] [filter]\n", name);
+    printf("  --list   List tests with area and hint\n");
+    printf("  filter   Substring match on name, area, or hint\n");
+}
+
+static void list_tests(void) {
+    const size_t count = sizeof(kTestCases) / sizeof(kTestCases[0]);
+    for (size_t i = 0; i < count; ++i) {
+        const TestCase* test = &kTestCases[i];
+        printf("%-32s %-14s %s\n",
+               test->name,
+               test->area ? test->area : "-",
+               test->hint ? test->hint : "-");
+    }
+}
+
+static int run_tests(const char* filter) {
+    const size_t count = sizeof(kTestCases) / sizeof(kTestCases[0]);
+    size_t ran = 0;
+    size_t skipped = 0;
     int failures = 0;
 
-    if (test_stack_arithmetic() != 0) {
-        printf("FAIL: test_stack_arithmetic\n");
-        failures++;
+    for (size_t i = 0; i < count; ++i) {
+        const TestCase* test = &kTestCases[i];
+        if (!test_matches_filter(test, filter)) {
+            skipped++;
+            continue;
+        }
+        ran++;
+        if (test->fn() != 0) {
+            printf("FAIL: %s [%s] %s\n",
+                   test->name,
+                   test->area ? test->area : "-",
+                   test->hint ? test->hint : "-");
+            failures++;
+        }
     }
-    if (test_div_by_zero_trap() != 0) {
-        printf("FAIL: test_div_by_zero_trap\n");
-        failures++;
-    }
-    if (test_multi_value_return() != 0) {
-        printf("FAIL: test_multi_value_return\n");
-        failures++;
-    }
-    if (test_call_depth_trap() != 0) {
-        printf("FAIL: test_call_depth_trap\n");
-        failures++;
-    }
-    if (test_memory_oob_trap() != 0) {
-        printf("FAIL: test_memory_oob_trap\n");
-        failures++;
-    }
-    if (test_memory_grow_failure() != 0) {
-        printf("FAIL: test_memory_grow_failure\n");
-        failures++;
-    }
-    if (test_memory64_grow_size() != 0) {
-        printf("FAIL: test_memory64_grow_size\n");
-        failures++;
-    }
-    if (test_multi_memory_memarg() != 0) {
-        printf("FAIL: test_multi_memory_memarg\n");
-        failures++;
-    }
-    if (test_bulk_memory_copy_fill() != 0) {
-        printf("FAIL: test_bulk_memory_copy_fill\n");
-        failures++;
-    }
-    if (test_data_segment_init() != 0) {
-        printf("FAIL: test_data_segment_init\n");
-        failures++;
-    }
-    if (test_data_segment_active() != 0) {
-        printf("FAIL: test_data_segment_active\n");
-        failures++;
-    }
-    if (test_data_drop_trap() != 0) {
-        printf("FAIL: test_data_drop_trap\n");
-        failures++;
-    }
-    if (test_table_init_copy() != 0) {
-        printf("FAIL: test_table_init_copy\n");
-        failures++;
-    }
-    if (test_table_fill_size() != 0) {
-        printf("FAIL: test_table_fill_size\n");
-        failures++;
-    }
-    if (test_elem_drop_trap() != 0) {
-        printf("FAIL: test_elem_drop_trap\n");
-        failures++;
-    }
-    if (test_table_grow() != 0) {
-        printf("FAIL: test_table_grow\n");
-        failures++;
-    }
-    if (test_simd_v128_const() != 0) {
-        printf("FAIL: test_simd_v128_const\n");
-        failures++;
-    }
-    if (test_simd_i32x4_splat() != 0) {
-        printf("FAIL: test_simd_i32x4_splat\n");
-        failures++;
-    }
-    if (test_i32_clz() != 0) {
-        printf("FAIL: test_i32_clz\n");
-        failures++;
-    }
-    if (test_f32_abs() != 0) {
-        printf("FAIL: test_f32_abs\n");
-        failures++;
-    }
-    if (test_local_get_set() != 0) {
-        printf("FAIL: test_local_get_set\n");
-        failures++;
-    }
-    if (test_local_tee() != 0) {
-        printf("FAIL: test_local_tee\n");
-        failures++;
-    }
-    if (test_br_if_stack_effect() != 0) {
-        printf("FAIL: test_br_if_stack_effect\n");
-        failures++;
-    }
-    if (test_i64_add() != 0) {
-        printf("FAIL: test_i64_add\n");
-        failures++;
-    }
-    if (test_f64_mul() != 0) {
-        printf("FAIL: test_f64_mul\n");
-        failures++;
-    }
-    if (test_trunc_f32_nan_trap() != 0) {
-        printf("FAIL: test_trunc_f32_nan_trap\n");
-        failures++;
-    }
-    if (test_trunc_f32_overflow_trap() != 0) {
-        printf("FAIL: test_trunc_f32_overflow_trap\n");
-        failures++;
-    }
-    if (test_trunc_f64_overflow_trap() != 0) {
-        printf("FAIL: test_trunc_f64_overflow_trap\n");
-        failures++;
-    }
-    if (test_if_else_false() != 0) {
-        printf("FAIL: test_if_else_false\n");
-        failures++;
-    }
-    if (test_block_result_br() != 0) {
-        printf("FAIL: test_block_result_br\n");
-        failures++;
-    }
-    if (test_block_result_arity_trap() != 0) {
-        printf("FAIL: test_block_result_arity_trap\n");
-        failures++;
-    }
-    if (test_br_to_end() != 0) {
-        printf("FAIL: test_br_to_end\n");
-        failures++;
-    }
-    if (test_br_table_branch() != 0) {
-        printf("FAIL: test_br_table_branch\n");
-        failures++;
-    }
-    if (test_loop_label_result() != 0) {
-        printf("FAIL: test_loop_label_result\n");
-        failures++;
-    }
-    if (test_loop_label_type_mismatch_trap() != 0) {
-        printf("FAIL: test_loop_label_type_mismatch_trap\n");
-        failures++;
-    }
-    if (test_global_get_set() != 0) {
-        printf("FAIL: test_global_get_set\n");
-        failures++;
-    }
-    if (test_global_get_initializer() != 0) {
-        printf("FAIL: test_global_get_initializer\n");
-        failures++;
-    }
-    if (test_global_import_initializer() != 0) {
-        printf("FAIL: test_global_import_initializer\n");
-        failures++;
-    }
-    if (test_global_set_immutable_trap() != 0) {
-        printf("FAIL: test_global_set_immutable_trap\n");
-        failures++;
-    }
-    if (test_global_set_type_mismatch_trap() != 0) {
-        printf("FAIL: test_global_set_type_mismatch_trap\n");
-        failures++;
-    }
-    if (test_local_f32_default() != 0) {
-        printf("FAIL: test_local_f32_default\n");
-        failures++;
+
+    if (ran == 0) {
+        printf("No tests matched filter: %s\n", filter ? filter : "(null)");
+        return 1;
     }
 
     if (failures == 0) {
-        printf("All tests passed.\n");
+        printf("All tests passed. Ran %zu", ran);
     } else {
-        printf("%d test(s) failed.\n", failures);
+        printf("%d test(s) failed. Ran %zu", failures, ran);
     }
+    if (skipped > 0) {
+        printf(" (skipped %zu)", skipped);
+    }
+    printf(".\n");
     return failures ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    const char* filter = NULL;
+    if (argc > 1) {
+        if (strcmp(argv[1], "--list") == 0) {
+            list_tests();
+            return 0;
+        }
+        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        filter = argv[1];
+    }
+    return run_tests(filter);
 }

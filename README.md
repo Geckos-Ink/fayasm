@@ -34,7 +34,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
   ```
 - `./build.sh` automates the rebuild: it nukes `build/`, configures with the same flags, builds shared + static libraries, compiles `fayasm_test_main`, and executes it.
 - `build.sh` skips terminal clear when `TERM` is unset/dumb, so it can run in non-interactive shells.
-- Tests live under `test/` and cover cursor behaviour in `fa_wasm_stream`, branch navigation scenarios, plus interpreter regressions (stack arithmetic, call depth, traps, table ops, element/data segments, SIMD v128.const/splat). Run them with `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside `build/`.
+- Tests live under `test/` and cover cursor behaviour in `fa_wasm_stream`, branch navigation scenarios, plus interpreter regressions (stack arithmetic, call depth, traps, table ops, element/data segments, SIMD v128.const/splat). Run them with `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside `build/`; pass `--list` or a substring filter to focus on a specific area and see source hints.
 
 ## Repository Layout
 
@@ -46,7 +46,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
   - `fa_wasm_stream.*` – bytecode cursor helpers used by tests and future interpreter work.
   - `fa_arch.h` – architecture-size/endianness/cpu-family macros with override hooks.
   - `helpers/dynamic_list.h` – header-only dynamic array for `void*` (runtime job registry).
-- `test/` – CMake-driven harness (`fayasm_test_main`) with stream navigation and parser coverage.
+- `test/` – CMake-driven harness (`fayasm_test_main`) with stream navigation and parser coverage; supports `--list` and substring filters to focus on a specific area.
 - `studies/` – research archive covering JIT experiments, WASM decoding notes, and runtime prototypes; cross-reference entries when reusing ideas.
 - `build.sh` – clean rebuild + test runner script; keep its CMake flags in sync with the docs.
 
