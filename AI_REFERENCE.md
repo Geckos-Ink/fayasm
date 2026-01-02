@@ -17,22 +17,22 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` — execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning, single-result return enforcement, and imported-global overrides via `fa_Runtime_set_imported_global`.
+- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, label arity checks, and imported-global overrides via `fa_Runtime_set_imported_global`.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
 - `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, i64/f64 arithmetic, conversion traps, block unwinding, global type mismatch traps).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, conversion traps, block unwinding, global type mismatch traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
-- Single-result typing is enforced and void functions clear the operand stack; multi-value returns are not modeled.
-- Loop label typing (parameter vs result arity) is not validated yet; stack-arity checks remain minimal.
-- Memory64 and multi-memory are unsupported; linear memory operations currently target memory index 0 only.
-- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps, stack unwinding, and imported-global overrides; expand into multi-value returns and loop label typing.
+- Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
+- Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
+- Table/bulk memory/SIMD execution is still partial (only memory.copy/memory.fill are wired).
+- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, conversion traps, stack unwinding, and imported-global overrides; expand into table/SIMD execution and segment ops.
 
 ## Research Archive (studies/)
 
@@ -67,8 +67,8 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Extend function result handling to multi-value returns and stricter arity checks (single-result enforcement is in place).
-2. Validate loop label typing and stack arity for `br`/`br_table`.
+1. Implement remaining table/bulk-memory/SIMD opcodes (beyond memory.copy/memory.fill).
+2. Add execution tests for table ops, element/data segment ops, and SIMD lanes.
 3. Thread `src/fa_arch.h` macros into build flags or runtime feature gates where needed.
 
 ### General next steps

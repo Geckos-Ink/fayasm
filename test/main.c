@@ -12,6 +12,13 @@ typedef struct {
     size_t capacity;
 } ByteBuffer;
 
+typedef struct {
+    const uint8_t* param_types;
+    uint32_t param_count;
+    const uint8_t* result_types;
+    uint32_t result_count;
+} TypeSpec;
+
 static const uint8_t kResultI32[] = { VALTYPE_I32 };
 static const uint8_t kResultI64[] = { VALTYPE_I64 };
 static const uint8_t kResultF32[] = { VALTYPE_F32 };
@@ -101,6 +108,20 @@ static int bb_write_uleb(ByteBuffer* buffer, uint32_t value) {
     return 1;
 }
 
+static int bb_write_uleb64(ByteBuffer* buffer, uint64_t value) {
+    do {
+        uint8_t byte = (uint8_t)(value & 0x7F);
+        value >>= 7;
+        if (value != 0) {
+            byte |= 0x80;
+        }
+        if (!bb_write_byte(buffer, byte)) {
+            return 0;
+        }
+    } while (value != 0);
+    return 1;
+}
+
 static int bb_write_f32(ByteBuffer* buffer, float value) {
     uint8_t bytes[sizeof(value)];
     memcpy(bytes, &value, sizeof(value));
@@ -149,11 +170,16 @@ static int build_module(ByteBuffer* module,
                         int memory_has_max,
                         uint32_t memory_max_pages,
                         const uint8_t* result_types,
-                        uint32_t result_count) {
+                        uint32_t result_count,
+                        const uint8_t* param_types,
+                        uint32_t param_count) {
     if (!module || !bodies || !body_sizes || func_count == 0) {
         return 0;
     }
     if (result_count > 0 && !result_types) {
+        return 0;
+    }
+    if (param_count > 0 && !param_types) {
         return 0;
     }
     bb_reset(module);
@@ -167,7 +193,10 @@ static int build_module(ByteBuffer* module,
     // Type section: one empty function signature.
     bb_write_uleb(&payload, 1);
     bb_write_byte(&payload, 0x60);
-    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, param_count);
+    for (uint32_t i = 0; i < param_count; ++i) {
+        bb_write_byte(&payload, param_types[i]);
+    }
     bb_write_uleb(&payload, result_count);
     for (uint32_t i = 0; i < result_count; ++i) {
         bb_write_byte(&payload, result_types[i]);
@@ -234,11 +263,16 @@ static int build_module_with_locals(ByteBuffer* module,
                                     int memory_has_max,
                                     uint32_t memory_max_pages,
                                     const uint8_t* result_types,
-                                    uint32_t result_count) {
+                                    uint32_t result_count,
+                                    const uint8_t* param_types,
+                                    uint32_t param_count) {
     if (!module || !bodies || !body_sizes || func_count == 0) {
         return 0;
     }
     if (result_count > 0 && !result_types) {
+        return 0;
+    }
+    if (param_count > 0 && !param_types) {
         return 0;
     }
     bb_reset(module);
@@ -252,7 +286,10 @@ static int build_module_with_locals(ByteBuffer* module,
     // Type section: one empty function signature.
     bb_write_uleb(&payload, 1);
     bb_write_byte(&payload, 0x60);
-    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, param_count);
+    for (uint32_t i = 0; i < param_count; ++i) {
+        bb_write_byte(&payload, param_types[i]);
+    }
     bb_write_uleb(&payload, result_count);
     for (uint32_t i = 0; i < result_count; ++i) {
         bb_write_byte(&payload, result_types[i]);
@@ -312,6 +349,154 @@ static int build_module_with_locals(ByteBuffer* module,
         const uint32_t body_size = (uint32_t)(locals_size + body_sizes[i]);
         bb_write_uleb(&payload, body_size);
         bb_write_bytes(&payload, locals_bytes, locals_size);
+        bb_write_bytes(&payload, bodies[i], body_sizes[i]);
+    }
+    if (!append_section(module, SECTION_CODE, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    bb_free(&payload);
+    return 1;
+}
+
+static int build_module_with_custom_memory(ByteBuffer* module,
+                                           const uint8_t* const* bodies,
+                                           const size_t* body_sizes,
+                                           size_t func_count,
+                                           const ByteBuffer* memory_payload,
+                                           const uint8_t* result_types,
+                                           uint32_t result_count,
+                                           const uint8_t* param_types,
+                                           uint32_t param_count) {
+    if (!module || !bodies || !body_sizes || func_count == 0) {
+        return 0;
+    }
+    if (result_count > 0 && !result_types) {
+        return 0;
+    }
+    if (param_count > 0 && !param_types) {
+        return 0;
+    }
+    bb_reset(module);
+    const uint8_t header[] = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
+    if (!bb_write_bytes(module, header, sizeof(header))) {
+        return 0;
+    }
+
+    ByteBuffer payload = {0};
+
+    // Type section: one function signature.
+    bb_write_uleb(&payload, 1);
+    bb_write_byte(&payload, 0x60);
+    bb_write_uleb(&payload, param_count);
+    for (uint32_t i = 0; i < param_count; ++i) {
+        bb_write_byte(&payload, param_types[i]);
+    }
+    bb_write_uleb(&payload, result_count);
+    for (uint32_t i = 0; i < result_count; ++i) {
+        bb_write_byte(&payload, result_types[i]);
+    }
+    if (!append_section(module, SECTION_TYPE, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    // Function section: all functions use type 0.
+    bb_reset(&payload);
+    bb_write_uleb(&payload, (uint32_t)func_count);
+    for (size_t i = 0; i < func_count; ++i) {
+        bb_write_uleb(&payload, 0);
+    }
+    if (!append_section(module, SECTION_FUNCTION, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    if (memory_payload && memory_payload->size > 0) {
+        if (!append_section(module, SECTION_MEMORY, memory_payload)) {
+            bb_free(&payload);
+            return 0;
+        }
+    }
+
+    // Code section.
+    bb_reset(&payload);
+    bb_write_uleb(&payload, (uint32_t)func_count);
+    for (size_t i = 0; i < func_count; ++i) {
+        const uint32_t body_size = (uint32_t)(body_sizes[i] + 1U);
+        bb_write_uleb(&payload, body_size);
+        bb_write_uleb(&payload, 0);
+        bb_write_bytes(&payload, bodies[i], body_sizes[i]);
+    }
+    if (!append_section(module, SECTION_CODE, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    bb_free(&payload);
+    return 1;
+}
+
+static int build_module_with_types(ByteBuffer* module,
+                                   const uint8_t* const* bodies,
+                                   const size_t* body_sizes,
+                                   size_t func_count,
+                                   const TypeSpec* types,
+                                   size_t type_count) {
+    if (!module || !bodies || !body_sizes || func_count == 0 || !types || type_count == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < type_count; ++i) {
+        if (types[i].param_count > 0 && !types[i].param_types) {
+            return 0;
+        }
+        if (types[i].result_count > 0 && !types[i].result_types) {
+            return 0;
+        }
+    }
+
+    bb_reset(module);
+    const uint8_t header[] = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
+    if (!bb_write_bytes(module, header, sizeof(header))) {
+        return 0;
+    }
+
+    ByteBuffer payload = {0};
+
+    bb_write_uleb(&payload, (uint32_t)type_count);
+    for (size_t i = 0; i < type_count; ++i) {
+        bb_write_byte(&payload, 0x60);
+        bb_write_uleb(&payload, types[i].param_count);
+        for (uint32_t j = 0; j < types[i].param_count; ++j) {
+            bb_write_byte(&payload, types[i].param_types[j]);
+        }
+        bb_write_uleb(&payload, types[i].result_count);
+        for (uint32_t j = 0; j < types[i].result_count; ++j) {
+            bb_write_byte(&payload, types[i].result_types[j]);
+        }
+    }
+    if (!append_section(module, SECTION_TYPE, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    bb_reset(&payload);
+    bb_write_uleb(&payload, (uint32_t)func_count);
+    for (size_t i = 0; i < func_count; ++i) {
+        bb_write_uleb(&payload, 0);
+    }
+    if (!append_section(module, SECTION_FUNCTION, &payload)) {
+        bb_free(&payload);
+        return 0;
+    }
+
+    bb_reset(&payload);
+    bb_write_uleb(&payload, (uint32_t)func_count);
+    for (size_t i = 0; i < func_count; ++i) {
+        const uint32_t body_size = (uint32_t)(body_sizes[i] + 1U);
+        bb_write_uleb(&payload, body_size);
+        bb_write_uleb(&payload, 0);
         bb_write_bytes(&payload, bodies[i], body_sizes[i]);
     }
     if (!append_section(module, SECTION_CODE, &payload)) {
@@ -418,7 +603,7 @@ static int test_stack_arithmetic(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -459,7 +644,7 @@ static int test_div_by_zero_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -477,6 +662,56 @@ static int test_div_by_zero_trap(void) {
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
 
+static int test_multi_value_return(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 7);
+    bb_write_byte(&instructions, 0x42);
+    bb_write_sleb32(&instructions, 9);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t result_types[] = { VALTYPE_I32, VALTYPE_I64 };
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, result_types, 2, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* top = fa_JobStack_peek(&job->stack, 0);
+    if (!top || top->kind != fa_job_value_i64 || top->payload.i64_value != 9) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* next = fa_JobStack_peek(&job->stack, 1);
+    if (!next || next->kind != fa_job_value_i32 || next->payload.i32_value != 7) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 2) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_call_depth_trap(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x10);
@@ -486,7 +721,7 @@ static int test_call_depth_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -517,7 +752,7 @@ static int test_memory_oob_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -583,7 +818,9 @@ static int test_memory_grow_failure(void) {
                                   1,
                                   1,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -618,6 +855,252 @@ static int test_memory_grow_failure(void) {
     return 0;
 }
 
+static int test_memory64_grow_size(void) {
+    ByteBuffer memory_payload = {0};
+    bb_write_uleb(&memory_payload, 1);
+    bb_write_byte(&memory_payload, 0x05);
+    bb_write_uleb64(&memory_payload, 1);
+    bb_write_uleb64(&memory_payload, 2);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x42);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x40);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x3F);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t result_types[] = { VALTYPE_I64, VALTYPE_I64 };
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_custom_memory(&module_bytes, bodies, sizes, 1, &memory_payload, result_types, 2, NULL, 0)) {
+        bb_free(&memory_payload);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&memory_payload);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* size = fa_JobStack_peek(&job->stack, 0);
+    if (!size || size->kind != fa_job_value_i64 || size->payload.i64_value != 2) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* prev = fa_JobStack_peek(&job->stack, 1);
+    if (!prev || prev->kind != fa_job_value_i64 || prev->payload.i64_value != 1) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 2) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_multi_memory_memarg(void) {
+    ByteBuffer memory_payload = {0};
+    bb_write_uleb(&memory_payload, 2);
+    bb_write_byte(&memory_payload, 0x00);
+    bb_write_uleb(&memory_payload, 1);
+    bb_write_byte(&memory_payload, 0x00);
+    bb_write_uleb(&memory_payload, 1);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 42);
+    bb_write_byte(&instructions, 0x36);
+    bb_write_uleb(&instructions, 1);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x28);
+    bb_write_uleb(&instructions, 1);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_custom_memory(&module_bytes, bodies, sizes, 1, &memory_payload, kResultI32, 1, NULL, 0)) {
+        bb_free(&memory_payload);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&memory_payload);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 42) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_bulk_memory_copy_fill(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0x11);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 4);
+    bb_write_byte(&instructions, 0xFC);
+    bb_write_uleb(&instructions, 11);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 8);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 4);
+    bb_write_byte(&instructions, 0xFC);
+    bb_write_uleb(&instructions, 10);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 8);
+    bb_write_byte(&instructions, 0x28);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 0x11111111) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_table_get_unimplemented(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x25);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return status == FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE ? 0 : 1;
+}
+
+static int test_simd_unimplemented(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0);
+    for (int i = 0; i < 16; ++i) {
+        bb_write_byte(&instructions, 0);
+    }
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return status == FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE ? 0 : 1;
+}
+
 static int test_i32_clz(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -628,7 +1111,7 @@ static int test_i32_clz(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -667,7 +1150,7 @@ static int test_f32_abs(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -729,7 +1212,9 @@ static int test_local_get_set(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -794,7 +1279,9 @@ static int test_local_tee(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -841,7 +1328,7 @@ static int test_br_if_stack_effect(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -886,7 +1373,7 @@ static int test_i64_add(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -927,7 +1414,7 @@ static int test_f64_mul(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF64, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF64, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -966,7 +1453,7 @@ static int test_trunc_f32_nan_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -994,7 +1481,7 @@ static int test_trunc_f32_overflow_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1022,7 +1509,7 @@ static int test_trunc_f64_overflow_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1057,7 +1544,7 @@ static int test_if_else_false(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1106,7 +1593,7 @@ static int test_block_result_br(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1174,7 +1661,9 @@ static int test_global_get_initializer(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1243,7 +1732,9 @@ static int test_global_import_initializer(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&imports);
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
@@ -1286,6 +1777,37 @@ static int test_global_import_initializer(void) {
     return 0;
 }
 
+static int test_block_result_arity_trap(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x02);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x0B);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t result_types[] = { VALTYPE_I32, VALTYPE_I64 };
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, result_types, 2, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
+}
+
 static int test_br_to_end(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x02);
@@ -1302,7 +1824,7 @@ static int test_br_to_end(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1355,7 +1877,7 @@ static int test_br_table_branch(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1439,7 +1961,9 @@ static int test_loop_label_result(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1472,6 +1996,51 @@ static int test_loop_label_result(void) {
 
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
+}
+
+static int test_loop_label_type_mismatch_trap(void) {
+    const uint8_t loop_params[] = { VALTYPE_I32 };
+    TypeSpec types[2] = {0};
+    types[0].param_types = NULL;
+    types[0].param_count = 0;
+    types[0].result_types = NULL;
+    types[0].result_count = 0;
+    types[1].param_types = loop_params;
+    types[1].param_count = 1;
+    types[1].result_types = NULL;
+    types[1].result_count = 0;
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x03);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x43);
+    bb_write_f32(&instructions, 0.0f);
+    bb_write_byte(&instructions, 0x0C);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_types(&module_bytes, bodies, sizes, 1, types, 2)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
 
 static int test_global_get_set(void) {
@@ -1511,7 +2080,9 @@ static int test_global_get_set(void) {
                                   0,
                                   0,
                                   kResultI32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1574,6 +2145,8 @@ static int test_global_set_immutable_trap(void) {
                                   0,
                                   0,
                                   NULL,
+                                  0,
+                                  NULL,
                                   0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
@@ -1626,6 +2199,8 @@ static int test_global_set_type_mismatch_trap(void) {
                                   0,
                                   0,
                                   NULL,
+                                  0,
+                                  NULL,
                                   0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
@@ -1675,7 +2250,9 @@ static int test_local_f32_default(void) {
                                   0,
                                   0,
                                   kResultF32,
-                                  1)) {
+                                  1,
+                                  NULL,
+                                  0)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1717,6 +2294,10 @@ int main(void) {
         printf("FAIL: test_div_by_zero_trap\n");
         failures++;
     }
+    if (test_multi_value_return() != 0) {
+        printf("FAIL: test_multi_value_return\n");
+        failures++;
+    }
     if (test_call_depth_trap() != 0) {
         printf("FAIL: test_call_depth_trap\n");
         failures++;
@@ -1727,6 +2308,26 @@ int main(void) {
     }
     if (test_memory_grow_failure() != 0) {
         printf("FAIL: test_memory_grow_failure\n");
+        failures++;
+    }
+    if (test_memory64_grow_size() != 0) {
+        printf("FAIL: test_memory64_grow_size\n");
+        failures++;
+    }
+    if (test_multi_memory_memarg() != 0) {
+        printf("FAIL: test_multi_memory_memarg\n");
+        failures++;
+    }
+    if (test_bulk_memory_copy_fill() != 0) {
+        printf("FAIL: test_bulk_memory_copy_fill\n");
+        failures++;
+    }
+    if (test_table_get_unimplemented() != 0) {
+        printf("FAIL: test_table_get_unimplemented\n");
+        failures++;
+    }
+    if (test_simd_unimplemented() != 0) {
+        printf("FAIL: test_simd_unimplemented\n");
         failures++;
     }
     if (test_i32_clz() != 0) {
@@ -1777,6 +2378,10 @@ int main(void) {
         printf("FAIL: test_block_result_br\n");
         failures++;
     }
+    if (test_block_result_arity_trap() != 0) {
+        printf("FAIL: test_block_result_arity_trap\n");
+        failures++;
+    }
     if (test_br_to_end() != 0) {
         printf("FAIL: test_br_to_end\n");
         failures++;
@@ -1787,6 +2392,10 @@ int main(void) {
     }
     if (test_loop_label_result() != 0) {
         printf("FAIL: test_loop_label_result\n");
+        failures++;
+    }
+    if (test_loop_label_type_mismatch_trap() != 0) {
+        printf("FAIL: test_loop_label_type_mismatch_trap\n");
         failures++;
     }
     if (test_global_get_set() != 0) {

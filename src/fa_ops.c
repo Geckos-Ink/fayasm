@@ -465,25 +465,32 @@ static void discard_reg_arguments(fa_Job* job, uint8_t count) {
     }
 }
 
-static bool pop_address_value(fa_Job* job, fa_ptr* out) {
+static int pop_address_checked_typed(fa_Job* job, u64* out, bool memory64) {
     if (!job || !out) {
-        return false;
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue addr_value;
     if (!pop_stack_value(job, &addr_value)) {
-        return false;
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (memory64) {
+        if (addr_value.kind != fa_job_value_i64) {
+            restore_stack_value(job, &addr_value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    } else {
+        if (addr_value.kind != fa_job_value_i32) {
+            restore_stack_value(job, &addr_value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
     }
     u64 raw = 0;
     if (!job_value_to_u64(&addr_value, &raw)) {
         restore_stack_value(job, &addr_value);
-        return false;
+        return FA_RUNTIME_ERR_TRAP;
     }
-    *out = (fa_ptr)raw;
-    return true;
-}
-
-static int pop_address_checked(fa_Job* job, fa_ptr* out) {
-    return pop_address_value(job, out) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
+    *out = raw;
+    return FA_RUNTIME_OK;
 }
 
 static int memory_bounds_check(const fa_RuntimeMemory* memory, u64 addr, size_t size) {
@@ -499,6 +506,65 @@ static int memory_bounds_check(const fa_RuntimeMemory* memory, u64 addr, size_t 
     if (addr + size > memory->size_bytes) {
         return FA_RUNTIME_ERR_TRAP;
     }
+    return FA_RUNTIME_OK;
+}
+
+static fa_RuntimeMemory* runtime_get_memory(fa_Runtime* runtime, u64 index) {
+    if (!runtime || !runtime->memories) {
+        return NULL;
+    }
+    if (index > UINT32_MAX || index >= runtime->memories_count) {
+        return NULL;
+    }
+    return &runtime->memories[(uint32_t)index];
+}
+
+static int pop_length_checked(fa_Job* job, bool memory64, u64* out) {
+    if (!job || !out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue value;
+    if (!pop_stack_value(job, &value)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (memory64) {
+        if (value.kind != fa_job_value_i64) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    } else {
+        if (value.kind != fa_job_value_i32) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    u64 raw = 0;
+    if (!job_value_to_u64(&value, &raw)) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    *out = raw;
+    return FA_RUNTIME_OK;
+}
+
+static int pop_byte_value_checked(fa_Job* job, u8* out) {
+    if (!job || !out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue value;
+    if (!pop_stack_value(job, &value)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (value.kind != fa_job_value_i32) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 raw = 0;
+    if (!job_value_to_u64(&value, &raw)) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    *out = (u8)(raw & 0xFFU);
     return FA_RUNTIME_OK;
 }
 
@@ -766,6 +832,7 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
 
+    u64 mem_index = 0;
     u64 offset = 0;
     if (descriptor->num_args > 0) {
         if (pop_reg_u64_checked(job, &offset) != FA_RUNTIME_OK) {
@@ -778,13 +845,22 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
             return FA_RUNTIME_ERR_TRAP;
         }
     }
+    if (runtime->memories_count > 1) {
+        if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
 
-    fa_ptr base = 0;
-    if (pop_address_checked(job, &base) != FA_RUNTIME_OK) {
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+    if (!memory) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 base = 0;
+    if (pop_address_checked_typed(job, &base, memory->is_memory64) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
 
-    u64 addr = (u64)base;
+    u64 addr = base;
     if (offset > UINT64_MAX - addr) {
         return FA_RUNTIME_ERR_TRAP;
     }
@@ -798,12 +874,12 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
         bytes_to_read = sizeof(u64);
     }
 
-    if (memory_bounds_check(&runtime->memory, addr, bytes_to_read) != FA_RUNTIME_OK) {
+    if (memory_bounds_check(memory, addr, bytes_to_read) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
 
     u64 raw = 0;
-    memcpy(&raw, runtime->memory.data + (size_t)addr, bytes_to_read);
+    memcpy(&raw, memory->data + (size_t)addr, bytes_to_read);
 
     if (descriptor->type.type == wt_float) {
         if (descriptor->type.size == 8) {
@@ -836,6 +912,7 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
         return FA_RUNTIME_ERR_TRAP;
     }
 
+    u64 mem_index = 0;
     u64 offset = 0;
     if (descriptor->num_args > 0) {
         if (pop_reg_u64_checked(job, &offset) != FA_RUNTIME_OK) {
@@ -850,13 +927,24 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
             return FA_RUNTIME_ERR_TRAP;
         }
     }
+    if (runtime->memories_count > 1) {
+        if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
 
-    fa_ptr base = 0;
-    if (pop_address_checked(job, &base) != FA_RUNTIME_OK) {
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+    if (!memory) {
         restore_stack_value(job, &value);
         return FA_RUNTIME_ERR_TRAP;
     }
-    u64 addr = (u64)base;
+    u64 base = 0;
+    if (pop_address_checked_typed(job, &base, memory->is_memory64) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 addr = base;
     if (offset > UINT64_MAX - addr) {
         restore_stack_value(job, &value);
         return FA_RUNTIME_ERR_TRAP;
@@ -872,7 +960,7 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
         bytes_to_write = sizeof(u64);
     }
 
-    if (memory_bounds_check(&runtime->memory, addr, bytes_to_write) != FA_RUNTIME_OK) {
+    if (memory_bounds_check(memory, addr, bytes_to_write) != FA_RUNTIME_OK) {
         restore_stack_value(job, &value);
         return FA_RUNTIME_ERR_TRAP;
     }
@@ -884,14 +972,14 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
                 restore_stack_value(job, &value);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            memcpy(runtime->memory.data + (size_t)addr, &data, sizeof(data));
+            memcpy(memory->data + (size_t)addr, &data, sizeof(data));
         } else {
             f32 data = 0.0f;
             if (!job_value_to_f32(&value, &data)) {
                 restore_stack_value(job, &value);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            memcpy(runtime->memory.data + (size_t)addr, &data, sizeof(data));
+            memcpy(memory->data + (size_t)addr, &data, sizeof(data));
         }
         return FA_RUNTIME_OK;
     }
@@ -902,7 +990,7 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
         return FA_RUNTIME_ERR_TRAP;
     }
     raw = mask_unsigned_value(raw, (uint8_t)bits_to_write);
-    memcpy(runtime->memory.data + (size_t)addr, &raw, bytes_to_write);
+    memcpy(memory->data + (size_t)addr, &raw, bytes_to_write);
     return FA_RUNTIME_OK;
 }
 
@@ -2044,19 +2132,122 @@ static OP_RETURN_TYPE op_return(OP_ARGUMENTS) {
     return FA_RUNTIME_OK;
 }
 
-static int runtime_memory_grow(fa_Runtime* runtime, u32 delta_pages, u32* prev_pages_out, bool* grew_out) {
+static OP_RETURN_TYPE op_table(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 table_index = 0;
+    if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    (void)table_index;
+    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+}
+
+static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
+    if (!runtime || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 subopcode = 0;
+    if (pop_reg_u64_checked(job, &subopcode) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    switch (subopcode) {
+        case 10: /* memory.copy */
+        {
+            u64 src_index = 0;
+            u64 dst_index = 0;
+            if (pop_reg_u64_checked(job, &src_index) != FA_RUNTIME_OK ||
+                pop_reg_u64_checked(job, &dst_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeMemory* src_memory = runtime_get_memory(runtime, src_index);
+            fa_RuntimeMemory* dst_memory = runtime_get_memory(runtime, dst_index);
+            if (!src_memory || !dst_memory) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const bool length_is_64 = src_memory->is_memory64 || dst_memory->is_memory64;
+            u64 length = 0;
+            if (pop_length_checked(job, length_is_64, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 src_addr = 0;
+            if (pop_address_checked_typed(job, &src_addr, src_memory->is_memory64) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 dst_addr = 0;
+            if (pop_address_checked_typed(job, &dst_addr, dst_memory->is_memory64) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (length > SIZE_MAX) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            size_t len = (size_t)length;
+            if (memory_bounds_check(src_memory, src_addr, len) != FA_RUNTIME_OK ||
+                memory_bounds_check(dst_memory, dst_addr, len) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            memmove(dst_memory->data + (size_t)dst_addr, src_memory->data + (size_t)src_addr, len);
+            return FA_RUNTIME_OK;
+        }
+        case 11: /* memory.fill */
+        {
+            u64 mem_index = 0;
+            if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+            if (!memory) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 length = 0;
+            if (pop_length_checked(job, memory->is_memory64, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u8 byte_value = 0;
+            if (pop_byte_value_checked(job, &byte_value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 dst_addr = 0;
+            if (pop_address_checked_typed(job, &dst_addr, memory->is_memory64) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (length > SIZE_MAX) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            size_t len = (size_t)length;
+            if (memory_bounds_check(memory, dst_addr, len) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            memset(memory->data + (size_t)dst_addr, byte_value, len);
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
+    (void)runtime;
+    (void)job;
+    (void)descriptor;
+    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+}
+
+static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pages, u64* prev_pages_out, bool* grew_out) {
     if (!runtime || !prev_pages_out || !grew_out) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    fa_RuntimeMemory* memory = &runtime->memory;
-    if (memory->is_memory64) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+    if (!memory) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     const uint64_t prev_pages = memory->size_bytes / FA_WASM_PAGE_SIZE;
-    if (prev_pages > UINT32_MAX) {
+    if (!memory->is_memory64 && prev_pages > UINT32_MAX) {
         return FA_RUNTIME_ERR_UNSUPPORTED;
     }
-    *prev_pages_out = (u32)prev_pages;
+    *prev_pages_out = prev_pages;
     *grew_out = false;
     if (delta_pages == 0) {
         *grew_out = true;
@@ -2105,20 +2296,21 @@ static OP_RETURN_TYPE op_memory_size(OP_ARGUMENTS) {
     if (!runtime->module || runtime->module->num_memories == 0) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    const uint8_t bits = descriptor ? (descriptor->type.size ? (uint8_t)(descriptor->type.size * 8U) : 32U) : 32U;
-    const bool is_signed = descriptor ? descriptor->type.is_signed : false;
     u64 mem_index = 0;
     if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    if (mem_index != 0) {
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+    if (!memory) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint64_t pages = memory->size_bytes / FA_WASM_PAGE_SIZE;
+    const uint8_t bits = memory->is_memory64 ? 64U : 32U;
+    const bool is_signed = true;
+    if (!memory->is_memory64 && pages > UINT32_MAX) {
         return FA_RUNTIME_ERR_UNSUPPORTED;
     }
-    const uint64_t pages = runtime->memory.size_bytes / FA_WASM_PAGE_SIZE;
-    if (pages > UINT32_MAX) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    return push_int_checked(job, (u32)pages, bits, is_signed);
+    return push_int_checked(job, pages, bits, is_signed);
 }
 
 static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
@@ -2128,36 +2320,47 @@ static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
     if (!runtime->module || runtime->module->num_memories == 0) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    const uint8_t bits = descriptor ? (descriptor->type.size ? (uint8_t)(descriptor->type.size * 8U) : 32U) : 32U;
-    const bool is_signed = descriptor ? descriptor->type.is_signed : true;
     u64 mem_index = 0;
     if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    if (mem_index != 0) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+    if (!memory) {
+        return FA_RUNTIME_ERR_TRAP;
     }
     fa_JobValue delta;
     if (pop_stack_checked(job, &delta) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
     u64 delta_pages_raw = 0;
+    if (memory->is_memory64) {
+        if (delta.kind != fa_job_value_i64) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    } else {
+        if (delta.kind != fa_job_value_i32) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
     if (!job_value_to_u64(&delta, &delta_pages_raw)) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    if (delta_pages_raw > UINT32_MAX) {
-        return push_int_checked(job, (u32)UINT32_MAX, bits, is_signed);
+    if (!memory->is_memory64 && delta_pages_raw > UINT32_MAX) {
+        return push_int_checked(job, (u32)UINT32_MAX, 32U, true);
     }
-    u32 prev_pages = 0;
+    u64 prev_pages = 0;
     bool grew = false;
-    const int status = runtime_memory_grow(runtime, (u32)delta_pages_raw, &prev_pages, &grew);
+    const int status = runtime_memory_grow(runtime, mem_index, delta_pages_raw, &prev_pages, &grew);
     if (status != FA_RUNTIME_OK) {
         return status;
     }
     if (!grew) {
-        return push_int_checked(job, (u32)UINT32_MAX, bits, is_signed);
+        if (memory->is_memory64) {
+            return push_int_checked(job, UINT64_MAX, 64U, true);
+        }
+        return push_int_checked(job, (u32)UINT32_MAX, 32U, true);
     }
-    return push_int_checked(job, prev_pages, bits, is_signed);
+    return push_int_checked(job, prev_pages, memory->is_memory64 ? 64U : 32U, true);
 }
 
 static void define_op(
@@ -2250,6 +2453,8 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x22, &type_void, wopt_unique, 0, 1, 1, 1, op_local); // local.tee
     define_op(ops, 0x23, &type_void, wopt_unique, 0, 0, 1, 1, op_global); // global.get
     define_op(ops, 0x24, &type_void, wopt_unique, 0, 1, 0, 1, op_global); // global.set
+    define_op(ops, 0x25, &type_void, wopt_unique, 0, 0, 0, 1, op_table); // table.get
+    define_op(ops, 0x26, &type_void, wopt_unique, 0, 1, 0, 1, op_table); // table.set
     define_op(ops, 0x28, &type_i32, wopt_load, 32, 1, 1, 2, op_load); // i32.load
     define_op(ops, 0x29, &type_i64, wopt_load, 64, 1, 1, 2, op_load); // i64.load
     define_op(ops, 0x2A, &type_f32, wopt_load, 32, 1, 1, 2, op_load); // f32.load
@@ -2407,4 +2612,6 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0xC4, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend32_s
     define_op(ops, 0x3F, &type_i32, wopt_unique, 0, 0, 1, 1, op_memory_size); // memory.size
     define_op(ops, 0x40, &type_i32, wopt_unique, 0, 1, 1, 1, op_memory_grow); // memory.grow
+    define_op(ops, 0xFC, &type_void, wopt_unique, 0, 0, 0, 1, op_bulk_memory); // bulk memory/table prefix
+    define_op(ops, 0xFD, &type_void, wopt_unique, 0, 0, 0, 1, op_simd); // simd prefix
 }

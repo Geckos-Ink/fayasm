@@ -36,7 +36,8 @@ typedef struct fa_Runtime {
     WasmInstructionStream* stream;
     jobId_t next_job_id;
     uint32_t max_call_depth;
-    fa_RuntimeMemory memory;
+    fa_RuntimeMemory* memories;
+    uint32_t memories_count;
     fa_JobValue* active_locals;
     uint32_t active_locals_count;
     fa_JobValue* globals;

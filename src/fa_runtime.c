@@ -30,8 +30,10 @@ typedef struct fa_RuntimeControlFrame {
     uint32_t start_pc;
     uint32_t else_pc;
     uint32_t end_pc;
-    uint8_t result_type;
-    bool has_result;
+    uint8_t* param_types;
+    uint32_t param_count;
+    uint8_t* result_types;
+    uint32_t result_count;
     bool preserve_stack;
     size_t stack_height;
 } fa_RuntimeControlFrame;
@@ -48,14 +50,17 @@ static void runtime_memory_reset(fa_Runtime* runtime) {
     if (!runtime) {
         return;
     }
-    if (runtime->memory.data) {
-        runtime->free(runtime->memory.data);
-        runtime->memory.data = NULL;
+    if (runtime->memories) {
+        for (uint32_t i = 0; i < runtime->memories_count; ++i) {
+            if (runtime->memories[i].data) {
+                runtime->free(runtime->memories[i].data);
+                runtime->memories[i].data = NULL;
+            }
+        }
+        free(runtime->memories);
+        runtime->memories = NULL;
     }
-    runtime->memory.size_bytes = 0;
-    runtime->memory.max_size_bytes = 0;
-    runtime->memory.has_max = false;
-    runtime->memory.is_memory64 = false;
+    runtime->memories_count = 0;
 }
 
 static void runtime_globals_reset(fa_Runtime* runtime) {
@@ -191,45 +196,66 @@ static int runtime_memory_init(fa_Runtime* runtime, const WasmModule* module) {
     if (module->num_memories == 0 || !module->memories) {
         return FA_RUNTIME_OK;
     }
-    const WasmMemory* memory = &module->memories[0];
-    runtime->memory.is_memory64 = memory->is_memory64;
-    runtime->memory.has_max = memory->has_max;
-    if (memory->is_memory64) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
+    runtime->memories = (fa_RuntimeMemory*)calloc(module->num_memories, sizeof(fa_RuntimeMemory));
+    if (!runtime->memories) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
-    if (memory->initial_size > UINT32_MAX) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    if (memory->has_max && memory->maximum_size > UINT32_MAX) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    const uint64_t max_pages = memory->has_max ? memory->maximum_size : 0;
-    if (memory->has_max) {
-        if (max_pages > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
-            return FA_RUNTIME_ERR_UNSUPPORTED;
-        }
-        runtime->memory.max_size_bytes = max_pages * FA_WASM_PAGE_SIZE;
-    }
+    runtime->memories_count = module->num_memories;
 
-    if (memory->initial_size == 0) {
-        runtime->memory.size_bytes = 0;
-        return FA_RUNTIME_OK;
+    int status = FA_RUNTIME_OK;
+    for (uint32_t i = 0; i < module->num_memories; ++i) {
+        const WasmMemory* memory = &module->memories[i];
+        fa_RuntimeMemory* dst = &runtime->memories[i];
+        dst->is_memory64 = memory->is_memory64;
+        dst->has_max = memory->has_max;
+
+        if (!memory->is_memory64) {
+            if (memory->initial_size > UINT32_MAX) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+            if (memory->has_max && memory->maximum_size > UINT32_MAX) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+        }
+
+        if (memory->has_max) {
+            const uint64_t max_pages = memory->maximum_size;
+            if (max_pages > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+            dst->max_size_bytes = max_pages * FA_WASM_PAGE_SIZE;
+        }
+
+        if (memory->initial_size == 0) {
+            dst->size_bytes = 0;
+            continue;
+        }
+        if (memory->initial_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+            status = FA_RUNTIME_ERR_UNSUPPORTED;
+            goto cleanup;
+        }
+        const uint64_t size_bytes = memory->initial_size * FA_WASM_PAGE_SIZE;
+        if (size_bytes > SIZE_MAX || size_bytes > (uint64_t)INT_MAX) {
+            status = FA_RUNTIME_ERR_OUT_OF_MEMORY;
+            goto cleanup;
+        }
+        uint8_t* data = (uint8_t*)runtime->malloc((int)size_bytes);
+        if (!data) {
+            status = FA_RUNTIME_ERR_OUT_OF_MEMORY;
+            goto cleanup;
+        }
+        memset(data, 0, (size_t)size_bytes);
+        dst->data = data;
+        dst->size_bytes = size_bytes;
     }
-    if (memory->initial_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    const uint64_t size_bytes = memory->initial_size * FA_WASM_PAGE_SIZE;
-    if (size_bytes > SIZE_MAX || size_bytes > (uint64_t)INT_MAX) {
-        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
-    }
-    uint8_t* data = (uint8_t*)runtime->malloc((int)size_bytes);
-    if (!data) {
-        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
-    }
-    memset(data, 0, (size_t)size_bytes);
-    runtime->memory.data = data;
-    runtime->memory.size_bytes = size_bytes;
     return FA_RUNTIME_OK;
+
+cleanup:
+    runtime_memory_reset(runtime);
+    return status;
 }
 
 static void runtime_job_reg_clear(fa_Job* job) {
@@ -252,6 +278,7 @@ static int runtime_control_reserve(fa_RuntimeCallFrame* frame, uint32_t count) {
     if (count <= frame->control_capacity) {
         return FA_RUNTIME_OK;
     }
+    const uint32_t previous_capacity = frame->control_capacity;
     uint32_t next_capacity = frame->control_capacity ? frame->control_capacity * 2U : 8U;
     while (next_capacity < count) {
         next_capacity *= 2U;
@@ -260,9 +287,24 @@ static int runtime_control_reserve(fa_RuntimeCallFrame* frame, uint32_t count) {
     if (!next) {
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
+    if (next_capacity > previous_capacity) {
+        memset(next + previous_capacity, 0, (next_capacity - previous_capacity) * sizeof(fa_RuntimeControlFrame));
+    }
     frame->control_stack = next;
     frame->control_capacity = next_capacity;
     return FA_RUNTIME_OK;
+}
+
+static void runtime_control_frame_clear(fa_RuntimeControlFrame* entry) {
+    if (!entry) {
+        return;
+    }
+    free(entry->param_types);
+    free(entry->result_types);
+    entry->param_types = NULL;
+    entry->result_types = NULL;
+    entry->param_count = 0;
+    entry->result_count = 0;
 }
 
 static int runtime_control_push(fa_RuntimeCallFrame* frame,
@@ -270,8 +312,10 @@ static int runtime_control_push(fa_RuntimeCallFrame* frame,
                                 uint32_t start_pc,
                                 uint32_t else_pc,
                                 uint32_t end_pc,
-                                uint8_t result_type,
-                                bool has_result,
+                                const uint32_t* param_types,
+                                uint32_t param_count,
+                                const uint32_t* result_types,
+                                uint32_t result_count,
                                 bool preserve_stack,
                                 size_t stack_height) {
     if (!frame) {
@@ -283,12 +327,40 @@ static int runtime_control_push(fa_RuntimeCallFrame* frame,
         return status;
     }
     fa_RuntimeControlFrame* entry = &frame->control_stack[frame->control_depth];
+    runtime_control_frame_clear(entry);
     entry->type = type;
     entry->start_pc = start_pc;
     entry->else_pc = else_pc;
     entry->end_pc = end_pc;
-    entry->result_type = result_type;
-    entry->has_result = has_result;
+    entry->param_count = param_count;
+    entry->result_count = result_count;
+    if (param_count > 0) {
+        entry->param_types = (uint8_t*)malloc(param_count * sizeof(uint8_t));
+        if (!entry->param_types) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        for (uint32_t i = 0; i < param_count; ++i) {
+            if (param_types[i] > UINT8_MAX) {
+                runtime_control_frame_clear(entry);
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            entry->param_types[i] = (uint8_t)param_types[i];
+        }
+    }
+    if (result_count > 0) {
+        entry->result_types = (uint8_t*)malloc(result_count * sizeof(uint8_t));
+        if (!entry->result_types) {
+            runtime_control_frame_clear(entry);
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        for (uint32_t i = 0; i < result_count; ++i) {
+            if (result_types[i] > UINT8_MAX) {
+                runtime_control_frame_clear(entry);
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            entry->result_types[i] = (uint8_t)result_types[i];
+        }
+    }
     entry->preserve_stack = preserve_stack;
     entry->stack_height = stack_height;
     frame->control_depth = next_depth;
@@ -307,13 +379,18 @@ static void runtime_control_pop_to(fa_RuntimeCallFrame* frame, uint32_t label_de
         return;
     }
     const uint32_t target_index = frame->control_depth - 1U - label_depth;
-    frame->control_depth = keep_target ? (target_index + 1U) : target_index;
+    const uint32_t new_depth = keep_target ? (target_index + 1U) : target_index;
+    for (uint32_t i = new_depth; i < frame->control_depth; ++i) {
+        runtime_control_frame_clear(&frame->control_stack[i]);
+    }
+    frame->control_depth = new_depth;
 }
 
 static void runtime_control_pop_one(fa_RuntimeCallFrame* frame) {
     if (!frame || frame->control_depth == 0) {
         return;
     }
+    runtime_control_frame_clear(&frame->control_stack[frame->control_depth - 1U]);
     frame->control_depth -= 1U;
 }
 
@@ -359,56 +436,65 @@ static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype) {
     }
 }
 
-static int runtime_decode_block_type(int64_t block_type, uint8_t* result_type, bool* has_result) {
-    if (!result_type || !has_result) {
+typedef struct {
+    const uint32_t* param_types;
+    uint32_t param_count;
+    const uint32_t* result_types;
+    uint32_t result_count;
+    uint32_t inline_result_type;
+} fa_RuntimeBlockSignature;
+
+static int runtime_decode_block_signature(const fa_Runtime* runtime,
+                                          int64_t block_type,
+                                          fa_RuntimeBlockSignature* sig) {
+    if (!sig) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    *result_type = 0;
-    *has_result = false;
+    sig->param_types = NULL;
+    sig->param_count = 0;
+    sig->result_types = NULL;
+    sig->result_count = 0;
+    sig->inline_result_type = 0;
 
     if (block_type == -64 || block_type == 0x40) {
         return FA_RUNTIME_OK;
     }
     if (block_type >= 0) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
+        if (!runtime || !runtime->module || block_type > UINT32_MAX) {
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+        const uint32_t type_index = (uint32_t)block_type;
+        if (type_index >= runtime->module->num_types) {
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+        const WasmFunctionType* type = &runtime->module->types[type_index];
+        sig->param_types = type->param_types;
+        sig->param_count = type->num_params;
+        sig->result_types = type->result_types;
+        sig->result_count = type->num_results;
+        return FA_RUNTIME_OK;
     }
+
     switch (block_type) {
         case -1:
-            *result_type = VALTYPE_I32;
-            *has_result = true;
+            sig->inline_result_type = VALTYPE_I32;
+            sig->result_types = &sig->inline_result_type;
+            sig->result_count = 1;
             return FA_RUNTIME_OK;
         case -2:
-            *result_type = VALTYPE_I64;
-            *has_result = true;
+            sig->inline_result_type = VALTYPE_I64;
+            sig->result_types = &sig->inline_result_type;
+            sig->result_count = 1;
             return FA_RUNTIME_OK;
         case -3:
-            *result_type = VALTYPE_F32;
-            *has_result = true;
+            sig->inline_result_type = VALTYPE_F32;
+            sig->result_types = &sig->inline_result_type;
+            sig->result_count = 1;
             return FA_RUNTIME_OK;
         case -4:
-            *result_type = VALTYPE_F64;
-            *has_result = true;
-            return FA_RUNTIME_OK;
-        default:
-            return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-}
-
-static int runtime_result_from_valtype(uint32_t valtype, uint8_t* result_type, bool* has_result) {
-    if (!result_type || !has_result) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    *result_type = 0;
-    *has_result = false;
-    switch (valtype) {
-        case VALTYPE_I32:
-        case VALTYPE_I64:
-        case VALTYPE_F32:
-        case VALTYPE_F64:
-        case VALTYPE_FUNCREF:
-        case VALTYPE_EXTERNREF:
-            *result_type = (uint8_t)valtype;
-            *has_result = true;
+            sig->inline_result_type = VALTYPE_F64;
+            sig->result_types = &sig->inline_result_type;
+            sig->result_count = 1;
             return FA_RUNTIME_OK;
         default:
             return FA_RUNTIME_ERR_UNSUPPORTED;
@@ -450,6 +536,9 @@ static void runtime_free_frame_resources(fa_RuntimeCallFrame* frame) {
         frame->locals = NULL;
     }
     if (frame->control_stack) {
+        for (uint32_t i = 0; i < frame->control_depth; ++i) {
+            runtime_control_frame_clear(&frame->control_stack[i]);
+        }
         free(frame->control_stack);
         frame->control_stack = NULL;
     }
@@ -514,7 +603,11 @@ static int runtime_read_sleb128(const uint8_t* buffer, uint32_t buffer_size, uin
     return FA_RUNTIME_OK;
 }
 
-static int runtime_skip_immediates(const uint8_t* body, uint32_t body_size, uint32_t* cursor, uint8_t opcode) {
+static int runtime_skip_immediates(const uint8_t* body,
+                                   uint32_t body_size,
+                                   const fa_Runtime* runtime,
+                                   uint32_t* cursor,
+                                   uint8_t opcode) {
     if (!body || !cursor) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -578,11 +671,82 @@ static int runtime_skip_immediates(const uint8_t* body, uint32_t body_size, uint
         case 0x38: case 0x39: case 0x3A: case 0x3B:
         case 0x3C: case 0x3D: case 0x3E:
         {
+            if (runtime && runtime->module && runtime->module->num_memories > 1) {
+                int status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
             int status = runtime_read_uleb128(body, body_size, cursor, &uleb);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
             return runtime_read_uleb128(body, body_size, cursor, &uleb);
+        }
+        case 0x25: /* table.get */
+        case 0x26: /* table.set */
+            return runtime_read_uleb128(body, body_size, cursor, &uleb);
+        case 0xFC: /* bulk memory/table prefix */
+        {
+            int status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            switch (uleb) {
+                case 8: /* memory.init */
+                    status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 9: /* data.drop */
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 10: /* memory.copy */
+                    status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 11: /* memory.fill */
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 12: /* table.init */
+                    status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 13: /* elem.drop */
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 14: /* table.copy */
+                    status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                case 15: /* table.grow */
+                case 16: /* table.size */
+                case 17: /* table.fill */
+                    return runtime_read_uleb128(body, body_size, cursor, &uleb);
+                default:
+                    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+            }
+        }
+        case 0xFD: /* simd prefix */
+        {
+            int status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            switch (uleb) {
+                case 0: /* v128.const */
+                    if (*cursor + 16U > body_size) {
+                        return FA_RUNTIME_ERR_STREAM;
+                    }
+                    *cursor += 16U;
+                    return FA_RUNTIME_OK;
+                default:
+                    return FA_RUNTIME_OK;
+            }
         }
         default:
             return FA_RUNTIME_OK;
@@ -591,6 +755,7 @@ static int runtime_skip_immediates(const uint8_t* body, uint32_t body_size, uint
 
 static int runtime_scan_block(const uint8_t* body,
                               uint32_t body_size,
+                              const fa_Runtime* runtime,
                               uint32_t start_pc,
                               uint32_t* else_pc_out,
                               uint32_t* end_pc_out) {
@@ -632,7 +797,7 @@ static int runtime_scan_block(const uint8_t* body,
                 break;
             default:
             {
-                int status = runtime_skip_immediates(body, body_size, &cursor, opcode);
+                int status = runtime_skip_immediates(body, body_size, runtime, &cursor, opcode);
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }
@@ -682,6 +847,30 @@ static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t 
         default:
             return false;
     }
+}
+
+static int runtime_stack_check_types(const fa_JobStack* stack, const uint32_t* types, uint32_t count) {
+    if (!stack) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (count == 0) {
+        return FA_RUNTIME_OK;
+    }
+    if (!types) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (stack->size < count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const fa_JobValue* value = fa_JobStack_peek(stack, i);
+        const uint32_t type_index = count - 1U - i;
+        if (!value || types[type_index] > UINT8_MAX ||
+            !runtime_job_value_matches_valtype(value, (uint8_t)types[type_index])) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    return FA_RUNTIME_OK;
 }
 
 static bool runtime_job_value_to_u64(const fa_JobValue* value, u64* out) {
@@ -904,22 +1093,17 @@ static int runtime_push_frame(fa_Runtime* runtime,
         return status;
     }
 
-    uint8_t result_type = 0;
-    bool has_result = false;
+    const WasmFunctionType* type = NULL;
     if (runtime->module) {
         const uint32_t type_index = runtime->module->functions[function_index].type_index;
         if (type_index >= runtime->module->num_types) {
             runtime_free_frame_resources(frame);
             return FA_RUNTIME_ERR_INVALID_ARGUMENT;
         }
-        const WasmFunctionType* type = &runtime->module->types[type_index];
-        if (type->num_results > 1) {
-            runtime_free_frame_resources(frame);
-            return FA_RUNTIME_ERR_UNSUPPORTED;
-        }
-        if (type->num_results == 1) {
-            const uint32_t valtype = type->result_types[0];
-            if (runtime_result_from_valtype(valtype, &result_type, &has_result) != FA_RUNTIME_OK) {
+        type = &runtime->module->types[type_index];
+        for (uint32_t i = 0; i < type->num_results; ++i) {
+            fa_JobValue dummy;
+            if (runtime_init_value_from_valtype(&dummy, type->result_types[i]) != FA_RUNTIME_OK) {
                 runtime_free_frame_resources(frame);
                 return FA_RUNTIME_ERR_UNSUPPORTED;
             }
@@ -931,8 +1115,10 @@ static int runtime_push_frame(fa_Runtime* runtime,
                                   frame->code_start,
                                   0,
                                   frame->body_size,
-                                  result_type,
-                                  has_result,
+                                  NULL,
+                                  0,
+                                  type ? type->result_types : NULL,
+                                  type ? type->num_results : 0,
                                   false,
                                   0);
     if (status != FA_RUNTIME_OK) {
@@ -977,6 +1163,8 @@ fa_Runtime* fa_Runtime_init(void) {
     runtime->max_call_depth = 64;
     runtime->active_locals = NULL;
     runtime->active_locals_count = 0;
+    runtime->memories = NULL;
+    runtime->memories_count = 0;
     runtime->globals = NULL;
     runtime->globals_count = 0;
     if (!runtime->jobs) {
@@ -1132,11 +1320,12 @@ typedef struct {
 
 static int runtime_decode_instruction(const uint8_t* body,
                                       uint32_t body_size,
+                                      fa_Runtime* runtime,
                                       fa_RuntimeCallFrame* frame,
                                       fa_Job* job,
                                       uint8_t opcode,
                                       fa_RuntimeInstructionContext* ctx) {
-    if (!body || !frame || !job || !ctx) {
+    if (!body || !frame || !job || !ctx || !runtime) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     memset(ctx, 0, sizeof(*ctx));
@@ -1150,17 +1339,23 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            uint8_t result_type = 0;
-            bool has_result = false;
-            status = runtime_decode_block_type(block_type, &result_type, &has_result);
+            fa_RuntimeBlockSignature sig;
+            status = runtime_decode_block_signature(runtime, block_type, &sig);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
             uint32_t else_pc = 0;
             uint32_t end_pc = 0;
-            status = runtime_scan_block(body, body_size, frame->pc, &else_pc, &end_pc);
+            status = runtime_scan_block(body, body_size, runtime, frame->pc, &else_pc, &end_pc);
             if (status != FA_RUNTIME_OK) {
                 return status;
+            }
+            status = runtime_stack_check_types(&job->stack, sig.param_types, sig.param_count);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (job->stack.size < sig.param_count) {
+                return FA_RUNTIME_ERR_TRAP;
             }
             const fa_RuntimeControlType type = opcode == 0x03 ? FA_CONTROL_LOOP : FA_CONTROL_BLOCK;
             status = runtime_control_push(frame,
@@ -1168,10 +1363,12 @@ static int runtime_decode_instruction(const uint8_t* body,
                                           frame->pc,
                                           0,
                                           end_pc,
-                                          result_type,
-                                          has_result,
+                                          sig.param_types,
+                                          sig.param_count,
+                                          sig.result_types,
+                                          sig.result_count,
                                           false,
-                                          job->stack.size);
+                                          job->stack.size - sig.param_count);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
@@ -1185,19 +1382,18 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            uint8_t result_type = 0;
-            bool has_result = false;
-            status = runtime_decode_block_type(block_type, &result_type, &has_result);
+            fa_RuntimeBlockSignature sig;
+            status = runtime_decode_block_signature(runtime, block_type, &sig);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
             uint32_t else_pc = 0;
             uint32_t end_pc = 0;
-            status = runtime_scan_block(body, body_size, frame->pc, &else_pc, &end_pc);
+            status = runtime_scan_block(body, body_size, runtime, frame->pc, &else_pc, &end_pc);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            if (has_result && else_pc == 0) {
+            if (sig.result_count > 0 && else_pc == 0) {
                 return FA_RUNTIME_ERR_UNSUPPORTED;
             }
             status = runtime_control_push(frame,
@@ -1205,8 +1401,10 @@ static int runtime_decode_instruction(const uint8_t* body,
                                           frame->pc,
                                           else_pc,
                                           end_pc,
-                                          result_type,
-                                          has_result,
+                                          sig.param_types,
+                                          sig.param_count,
+                                          sig.result_types,
+                                          sig.result_count,
                                           false,
                                           job->stack.size);
             if (status != FA_RUNTIME_OK) {
@@ -1331,6 +1529,17 @@ static int runtime_decode_instruction(const uint8_t* body,
             uint32_t u32_value = (uint32_t)index;
             return runtime_push_reg_value(job, &u32_value, sizeof(u32_value));
         }
+        case 0x25: // table.get
+        case 0x26: // table.set
+        {
+            uint64_t index = 0;
+            int status = runtime_read_uleb128(body, body_size, &frame->pc, &index);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            uint32_t u32_value = (uint32_t)index;
+            return runtime_push_reg_value(job, &u32_value, sizeof(u32_value));
+        }
         case 0x41: // i32.const
         {
             int64_t value = 0;
@@ -1388,6 +1597,24 @@ static int runtime_decode_instruction(const uint8_t* body,
         case 0x38: case 0x39: case 0x3A: case 0x3B:
         case 0x3C: case 0x3D: case 0x3E:
         {
+            uint64_t mem_index = 0;
+            bool memory64 = false;
+            if (runtime->module && runtime->module->num_memories > 1) {
+                int status = runtime_read_uleb128(body, body_size, &frame->pc, &mem_index);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                uint32_t mem_index_u32 = (uint32_t)mem_index;
+                status = runtime_push_reg_value(job, &mem_index_u32, sizeof(mem_index_u32));
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                if (mem_index_u32 < runtime->module->num_memories) {
+                    memory64 = runtime->module->memories[mem_index_u32].is_memory64;
+                }
+            } else if (runtime->module && runtime->module->num_memories == 1) {
+                memory64 = runtime->module->memories[0].is_memory64;
+            }
             uint64_t align = 0;
             int status = runtime_read_uleb128(body, body_size, &frame->pc, &align);
             if (status != FA_RUNTIME_OK) {
@@ -1403,8 +1630,193 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
+            if (memory64) {
+                return runtime_push_reg_value(job, &offset, sizeof(offset));
+            }
             uint32_t offset32 = (uint32_t)offset;
             return runtime_push_reg_value(job, &offset32, sizeof(offset32));
+        }
+        case 0xFC: // bulk memory/table prefix
+        {
+            uint64_t subopcode = 0;
+            int status = runtime_read_uleb128(body, body_size, &frame->pc, &subopcode);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            uint32_t sub = (uint32_t)subopcode;
+            switch (sub) {
+                case 8: // memory.init
+                {
+                    uint64_t data_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &data_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t data_u32 = (uint32_t)data_index;
+                    status = runtime_push_reg_value(job, &data_u32, sizeof(data_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint64_t mem_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &mem_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t mem_u32 = (uint32_t)mem_index;
+                    status = runtime_push_reg_value(job, &mem_u32, sizeof(mem_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 9: // data.drop
+                {
+                    uint64_t data_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &data_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t data_u32 = (uint32_t)data_index;
+                    status = runtime_push_reg_value(job, &data_u32, sizeof(data_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 10: // memory.copy
+                {
+                    uint64_t dst_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &dst_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t dst_u32 = (uint32_t)dst_index;
+                    status = runtime_push_reg_value(job, &dst_u32, sizeof(dst_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint64_t src_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &src_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t src_u32 = (uint32_t)src_index;
+                    status = runtime_push_reg_value(job, &src_u32, sizeof(src_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 11: // memory.fill
+                {
+                    uint64_t mem_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &mem_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t mem_u32 = (uint32_t)mem_index;
+                    status = runtime_push_reg_value(job, &mem_u32, sizeof(mem_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 12: // table.init
+                {
+                    uint64_t table_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &table_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t table_u32 = (uint32_t)table_index;
+                    status = runtime_push_reg_value(job, &table_u32, sizeof(table_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint64_t elem_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &elem_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t elem_u32 = (uint32_t)elem_index;
+                    status = runtime_push_reg_value(job, &elem_u32, sizeof(elem_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 13: // elem.drop
+                {
+                    uint64_t elem_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &elem_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t elem_u32 = (uint32_t)elem_index;
+                    status = runtime_push_reg_value(job, &elem_u32, sizeof(elem_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 14: // table.copy
+                {
+                    uint64_t dst_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &dst_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t dst_u32 = (uint32_t)dst_index;
+                    status = runtime_push_reg_value(job, &dst_u32, sizeof(dst_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint64_t src_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &src_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t src_u32 = (uint32_t)src_index;
+                    status = runtime_push_reg_value(job, &src_u32, sizeof(src_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                case 15: // table.grow
+                case 16: // table.size
+                case 17: // table.fill
+                {
+                    uint64_t table_index = 0;
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &table_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t table_u32 = (uint32_t)table_index;
+                    status = runtime_push_reg_value(job, &table_u32, sizeof(table_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                default:
+                    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+            }
+        }
+        case 0xFD: // simd prefix
+        {
+            uint64_t subopcode = 0;
+            int status = runtime_read_uleb128(body, body_size, &frame->pc, &subopcode);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (subopcode == 0) { // v128.const
+                if (frame->pc + 16U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                frame->pc += 16U;
+            }
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
         }
         default:
         {
@@ -1434,40 +1846,57 @@ static void runtime_instruction_context_free(fa_RuntimeInstructionContext* ctx) 
 
 static int runtime_unwind_stack_to(fa_Job* job,
                                    size_t target_height,
-                                   bool keep_result,
-                                   uint8_t result_type,
-                                   fa_JobValue* result_out) {
+                                   const uint8_t* types,
+                                   uint32_t type_count) {
     if (!job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     if (job->stack.size < target_height) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    fa_JobValue result = {0};
-    if (keep_result) {
-        if (job->stack.size <= target_height) {
+    if (type_count > 0) {
+        if (!types) {
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+        }
+        if (job->stack.size < target_height + type_count) {
             return FA_RUNTIME_ERR_TRAP;
         }
-        if (!fa_JobStack_pop(&job->stack, &result)) {
-            return FA_RUNTIME_ERR_TRAP;
+    }
+
+    fa_JobValue* values = NULL;
+    if (type_count > 0) {
+        values = (fa_JobValue*)calloc(type_count, sizeof(fa_JobValue));
+        if (!values) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
         }
-        if (!runtime_job_value_matches_valtype(&result, result_type)) {
-            return FA_RUNTIME_ERR_TRAP;
+        for (uint32_t i = 0; i < type_count; ++i) {
+            if (!fa_JobStack_pop(&job->stack, &values[i])) {
+                free(values);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint32_t type_index = type_count - 1U - i;
+            if (types[type_index] > UINT8_MAX ||
+                !runtime_job_value_matches_valtype(&values[i], (uint8_t)types[type_index])) {
+                free(values);
+                return FA_RUNTIME_ERR_TRAP;
+            }
         }
     }
     while (job->stack.size > target_height) {
         fa_JobValue discard;
         if (!fa_JobStack_pop(&job->stack, &discard)) {
+            free(values);
             return FA_RUNTIME_ERR_TRAP;
         }
     }
-    if (keep_result) {
-        if (!fa_JobStack_push(&job->stack, &result)) {
-            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    if (values) {
+        for (uint32_t i = type_count; i > 0; --i) {
+            if (!fa_JobStack_push(&job->stack, &values[i - 1U])) {
+                free(values);
+                return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+            }
         }
-        if (result_out) {
-            *result_out = result;
-        }
+        free(values);
     }
     return FA_RUNTIME_OK;
 }
@@ -1482,11 +1911,18 @@ static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint
     }
     const fa_RuntimeControlFrame target_copy = *target;
     if (!target_copy.preserve_stack) {
-        int status = runtime_unwind_stack_to(job,
-                                             target_copy.stack_height,
-                                             target_copy.has_result,
-                                             target_copy.result_type,
-                                             NULL);
+        size_t unwind_height = target_copy.stack_height;
+        const uint8_t* types = target_copy.result_types;
+        uint32_t type_count = target_copy.result_count;
+        if (target_copy.type == FA_CONTROL_LOOP) {
+            types = target_copy.param_types;
+            type_count = target_copy.param_count;
+            if (unwind_height < target_copy.param_count) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            unwind_height -= target_copy.param_count;
+        }
+        int status = runtime_unwind_stack_to(job, unwind_height, types, type_count);
         if (status != FA_RUNTIME_OK) {
             return status;
         }
@@ -1531,6 +1967,16 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 return FA_RUNTIME_ERR_TRAP;
             }
             entry->stack_height = job->stack.size;
+            if (entry->param_count > 0) {
+                int status = runtime_stack_check_types(&job->stack, entry->param_types, entry->param_count);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                if (entry->stack_height < entry->param_count) {
+                    return FA_RUNTIME_ERR_TRAP;
+                }
+                entry->stack_height -= entry->param_count;
+            }
             if (!truthy) {
                 if (entry->else_pc != 0) {
                     frame->pc = entry->else_pc;
@@ -1553,9 +1999,8 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             if (!entry->preserve_stack) {
                 int status = runtime_unwind_stack_to(job,
                                                      entry->stack_height,
-                                                     entry->has_result,
-                                                     entry->result_type,
-                                                     NULL);
+                                                     entry->result_types,
+                                                     entry->result_count);
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }
@@ -1643,7 +2088,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
         uint8_t opcode = body[frame->pc++];
 
         fa_RuntimeInstructionContext ctx;
-        status = runtime_decode_instruction(body, frame->body_size, frame, job, opcode, &ctx);
+        status = runtime_decode_instruction(body, frame->body_size, runtime, frame, job, opcode, &ctx);
         if (status != FA_RUNTIME_OK) {
             runtime_instruction_context_free(&ctx);
             break;
