@@ -70,20 +70,43 @@ static void runtime_globals_reset(fa_Runtime* runtime) {
 }
 
 static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype);
+static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t valtype);
 
 static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
     if (!runtime || !module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
+    fa_JobValue* imported_overrides = NULL;
+    if (module->num_globals > 0 && runtime->globals && module->globals &&
+        runtime->globals_count == module->num_globals) {
+        imported_overrides = (fa_JobValue*)calloc(module->num_globals, sizeof(fa_JobValue));
+        if (!imported_overrides) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        for (uint32_t i = 0; i < module->num_globals; ++i) {
+            const WasmGlobal* global = &module->globals[i];
+            if (!global->is_imported) {
+                continue;
+            }
+            if (!runtime_job_value_matches_valtype(&runtime->globals[i], global->valtype)) {
+                continue;
+            }
+            imported_overrides[i] = runtime->globals[i];
+        }
+    }
+
     runtime_globals_reset(runtime);
     if (module->num_globals == 0) {
+        free(imported_overrides);
         return FA_RUNTIME_OK;
     }
     if (!module->globals) {
+        free(imported_overrides);
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_JobValue* globals = (fa_JobValue*)calloc(module->num_globals, sizeof(fa_JobValue));
     if (!globals) {
+        free(imported_overrides);
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
     runtime->globals = globals;
@@ -95,9 +118,14 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
         int status = runtime_init_value_from_valtype(&value, global->valtype);
         if (status != FA_RUNTIME_OK) {
             runtime_globals_reset(runtime);
+            free(imported_overrides);
             return status;
         }
-        if (!global->is_imported) {
+        if (global->is_imported) {
+            if (imported_overrides && imported_overrides[i].kind != fa_job_value_invalid) {
+                value = imported_overrides[i];
+            }
+        } else {
             switch (global->init_kind) {
                 case WASM_GLOBAL_INIT_CONST:
                     switch (global->valtype) {
@@ -125,16 +153,19 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
                             break;
                         default:
                             runtime_globals_reset(runtime);
+                            free(imported_overrides);
                             return FA_RUNTIME_ERR_UNSUPPORTED;
                     }
                     break;
                 case WASM_GLOBAL_INIT_GET:
                     if (global->init_index >= i) {
                         runtime_globals_reset(runtime);
+                        free(imported_overrides);
                         return FA_RUNTIME_ERR_UNSUPPORTED;
                     }
                     if (module->globals[global->init_index].valtype != global->valtype) {
                         runtime_globals_reset(runtime);
+                        free(imported_overrides);
                         return FA_RUNTIME_ERR_UNSUPPORTED;
                     }
                     value = runtime->globals[global->init_index];
@@ -142,11 +173,13 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
                 case WASM_GLOBAL_INIT_NONE:
                 default:
                     runtime_globals_reset(runtime);
+                    free(imported_overrides);
                     return FA_RUNTIME_ERR_UNSUPPORTED;
             }
         }
         runtime->globals[i] = value;
     }
+    free(imported_overrides);
     return FA_RUNTIME_OK;
 }
 
@@ -630,6 +663,27 @@ static bool runtime_job_value_truthy(const fa_JobValue* value) {
     }
 }
 
+static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t valtype) {
+    if (!value) {
+        return false;
+    }
+    switch (valtype) {
+        case VALTYPE_I32:
+            return value->kind == fa_job_value_i32;
+        case VALTYPE_I64:
+            return value->kind == fa_job_value_i64;
+        case VALTYPE_F32:
+            return value->kind == fa_job_value_f32;
+        case VALTYPE_F64:
+            return value->kind == fa_job_value_f64;
+        case VALTYPE_FUNCREF:
+        case VALTYPE_EXTERNREF:
+            return value->kind == fa_job_value_ref;
+        default:
+            return false;
+    }
+}
+
 static bool runtime_job_value_to_u64(const fa_JobValue* value, u64* out) {
     if (!value || !out) {
         return false;
@@ -879,7 +933,7 @@ static int runtime_push_frame(fa_Runtime* runtime,
                                   frame->body_size,
                                   result_type,
                                   has_result,
-                                  !has_result,
+                                  false,
                                   0);
     if (status != FA_RUNTIME_OK) {
         runtime_free_frame_resources(frame);
@@ -1029,6 +1083,24 @@ int fa_Runtime_destroy_job(fa_Runtime* runtime, fa_Job* job) {
         }
     }
     return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+}
+
+int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value) {
+    if (!runtime || !value || !runtime->module || !runtime->globals) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (global_index >= runtime->globals_count || global_index >= runtime->module->num_globals) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    const WasmGlobal* global = &runtime->module->globals[global_index];
+    if (!global->is_imported) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime_job_value_matches_valtype(value, global->valtype)) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    runtime->globals[global_index] = *value;
+    return runtime_init_globals(runtime, runtime->module);
 }
 
 typedef enum {
@@ -1360,7 +1432,11 @@ static void runtime_instruction_context_free(fa_RuntimeInstructionContext* ctx) 
     ctx->br_table_default = 0;
 }
 
-static int runtime_unwind_stack_to(fa_Job* job, size_t target_height, bool keep_result, fa_JobValue* result_out) {
+static int runtime_unwind_stack_to(fa_Job* job,
+                                   size_t target_height,
+                                   bool keep_result,
+                                   uint8_t result_type,
+                                   fa_JobValue* result_out) {
     if (!job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -1373,6 +1449,9 @@ static int runtime_unwind_stack_to(fa_Job* job, size_t target_height, bool keep_
             return FA_RUNTIME_ERR_TRAP;
         }
         if (!fa_JobStack_pop(&job->stack, &result)) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (!runtime_job_value_matches_valtype(&result, result_type)) {
             return FA_RUNTIME_ERR_TRAP;
         }
     }
@@ -1403,7 +1482,11 @@ static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint
     }
     const fa_RuntimeControlFrame target_copy = *target;
     if (!target_copy.preserve_stack) {
-        int status = runtime_unwind_stack_to(job, target_copy.stack_height, target_copy.has_result, NULL);
+        int status = runtime_unwind_stack_to(job,
+                                             target_copy.stack_height,
+                                             target_copy.has_result,
+                                             target_copy.result_type,
+                                             NULL);
         if (status != FA_RUNTIME_OK) {
             return status;
         }
@@ -1468,7 +1551,11 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 return FA_RUNTIME_OK;
             }
             if (!entry->preserve_stack) {
-                int status = runtime_unwind_stack_to(job, entry->stack_height, entry->has_result, NULL);
+                int status = runtime_unwind_stack_to(job,
+                                                     entry->stack_height,
+                                                     entry->has_result,
+                                                     entry->result_type,
+                                                     NULL);
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }

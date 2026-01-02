@@ -12,6 +12,11 @@ typedef struct {
     size_t capacity;
 } ByteBuffer;
 
+static const uint8_t kResultI32[] = { VALTYPE_I32 };
+static const uint8_t kResultI64[] = { VALTYPE_I64 };
+static const uint8_t kResultF32[] = { VALTYPE_F32 };
+static const uint8_t kResultF64[] = { VALTYPE_F64 };
+
 static void bb_free(ByteBuffer* buffer) {
     if (!buffer) {
         return;
@@ -142,8 +147,13 @@ static int build_module(ByteBuffer* module,
                         int with_memory,
                         uint32_t memory_initial_pages,
                         int memory_has_max,
-                        uint32_t memory_max_pages) {
+                        uint32_t memory_max_pages,
+                        const uint8_t* result_types,
+                        uint32_t result_count) {
     if (!module || !bodies || !body_sizes || func_count == 0) {
+        return 0;
+    }
+    if (result_count > 0 && !result_types) {
         return 0;
     }
     bb_reset(module);
@@ -158,7 +168,10 @@ static int build_module(ByteBuffer* module,
     bb_write_uleb(&payload, 1);
     bb_write_byte(&payload, 0x60);
     bb_write_uleb(&payload, 0);
-    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, result_count);
+    for (uint32_t i = 0; i < result_count; ++i) {
+        bb_write_byte(&payload, result_types[i]);
+    }
     if (!append_section(module, SECTION_TYPE, &payload)) {
         bb_free(&payload);
         return 0;
@@ -219,8 +232,13 @@ static int build_module_with_locals(ByteBuffer* module,
                                     int with_memory,
                                     uint32_t memory_initial_pages,
                                     int memory_has_max,
-                                    uint32_t memory_max_pages) {
+                                    uint32_t memory_max_pages,
+                                    const uint8_t* result_types,
+                                    uint32_t result_count) {
     if (!module || !bodies || !body_sizes || func_count == 0) {
+        return 0;
+    }
+    if (result_count > 0 && !result_types) {
         return 0;
     }
     bb_reset(module);
@@ -235,7 +253,10 @@ static int build_module_with_locals(ByteBuffer* module,
     bb_write_uleb(&payload, 1);
     bb_write_byte(&payload, 0x60);
     bb_write_uleb(&payload, 0);
-    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, result_count);
+    for (uint32_t i = 0; i < result_count; ++i) {
+        bb_write_byte(&payload, result_types[i]);
+    }
     if (!append_section(module, SECTION_TYPE, &payload)) {
         bb_free(&payload);
         return 0;
@@ -397,7 +418,7 @@ static int test_stack_arithmetic(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -438,7 +459,7 @@ static int test_div_by_zero_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -465,7 +486,7 @@ static int test_call_depth_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -496,7 +517,7 @@ static int test_memory_oob_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -515,24 +536,59 @@ static int test_memory_oob_trap(void) {
 }
 
 static int test_memory_grow_failure(void) {
+    ByteBuffer locals = {0};
+    bb_write_uleb(&locals, 1);
+    bb_write_uleb(&locals, 2);
+    bb_write_byte(&locals, VALTYPE_I32);
+
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x3F);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x21);
     bb_write_uleb(&instructions, 0);
     bb_write_byte(&instructions, 0x41);
     bb_write_sleb32(&instructions, 1);
     bb_write_byte(&instructions, 0x40);
     bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x21);
+    bb_write_uleb(&instructions, 1);
     bb_write_byte(&instructions, 0x3F);
     bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x20);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x6B);
+    bb_write_byte(&instructions, 0x20);
+    bb_write_uleb(&instructions, 1);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x6A);
+    bb_write_byte(&instructions, 0x6A);
     bb_write_byte(&instructions, 0x0B);
 
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
+    const uint8_t* locals_list[] = { locals.data };
+    const size_t locals_sizes[] = { locals.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 1, 1)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  locals_list,
+                                  locals_sizes,
+                                  1,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  1,
+                                  1,
+                                  1,
+                                  kResultI32,
+                                  1)) {
+        bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
+    bb_free(&locals);
 
     fa_Runtime* runtime = NULL;
     fa_Job* job = NULL;
@@ -549,13 +605,11 @@ static int test_memory_grow_failure(void) {
     }
 
     const fa_JobValue* top = fa_JobStack_peek(&job->stack, 0);
-    const fa_JobValue* mid = fa_JobStack_peek(&job->stack, 1);
-    const fa_JobValue* base = fa_JobStack_peek(&job->stack, 2);
-    if (!top || !mid || !base) {
+    if (!top || top->kind != fa_job_value_i32 || top->payload.i32_value != 0) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
-    if (top->payload.i32_value != 1 || base->payload.i32_value != 1 || mid->payload.i32_value != -1) {
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
@@ -574,7 +628,7 @@ static int test_i32_clz(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -613,7 +667,7 @@ static int test_f32_abs(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -662,7 +716,20 @@ static int test_local_get_set(void) {
     const uint8_t* locals_list[] = { locals.data };
     const size_t locals_sizes[] = { locals.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, locals_list, locals_sizes, 1, NULL, NULL, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  locals_list,
+                                  locals_sizes,
+                                  1,
+                                  NULL,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -714,7 +781,20 @@ static int test_local_tee(void) {
     const uint8_t* locals_list[] = { locals.data };
     const size_t locals_sizes[] = { locals.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, locals_list, locals_sizes, 1, NULL, NULL, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  locals_list,
+                                  locals_sizes,
+                                  1,
+                                  NULL,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -761,7 +841,7 @@ static int test_br_if_stack_effect(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -806,7 +886,7 @@ static int test_i64_add(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -847,7 +927,7 @@ static int test_f64_mul(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF64, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -886,7 +966,7 @@ static int test_trunc_f32_nan_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -914,7 +994,7 @@ static int test_trunc_f32_overflow_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -942,7 +1022,7 @@ static int test_trunc_f64_overflow_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI64, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -977,7 +1057,7 @@ static int test_if_else_false(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1026,7 +1106,7 @@ static int test_block_result_br(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1081,7 +1161,20 @@ static int test_global_get_initializer(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, NULL, &globals, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  NULL,
+                                  &globals,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1137,7 +1230,20 @@ static int test_global_import_initializer(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, &imports, &globals, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  &imports,
+                                  &globals,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&imports);
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
@@ -1154,6 +1260,16 @@ static int test_global_import_initializer(void) {
         return 1;
     }
 
+    fa_JobValue import_value = {0};
+    import_value.kind = fa_job_value_i32;
+    import_value.is_signed = true;
+    import_value.bit_width = 32U;
+    import_value.payload.i32_value = 11;
+    if (fa_Runtime_set_imported_global(runtime, 0, &import_value) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
     int status = fa_Runtime_execute_job(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
@@ -1161,7 +1277,7 @@ static int test_global_import_initializer(void) {
     }
 
     const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
-    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 0) {
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 11) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
@@ -1186,7 +1302,7 @@ static int test_br_to_end(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1239,7 +1355,7 @@ static int test_br_table_branch(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0)) {
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1)) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
@@ -1310,7 +1426,20 @@ static int test_loop_label_result(void) {
     const uint8_t* locals_list[] = { locals.data };
     const size_t locals_sizes[] = { locals.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, locals_list, locals_sizes, 1, NULL, NULL, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  locals_list,
+                                  locals_sizes,
+                                  1,
+                                  NULL,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1369,7 +1498,20 @@ static int test_global_get_set(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, NULL, &globals, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  NULL,
+                                  &globals,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1419,7 +1561,20 @@ static int test_global_set_immutable_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, NULL, &globals, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  NULL,
+                                  &globals,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  NULL,
+                                  0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1458,7 +1613,20 @@ static int test_global_set_type_mismatch_trap(void) {
     const uint8_t* bodies[] = { instructions.data };
     const size_t sizes[] = { instructions.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, NULL, &globals, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  NULL,
+                                  &globals,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  NULL,
+                                  0)) {
         bb_free(&globals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
@@ -1494,7 +1662,20 @@ static int test_local_f32_default(void) {
     const uint8_t* locals_list[] = { locals.data };
     const size_t locals_sizes[] = { locals.size };
     ByteBuffer module_bytes = {0};
-    if (!build_module_with_locals(&module_bytes, bodies, sizes, locals_list, locals_sizes, 1, NULL, NULL, 0, 0, 0, 0)) {
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  locals_list,
+                                  locals_sizes,
+                                  1,
+                                  NULL,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultF32,
+                                  1)) {
         bb_free(&locals);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;

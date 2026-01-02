@@ -52,10 +52,10 @@ The interpreter deliberately stops short of executing a full program: many opcod
 
 ## Known Gaps & Next Steps
 
-- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (tables, bulk memory, SIMD). Control-flow stack unwinding is in place, but function typing/multi-value returns are still minimal.
+- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (tables, bulk memory, SIMD). Control-flow stack unwinding is in place; single-result function typing is enforced and void functions clear the operand stack, but multi-value returns and loop label typing remain minimal.
 - Memory64 and multi-memory are not supported yet; `memory.size`/`memory.grow` and loads/stores currently target memory index 0 only.
-- Trap semantics cover divide-by-zero, linear-memory bounds, and float-to-int conversion traps; global initializers accept const and `global.get` expressions but imported globals still default to zero values.
-- Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, i64/f64 arithmetic, and conversion traps; expand into loop result typing and multi-value returns as new opcodes land.
+- Trap semantics cover divide-by-zero, linear-memory bounds, and float-to-int conversion traps; global initializers accept const and `global.get` expressions, and imported globals can be overridden via `fa_Runtime_set_imported_global` (defaults remain zero if unset).
+- Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, i64/f64 arithmetic, and conversion traps; they now specify function result types and exercise imported-global overrides, so expand into loop result typing and multi-value returns as new opcodes land.
 
 Contributions, experiments, and curious questions are welcome. The ambition is for fayasm to remain an approachable deep dive into WebAssembly execution internals while leaving room for JIT experiments or host integration research.
 
