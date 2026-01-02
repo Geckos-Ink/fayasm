@@ -42,6 +42,7 @@ static bool wasm_is_supported_valtype(uint8_t valtype) {
         case VALTYPE_I64:
         case VALTYPE_F32:
         case VALTYPE_F64:
+        case VALTYPE_V128:
         case VALTYPE_FUNCREF:
         case VALTYPE_EXTERNREF:
             return true;
@@ -175,12 +176,42 @@ int64_t read_sleb128_64(WasmModule* module, uint32_t* size_read) {
         shift += 7;
     } while (byte & 0x80 && shift < 64);
 
-    // Gestisce il segno
     if (shift < 64 && (byte & 0x40)) {
-        result |= ((int64_t)(~0) << shift);
+        result |= (~0LL << shift);
     }
 
     return result;
+}
+
+static int wasm_read_init_expr_offset(WasmModule* module, uint64_t* out) {
+    if (!module || !out) {
+        return -1;
+    }
+    uint8_t opcode = 0;
+    if (wasm_stream_read(module, &opcode, 1) != 1) {
+        return -1;
+    }
+    uint32_t size_read = 0;
+    int64_t value = 0;
+    switch (opcode) {
+        case 0x41:
+            value = read_sleb128(module, &size_read);
+            break;
+        case 0x42:
+            value = read_sleb128_64(module, &size_read);
+            break;
+        default:
+            return -1;
+    }
+    if (size_read == 0 || value < 0) {
+        return -1;
+    }
+    uint8_t end = 0;
+    if (wasm_stream_read(module, &end, 1) != 1 || end != 0x0B) {
+        return -1;
+    }
+    *out = (uint64_t)value;
+    return 0;
 }
 
 // Legge una stringa (lunghezza + dati)
@@ -317,6 +348,24 @@ void wasm_module_free(WasmModule* module) {
             }
         }
         free(module->exports);
+    }
+
+    if (module->tables) {
+        free(module->tables);
+    }
+
+    if (module->elements) {
+        for (uint32_t i = 0; i < module->num_elements; i++) {
+            free(module->elements[i].elements);
+        }
+        free(module->elements);
+    }
+
+    if (module->data_segments) {
+        for (uint32_t i = 0; i < module->num_data_segments; i++) {
+            free(module->data_segments[i].data);
+        }
+        free(module->data_segments);
     }
     
     if (module->memories) {
@@ -603,6 +652,52 @@ int wasm_load_exports(WasmModule* module) {
     }
     
     return -1;  // Sezione Export non trovata
+}
+
+// Carica le tabelle dalla sezione Table
+int wasm_load_tables(WasmModule* module) {
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type == SECTION_TABLE) {
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
+
+            uint32_t size_read;
+            uint32_t count = read_uleb128(module, &size_read);
+
+            module->num_tables = count;
+            module->tables = (WasmTable*)malloc(count * sizeof(WasmTable));
+            if (!module->tables) {
+                return -1;
+            }
+            memset(module->tables, 0, count * sizeof(WasmTable));
+
+            module->tables_offset = module->sections[i].offset + size_read;
+
+            for (uint32_t j = 0; j < count; j++) {
+                uint8_t elem_type = 0;
+                if (wasm_stream_read(module, &elem_type, 1) != 1) {
+                    return -1;
+                }
+                if (elem_type != VALTYPE_FUNCREF && elem_type != VALTYPE_EXTERNREF) {
+                    return -1;
+                }
+                uint32_t flags = read_uleb128(module, &size_read);
+                module->tables[j].elem_type = elem_type;
+                module->tables[j].has_max = (flags & 0x1) != 0;
+                module->tables[j].is_imported = false;
+                module->tables[j].initial_size = read_uleb128(module, &size_read);
+                if (module->tables[j].has_max) {
+                    module->tables[j].maximum_size = read_uleb128(module, &size_read);
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    module->num_tables = 0;
+    return 0;
 }
 
 // Carica le memory dalla sezione Memory
@@ -897,6 +992,162 @@ int wasm_load_globals(WasmModule* module) {
     return 0;
 }
 
+// Carica gli element dalla sezione Element
+int wasm_load_elements(WasmModule* module) {
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type == SECTION_ELEMENT) {
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
+
+            uint32_t size_read;
+            uint32_t count = read_uleb128(module, &size_read);
+
+            module->num_elements = count;
+            module->elements = (WasmElementSegment*)malloc(count * sizeof(WasmElementSegment));
+            if (!module->elements) {
+                return -1;
+            }
+            memset(module->elements, 0, count * sizeof(WasmElementSegment));
+
+            module->elements_offset = module->sections[i].offset + size_read;
+
+            for (uint32_t j = 0; j < count; j++) {
+                uint32_t flags = read_uleb128(module, &size_read);
+                WasmElementSegment* segment = &module->elements[j];
+                segment->elem_type = VALTYPE_FUNCREF;
+                segment->table_index = 0;
+
+                if (flags & 0x4) {
+                    return -1;
+                }
+
+                uint8_t elem_kind = 0x00;
+                switch (flags) {
+                    case 0:
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
+                            return -1;
+                        }
+                        break;
+                    case 1:
+                        segment->is_passive = true;
+                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                            return -1;
+                        }
+                        break;
+                    case 2:
+                        segment->table_index = read_uleb128(module, &size_read);
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
+                            return -1;
+                        }
+                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                            return -1;
+                        }
+                        break;
+                    case 3:
+                        segment->is_declarative = true;
+                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                            return -1;
+                        }
+                        break;
+                    default:
+                        return -1;
+                }
+
+                if (flags != 0) {
+                    if (elem_kind == VALTYPE_FUNCREF) {
+                        segment->elem_type = elem_kind;
+                    } else if (elem_kind != 0x00) {
+                        return -1;
+                    }
+                }
+
+                uint32_t elem_count = read_uleb128(module, &size_read);
+                segment->element_count = elem_count;
+                if (elem_count > 0) {
+                    segment->elements = (uint32_t*)malloc(elem_count * sizeof(uint32_t));
+                    if (!segment->elements) {
+                        return -1;
+                    }
+                }
+                for (uint32_t k = 0; k < elem_count; k++) {
+                    segment->elements[k] = read_uleb128(module, &size_read);
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    module->num_elements = 0;
+    return 0;
+}
+
+// Carica i data segment dalla sezione Data
+int wasm_load_data(WasmModule* module) {
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type == SECTION_DATA) {
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
+
+            uint32_t size_read;
+            uint32_t count = read_uleb128(module, &size_read);
+
+            module->num_data_segments = count;
+            module->data_segments = (WasmDataSegment*)malloc(count * sizeof(WasmDataSegment));
+            if (!module->data_segments) {
+                return -1;
+            }
+            memset(module->data_segments, 0, count * sizeof(WasmDataSegment));
+
+            module->data_segments_offset = module->sections[i].offset + size_read;
+
+            for (uint32_t j = 0; j < count; j++) {
+                uint32_t flags = read_uleb128(module, &size_read);
+                WasmDataSegment* segment = &module->data_segments[j];
+                segment->memory_index = 0;
+
+                switch (flags) {
+                    case 0:
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
+                            return -1;
+                        }
+                        break;
+                    case 1:
+                        segment->is_passive = true;
+                        break;
+                    case 2:
+                        segment->memory_index = read_uleb128(module, &size_read);
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
+                            return -1;
+                        }
+                        break;
+                    default:
+                        return -1;
+                }
+
+                uint32_t data_size = read_uleb128(module, &size_read);
+                segment->size = data_size;
+                if (data_size > 0) {
+                    segment->data = (uint8_t*)malloc(data_size);
+                    if (!segment->data) {
+                        return -1;
+                    }
+                    if (wasm_stream_read(module, segment->data, data_size) != (ssize_t)data_size) {
+                        return -1;
+                    }
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    module->num_data_segments = 0;
+    return 0;
+}
+
 // Carica un byte code di una funzione on-demand
 uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx) {
     if (func_idx >= module->num_functions) {
@@ -1054,8 +1305,11 @@ int fa_wasm_example(int argc, char** argv) {
     wasm_load_types(module);
     wasm_load_functions(module);
     wasm_load_exports(module);
+    wasm_load_tables(module);
     wasm_load_memories(module);
     wasm_load_globals(module);
+    wasm_load_elements(module);
+    wasm_load_data(module);
     
     // Stampa le informazioni sul modulo
     wasm_print_info(module);

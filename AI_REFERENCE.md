@@ -20,19 +20,19 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, label arity checks, and imported-global overrides via `fa_Runtime_set_imported_global`.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
-- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories).
+- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
 - `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, conversion traps, block unwinding, global type mismatch traps).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
 - Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
-- Table/bulk memory/SIMD execution is still partial (only memory.copy/memory.fill are wired).
-- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, conversion traps, stack unwinding, and imported-global overrides; expand into table/SIMD execution and segment ops.
+- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD is still partial (v128.const + splats wired).
+- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat, conversion traps, stack unwinding, and imported-global overrides.
 
 ## Research Archive (studies/)
 
@@ -67,9 +67,9 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Implement remaining table/bulk-memory/SIMD opcodes (beyond memory.copy/memory.fill).
-2. Add execution tests for table ops, element/data segment ops, and SIMD lanes.
-3. Thread `src/fa_arch.h` macros into build flags or runtime feature gates where needed.
+1. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
+2. Expand element/data segment support to ref.func expressions and externref tables.
+3. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
 
 ### General next steps
 1. Improve traps to allow real time write and move of volatile data on another storage system

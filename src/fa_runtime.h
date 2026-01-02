@@ -27,6 +27,14 @@ typedef struct {
     bool is_memory64;
 } fa_RuntimeMemory;
 
+typedef struct {
+    fa_ptr* data;
+    uint32_t size;
+    uint32_t max_size;
+    bool has_max;
+    uint8_t elem_type;
+} fa_RuntimeTable;
+
 typedef struct fa_Runtime {
     fa_Malloc malloc;
     fa_Free free;
@@ -38,6 +46,12 @@ typedef struct fa_Runtime {
     uint32_t max_call_depth;
     fa_RuntimeMemory* memories;
     uint32_t memories_count;
+    fa_RuntimeTable* tables;
+    uint32_t tables_count;
+    bool* data_segments_dropped;
+    uint32_t data_segments_count;
+    bool* elem_segments_dropped;
+    uint32_t elem_segments_count;
     fa_JobValue* active_locals;
     uint32_t active_locals_count;
     fa_JobValue* globals;

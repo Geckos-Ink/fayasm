@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <stdint.h>
 
 typedef struct {
     uint32_t func_index;
@@ -61,6 +62,37 @@ static void runtime_memory_reset(fa_Runtime* runtime) {
         runtime->memories = NULL;
     }
     runtime->memories_count = 0;
+}
+
+static void runtime_tables_reset(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->tables) {
+        for (uint32_t i = 0; i < runtime->tables_count; ++i) {
+            free(runtime->tables[i].data);
+            runtime->tables[i].data = NULL;
+        }
+        free(runtime->tables);
+        runtime->tables = NULL;
+    }
+    runtime->tables_count = 0;
+}
+
+static void runtime_segments_reset(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->data_segments_dropped) {
+        free(runtime->data_segments_dropped);
+        runtime->data_segments_dropped = NULL;
+    }
+    if (runtime->elem_segments_dropped) {
+        free(runtime->elem_segments_dropped);
+        runtime->elem_segments_dropped = NULL;
+    }
+    runtime->data_segments_count = 0;
+    runtime->elem_segments_count = 0;
 }
 
 static void runtime_globals_reset(fa_Runtime* runtime) {
@@ -258,6 +290,141 @@ cleanup:
     return status;
 }
 
+static int runtime_tables_init(fa_Runtime* runtime, const WasmModule* module) {
+    if (!runtime || !module) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    runtime_tables_reset(runtime);
+    if (module->num_tables == 0 || !module->tables) {
+        return FA_RUNTIME_OK;
+    }
+    runtime->tables = (fa_RuntimeTable*)calloc(module->num_tables, sizeof(fa_RuntimeTable));
+    if (!runtime->tables) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    runtime->tables_count = module->num_tables;
+
+    int status = FA_RUNTIME_OK;
+    for (uint32_t i = 0; i < module->num_tables; ++i) {
+        const WasmTable* table = &module->tables[i];
+        fa_RuntimeTable* dst = &runtime->tables[i];
+        dst->elem_type = table->elem_type;
+        dst->has_max = table->has_max;
+        dst->max_size = table->maximum_size;
+        if (table->initial_size > UINT32_MAX) {
+            status = FA_RUNTIME_ERR_UNSUPPORTED;
+            goto cleanup;
+        }
+        if (table->has_max && table->maximum_size > UINT32_MAX) {
+            status = FA_RUNTIME_ERR_UNSUPPORTED;
+            goto cleanup;
+        }
+        dst->size = table->initial_size;
+        if (dst->size > 0) {
+            dst->data = (fa_ptr*)calloc(dst->size, sizeof(fa_ptr));
+            if (!dst->data) {
+                status = FA_RUNTIME_ERR_OUT_OF_MEMORY;
+                goto cleanup;
+            }
+        }
+    }
+    return FA_RUNTIME_OK;
+
+cleanup:
+    runtime_tables_reset(runtime);
+    return status;
+}
+
+static int runtime_memory_bounds_check(const fa_RuntimeMemory* memory, uint64_t offset, size_t size) {
+    if (!memory || !memory->data) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (size == 0) {
+        return FA_RUNTIME_OK;
+    }
+    if (offset > UINT64_MAX - size) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (offset + size > memory->size_bytes) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) {
+    if (!runtime || !module) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    runtime_segments_reset(runtime);
+
+    if (module->num_data_segments > 0 && module->data_segments) {
+        runtime->data_segments_dropped = (bool*)calloc(module->num_data_segments, sizeof(bool));
+        if (!runtime->data_segments_dropped) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        runtime->data_segments_count = module->num_data_segments;
+
+        for (uint32_t i = 0; i < module->num_data_segments; ++i) {
+            const WasmDataSegment* segment = &module->data_segments[i];
+            if (segment->is_passive) {
+                continue;
+            }
+            if (segment->memory_index >= runtime->memories_count) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            fa_RuntimeMemory* memory = &runtime->memories[segment->memory_index];
+            if (segment->size > SIZE_MAX) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            const size_t length = (size_t)segment->size;
+            if (runtime_memory_bounds_check(memory, segment->offset, length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            memcpy(memory->data + (size_t)segment->offset, segment->data, length);
+            runtime->data_segments_dropped[i] = true;
+        }
+    }
+
+    if (module->num_elements > 0 && module->elements) {
+        runtime->elem_segments_dropped = (bool*)calloc(module->num_elements, sizeof(bool));
+        if (!runtime->elem_segments_dropped) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        runtime->elem_segments_count = module->num_elements;
+
+        for (uint32_t i = 0; i < module->num_elements; ++i) {
+            const WasmElementSegment* segment = &module->elements[i];
+            if (segment->is_declarative) {
+                runtime->elem_segments_dropped[i] = true;
+                continue;
+            }
+            if (segment->is_passive) {
+                continue;
+            }
+            if (segment->table_index >= runtime->tables_count) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            fa_RuntimeTable* table = &runtime->tables[segment->table_index];
+            if (segment->elem_type != table->elem_type) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            if (segment->offset > UINT64_MAX - segment->element_count) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint64_t end = segment->offset + segment->element_count;
+            if (end > table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            for (uint32_t j = 0; j < segment->element_count; ++j) {
+                table->data[(size_t)segment->offset + j] = (fa_ptr)segment->elements[j];
+            }
+            runtime->elem_segments_dropped[i] = true;
+        }
+    }
+
+    return FA_RUNTIME_OK;
+}
+
 static void runtime_job_reg_clear(fa_Job* job) {
     if (!job) {
         return;
@@ -424,6 +591,13 @@ static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype) {
             out->is_signed = false;
             out->payload.f64_value = 0.0;
             return FA_RUNTIME_OK;
+        case VALTYPE_V128:
+            out->kind = fa_job_value_v128;
+            out->bit_width = 128U;
+            out->is_signed = false;
+            out->payload.v128_value.low = 0;
+            out->payload.v128_value.high = 0;
+            return FA_RUNTIME_OK;
         case VALTYPE_FUNCREF:
         case VALTYPE_EXTERNREF:
             out->kind = fa_job_value_ref;
@@ -493,6 +667,11 @@ static int runtime_decode_block_signature(const fa_Runtime* runtime,
             return FA_RUNTIME_OK;
         case -4:
             sig->inline_result_type = VALTYPE_F64;
+            sig->result_types = &sig->inline_result_type;
+            sig->result_count = 1;
+            return FA_RUNTIME_OK;
+        case -5:
+            sig->inline_result_type = VALTYPE_V128;
             sig->result_types = &sig->inline_result_type;
             sig->result_count = 1;
             return FA_RUNTIME_OK;
@@ -738,7 +917,7 @@ static int runtime_skip_immediates(const uint8_t* body,
                 return status;
             }
             switch (uleb) {
-                case 0: /* v128.const */
+                case 12: /* v128.const */
                     if (*cursor + 16U > body_size) {
                         return FA_RUNTIME_ERR_STREAM;
                     }
@@ -841,6 +1020,8 @@ static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t 
             return value->kind == fa_job_value_f32;
         case VALTYPE_F64:
             return value->kind == fa_job_value_f64;
+        case VALTYPE_V128:
+            return value->kind == fa_job_value_v128;
         case VALTYPE_FUNCREF:
         case VALTYPE_EXTERNREF:
             return value->kind == fa_job_value_ref;
@@ -1165,6 +1346,12 @@ fa_Runtime* fa_Runtime_init(void) {
     runtime->active_locals_count = 0;
     runtime->memories = NULL;
     runtime->memories_count = 0;
+    runtime->tables = NULL;
+    runtime->tables_count = 0;
+    runtime->data_segments_dropped = NULL;
+    runtime->data_segments_count = 0;
+    runtime->elem_segments_dropped = NULL;
+    runtime->elem_segments_count = 0;
     runtime->globals = NULL;
     runtime->globals_count = 0;
     if (!runtime->jobs) {
@@ -1212,11 +1399,31 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
         runtime->module = NULL;
         return status;
     }
+    status = runtime_tables_init(runtime, module);
+    if (status != FA_RUNTIME_OK) {
+        wasm_instruction_stream_free(runtime->stream);
+        runtime->stream = NULL;
+        runtime_memory_reset(runtime);
+        runtime->module = NULL;
+        return status;
+    }
+    status = runtime_segments_init(runtime, module);
+    if (status != FA_RUNTIME_OK) {
+        wasm_instruction_stream_free(runtime->stream);
+        runtime->stream = NULL;
+        runtime_segments_reset(runtime);
+        runtime_tables_reset(runtime);
+        runtime_memory_reset(runtime);
+        runtime->module = NULL;
+        return status;
+    }
     status = runtime_init_globals(runtime, module);
     if (status != FA_RUNTIME_OK) {
         wasm_instruction_stream_free(runtime->stream);
         runtime->stream = NULL;
         runtime_globals_reset(runtime);
+        runtime_segments_reset(runtime);
+        runtime_tables_reset(runtime);
         runtime_memory_reset(runtime);
         runtime->module = NULL;
         return status;
@@ -1233,6 +1440,8 @@ void fa_Runtime_detach_module(fa_Runtime* runtime) {
         runtime->stream = NULL;
     }
     runtime_globals_reset(runtime);
+    runtime_segments_reset(runtime);
+    runtime_tables_reset(runtime);
     runtime_memory_reset(runtime);
     runtime->module = NULL;
     runtime->active_locals = NULL;
@@ -1810,13 +2019,32 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            if (subopcode == 0) { // v128.const
+            if (subopcode == 12) { // v128.const
                 if (frame->pc + 16U > body_size) {
                     return FA_RUNTIME_ERR_STREAM;
                 }
+                status = runtime_push_reg_value(job, body + frame->pc, 16U);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
                 frame->pc += 16U;
+                uint32_t sub = (uint32_t)subopcode;
+                return runtime_push_reg_value(job, &sub, sizeof(sub));
             }
-            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+            switch (subopcode) {
+                case 15: // i8x16.splat
+                case 16: // i16x8.splat
+                case 17: // i32x4.splat
+                case 18: // i64x2.splat
+                case 19: // f32x4.splat
+                case 20: // f64x2.splat
+                {
+                    uint32_t sub = (uint32_t)subopcode;
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
+                }
+                default:
+                    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+            }
         }
         default:
         {

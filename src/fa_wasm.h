@@ -1,12 +1,8 @@
 #pragma once
-
 #include "fa_types.h"
-
 #include <stddef.h>
-
 // Macro per convertire byte LEB128 a intero
 #define MAX_LEB128_SIZE 5
-
 // Tipi di valore WebAssembly
 typedef enum {
     VALTYPE_I32 = 0x7F,
@@ -17,7 +13,6 @@ typedef enum {
     VALTYPE_FUNCREF = 0x70,
     VALTYPE_EXTERNREF = 0x6F
 } WasmValType;
-
 // Tipi di sezione WASM
 typedef enum {
     SECTION_CUSTOM = 0,
@@ -33,7 +28,6 @@ typedef enum {
     SECTION_CODE = 10,
     SECTION_DATA = 11
 } WasmSectionType;
-
 typedef struct {
     WasmSectionType type;
     uint32_t size;
@@ -41,7 +35,6 @@ typedef struct {
     char* name;            // Solo per sezioni custom
     uint32_t name_len;     // Solo per sezioni custom
 } WasmSection;
-
 // Sezione di memoria
 typedef struct {
     bool is_memory64;      // true se utilizza indirizzamento a 64 bit
@@ -49,26 +42,29 @@ typedef struct {
     uint64_t maximum_size; // Dimensione massima (in pagine, opzionale)
     bool has_max;          // Indica se è specificata una dimensione massima
 } WasmMemory;
-
+typedef struct {
+    uint8_t elem_type;
+    uint32_t initial_size;
+    uint32_t maximum_size;
+    bool has_max;
+    bool is_imported;
+} WasmTable;
 typedef struct {
     uint32_t num_params;
     uint32_t num_results;
     uint32_t* param_types;
     uint32_t* result_types;
 } WasmFunctionType;
-
 typedef struct {
     uint32_t type_index;
     off_t body_offset;
     uint32_t body_size;
 } WasmFunction;
-
 typedef enum {
     WASM_GLOBAL_INIT_NONE = 0,
     WASM_GLOBAL_INIT_CONST = 1,
     WASM_GLOBAL_INIT_GET = 2
 } WasmGlobalInitKind;
-
 typedef struct {
     uint8_t valtype;
     bool is_mutable;
@@ -77,51 +73,69 @@ typedef struct {
     uint32_t init_index;
     uint64_t init_raw;
 } WasmGlobal;
-
 typedef struct {
     char* name;
     uint32_t name_len;
     uint32_t kind;         // 0=function, 1=table, 2=memory, 3=global
     uint32_t index;
 } WasmExport;
-
+typedef struct {
+    uint32_t table_index;
+    uint32_t element_count;
+    uint32_t* elements;
+    uint64_t offset;
+    bool is_passive;
+    bool is_declarative;
+    uint8_t elem_type;
+} WasmElementSegment;
+typedef struct {
+    uint32_t memory_index;
+    uint32_t size;
+    uint8_t* data;
+    uint64_t offset;
+    bool is_passive;
+} WasmDataSegment;
 typedef struct {
     uint32_t magic;        // 0x6d736100
     uint32_t version;      // 1
-
     // Indici delle sezioni
     uint32_t num_sections;
     WasmSection* sections;
-
     // Tipi di funzioni
     uint32_t num_types;
     WasmFunctionType* types;
     off_t types_offset;
-
     // Funzioni
     uint32_t num_functions;
     WasmFunction* functions;
     off_t functions_offset;
-
     // Export
     uint32_t num_exports;
     WasmExport* exports;
     off_t exports_offset;
-
+    // Tabelle
+    uint32_t num_tables;
+    WasmTable* tables;
+    off_t tables_offset;
     // Memoria
     uint32_t num_memories;
     WasmMemory* memories;
     off_t memories_offset;
-
+    // Element segments
+    uint32_t num_elements;
+    WasmElementSegment* elements;
+    off_t elements_offset;
+    // Data segments
+    uint32_t num_data_segments;
+    WasmDataSegment* data_segments;
+    off_t data_segments_offset;
     // Globali
     uint32_t num_globals;
     WasmGlobal* globals;
     off_t globals_offset;
-    
     // File handle
     int fd;
     char* filename;
-
     // Optional in-memory backing store (used when fd < 0)
     const uint8_t* buffer;
     size_t buffer_size;
@@ -129,7 +143,6 @@ typedef struct {
     off_t cursor;
     off_t stream_size;
 } WasmModule;
-
 WasmModule* wasm_module_init(const char* filename);
 WasmModule* wasm_module_init_from_memory(const uint8_t* data, size_t size);
 void wasm_module_free(WasmModule* module);
@@ -138,7 +151,10 @@ int wasm_scan_sections(WasmModule* module);
 int wasm_load_types(WasmModule* module);
 int wasm_load_functions(WasmModule* module);
 int wasm_load_exports(WasmModule* module);
+int wasm_load_tables(WasmModule* module);
 int wasm_load_memories(WasmModule* module);
 int wasm_load_globals(WasmModule* module);
+int wasm_load_elements(WasmModule* module);
+int wasm_load_data(WasmModule* module);
 uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx);
 void wasm_print_info(WasmModule* module);

@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 #define FA_JOB_DATA_FLOW_WINDOW_SIZE 4 // resize in basis of strictly necessary
-#define FA_JOB_DATA_FLOW_MAX_SIZE 8 // bytes
+#define FA_JOB_DATA_FLOW_MAX_SIZE 16 // bytes
 
 typedef enum {
     fa_job_value_invalid = 0,
@@ -14,8 +14,14 @@ typedef enum {
     fa_job_value_i64,
     fa_job_value_f32,
     fa_job_value_f64,
+    fa_job_value_v128,
     fa_job_value_ref
 } fa_JobValueKind;
+
+typedef struct {
+    u64 low;
+    u64 high;
+} fa_V128;
 
 typedef union {
     i32 i32_value;
@@ -24,6 +30,7 @@ typedef union {
     u64 u64_value;
     f32 f32_value;
     f64 f64_value;
+    fa_V128 v128_value;
     fa_ptr ref_value;
 } fa_JobValuePayload;
 

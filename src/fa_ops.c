@@ -373,6 +373,8 @@ static bool job_value_matches_valtype(const fa_JobValue* value, uint8_t valtype)
             return value->kind == fa_job_value_f32;
         case VALTYPE_F64:
             return value->kind == fa_job_value_f64;
+        case VALTYPE_V128:
+            return value->kind == fa_job_value_v128;
         case VALTYPE_FUNCREF:
         case VALTYPE_EXTERNREF:
             return value->kind == fa_job_value_ref;
@@ -493,6 +495,95 @@ static int pop_address_checked_typed(fa_Job* job, u64* out, bool memory64) {
     return FA_RUNTIME_OK;
 }
 
+static int pop_index_checked(fa_Job* job, bool memory64, u64* out) {
+    if (!job || !out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue value;
+    if (!pop_stack_value(job, &value)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (memory64) {
+        if (value.kind != fa_job_value_i64) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    } else {
+        if (value.kind != fa_job_value_i32) {
+            restore_stack_value(job, &value);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    u64 raw = 0;
+    if (!job_value_to_u64(&value, &raw)) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    *out = raw;
+    return FA_RUNTIME_OK;
+}
+
+static int pop_u32_checked(fa_Job* job, uint32_t* out) {
+    if (!job || !out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue value;
+    if (!pop_stack_value(job, &value)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (value.kind != fa_job_value_i32) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 raw = 0;
+    if (!job_value_to_u64(&value, &raw) || raw > UINT32_MAX) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    *out = (uint32_t)raw;
+    return FA_RUNTIME_OK;
+}
+
+static int pop_ref_checked(fa_Job* job, fa_ptr* out) {
+    if (!job || !out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue value;
+    if (!pop_stack_value(job, &value)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (value.kind != fa_job_value_ref) {
+        restore_stack_value(job, &value);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    *out = value.payload.ref_value;
+    return FA_RUNTIME_OK;
+}
+
+static int push_ref_checked(fa_Job* job, fa_ptr value) {
+    if (!job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue v = {0};
+    v.kind = fa_job_value_ref;
+    v.bit_width = (uint8_t)(sizeof(fa_ptr) * 8U);
+    v.is_signed = false;
+    v.payload.ref_value = value;
+    return fa_JobStack_push(&job->stack, &v) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+}
+
+static int push_v128_checked(fa_Job* job, const fa_V128* value) {
+    if (!job || !value) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue v = {0};
+    v.kind = fa_job_value_v128;
+    v.bit_width = 128U;
+    v.is_signed = false;
+    v.payload.v128_value = *value;
+    return fa_JobStack_push(&job->stack, &v) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+}
+
 static int memory_bounds_check(const fa_RuntimeMemory* memory, u64 addr, size_t size) {
     if (!memory || !memory->data) {
         return FA_RUNTIME_ERR_TRAP;
@@ -517,6 +608,36 @@ static fa_RuntimeMemory* runtime_get_memory(fa_Runtime* runtime, u64 index) {
         return NULL;
     }
     return &runtime->memories[(uint32_t)index];
+}
+
+static fa_RuntimeTable* runtime_get_table(fa_Runtime* runtime, u64 index) {
+    if (!runtime || !runtime->tables) {
+        return NULL;
+    }
+    if (index > UINT32_MAX || index >= runtime->tables_count) {
+        return NULL;
+    }
+    return &runtime->tables[(uint32_t)index];
+}
+
+static const WasmDataSegment* runtime_get_data_segment(const fa_Runtime* runtime, u64 index) {
+    if (!runtime || !runtime->module || !runtime->module->data_segments) {
+        return NULL;
+    }
+    if (index > UINT32_MAX || index >= runtime->module->num_data_segments) {
+        return NULL;
+    }
+    return &runtime->module->data_segments[(uint32_t)index];
+}
+
+static const WasmElementSegment* runtime_get_element_segment(const fa_Runtime* runtime, u64 index) {
+    if (!runtime || !runtime->module || !runtime->module->elements) {
+        return NULL;
+    }
+    if (index > UINT32_MAX || index >= runtime->module->num_elements) {
+        return NULL;
+    }
+    return &runtime->module->elements[(uint32_t)index];
 }
 
 static int pop_length_checked(fa_Job* job, bool memory64, u64* out) {
@@ -2133,17 +2254,51 @@ static OP_RETURN_TYPE op_return(OP_ARGUMENTS) {
 }
 
 static OP_RETURN_TYPE op_table(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job) {
+    if (!runtime || !job || !descriptor) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     u64 table_index = 0;
     if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    (void)table_index;
-    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+    if (!table) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    switch (descriptor->id) {
+        case 0x25: /* table.get */
+        {
+            uint32_t index = 0;
+            if (pop_u32_checked(job, &index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (index >= table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_ref_checked(job, table->data[index]);
+        }
+        case 0x26: /* table.set */
+        {
+            fa_ptr ref_value = 0;
+            if (pop_ref_checked(job, &ref_value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t index = 0;
+            if (pop_u32_checked(job, &index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (index >= table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            table->data[index] = ref_value;
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
+    }
 }
+
+static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, fa_ptr init_value, u64* prev_size_out, bool* grew_out);
 
 static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
     if (!runtime || !job) {
@@ -2154,6 +2309,67 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
         return FA_RUNTIME_ERR_TRAP;
     }
     switch (subopcode) {
+        case 8: /* memory.init */
+        {
+            u64 mem_index = 0;
+            u64 data_index = 0;
+            if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK ||
+                pop_reg_u64_checked(job, &data_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
+            if (!memory) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const WasmDataSegment* segment = runtime_get_data_segment(runtime, data_index);
+            if (!segment || !runtime->data_segments_dropped ||
+                data_index >= runtime->data_segments_count ||
+                runtime->data_segments_dropped[data_index]) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 length = 0;
+            if (pop_index_checked(job, memory->is_memory64, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 src_offset = 0;
+            if (pop_index_checked(job, memory->is_memory64, &src_offset) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 dst_addr = 0;
+            if (pop_address_checked_typed(job, &dst_addr, memory->is_memory64) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (length > SIZE_MAX || src_offset > UINT64_MAX - length) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!segment->data && length > 0) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint64_t segment_end = src_offset + length;
+            if (segment_end > segment->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const size_t len = (size_t)length;
+            if (memory_bounds_check(memory, dst_addr, len) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            memcpy(memory->data + (size_t)dst_addr, segment->data + (size_t)src_offset, len);
+            return FA_RUNTIME_OK;
+        }
+        case 9: /* data.drop */
+        {
+            u64 data_index = 0;
+            if (pop_reg_u64_checked(job, &data_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!runtime_get_data_segment(runtime, data_index) ||
+                !runtime->data_segments_dropped ||
+                data_index >= runtime->data_segments_count) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            runtime->data_segments_dropped[data_index] = true;
+            return FA_RUNTIME_OK;
+        }
         case 10: /* memory.copy */
         {
             u64 src_index = 0;
@@ -2223,6 +2439,163 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
             memset(memory->data + (size_t)dst_addr, byte_value, len);
             return FA_RUNTIME_OK;
         }
+        case 12: /* table.init */
+        {
+            u64 elem_index = 0;
+            u64 table_index = 0;
+            if (pop_reg_u64_checked(job, &elem_index) != FA_RUNTIME_OK ||
+                pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+            const WasmElementSegment* segment = runtime_get_element_segment(runtime, elem_index);
+            if (!table || !segment || !runtime->elem_segments_dropped ||
+                elem_index >= runtime->elem_segments_count ||
+                runtime->elem_segments_dropped[elem_index] || !segment->is_passive) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (segment->elem_type != table->elem_type) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t length = 0;
+            if (pop_u32_checked(job, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t src = 0;
+            if (pop_u32_checked(job, &src) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t dst = 0;
+            if (pop_u32_checked(job, &dst) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if ((uint64_t)src + length > segment->element_count ||
+                (uint64_t)dst + length > table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!segment->elements && length > 0) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            for (uint32_t i = 0; i < length; ++i) {
+                table->data[dst + i] = (fa_ptr)segment->elements[src + i];
+            }
+            return FA_RUNTIME_OK;
+        }
+        case 13: /* elem.drop */
+        {
+            u64 elem_index = 0;
+            if (pop_reg_u64_checked(job, &elem_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!runtime_get_element_segment(runtime, elem_index) ||
+                !runtime->elem_segments_dropped ||
+                elem_index >= runtime->elem_segments_count) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            runtime->elem_segments_dropped[elem_index] = true;
+            return FA_RUNTIME_OK;
+        }
+        case 14: /* table.copy */
+        {
+            u64 src_index = 0;
+            u64 dst_index = 0;
+            if (pop_reg_u64_checked(job, &src_index) != FA_RUNTIME_OK ||
+                pop_reg_u64_checked(job, &dst_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeTable* src_table = runtime_get_table(runtime, src_index);
+            fa_RuntimeTable* dst_table = runtime_get_table(runtime, dst_index);
+            if (!src_table || !dst_table) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t length = 0;
+            if (pop_u32_checked(job, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t src = 0;
+            if (pop_u32_checked(job, &src) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t dst = 0;
+            if (pop_u32_checked(job, &dst) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if ((uint64_t)src + length > src_table->size ||
+                (uint64_t)dst + length > dst_table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (length > 0) {
+                memmove(dst_table->data + dst, src_table->data + src, length * sizeof(fa_ptr));
+            }
+            return FA_RUNTIME_OK;
+        }
+        case 15: /* table.grow */
+        {
+            u64 table_index = 0;
+            if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t delta = 0;
+            if (pop_u32_checked(job, &delta) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_ptr init_value = 0;
+            if (pop_ref_checked(job, &init_value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            u64 prev_size = 0;
+            bool grew = false;
+            const int status = runtime_table_grow(runtime, table_index, delta, init_value, &prev_size, &grew);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (!grew) {
+                return push_int_checked(job, (u32)UINT32_MAX, 32U, true);
+            }
+            return push_int_checked(job, prev_size, 32U, true);
+        }
+        case 16: /* table.size */
+        {
+            u64 table_index = 0;
+            if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+            if (!table) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_int_checked(job, table->size, 32U, true);
+        }
+        case 17: /* table.fill */
+        {
+            u64 table_index = 0;
+            if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+            if (!table) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t length = 0;
+            if (pop_u32_checked(job, &length) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_ptr value = 0;
+            if (pop_ref_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            uint32_t start = 0;
+            if (pop_u32_checked(job, &start) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if ((uint64_t)start + length > table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            for (uint32_t i = 0; i < length; ++i) {
+                table->data[start + i] = value;
+            }
+            return FA_RUNTIME_OK;
+        }
         default:
             return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
     }
@@ -2230,9 +2603,165 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
 
 static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
     (void)runtime;
-    (void)job;
     (void)descriptor;
-    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    if (!job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 subopcode = 0;
+    if (pop_reg_u64_checked(job, &subopcode) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    switch (subopcode) {
+        case 12: /* v128.const */
+        {
+            fa_V128 value = {0};
+            if (!pop_reg_to_buffer(job, &value, sizeof(value))) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_v128_checked(job, &value);
+        }
+        case 15: /* i8x16.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_i32) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint8_t lane = (uint8_t)scalar.payload.i32_value;
+            fa_V128 value = {0};
+            memset(&value, lane, sizeof(value));
+            return push_v128_checked(job, &value);
+        }
+        case 16: /* i16x8.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_i32) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint16_t lane = (uint16_t)scalar.payload.i32_value;
+            uint16_t lanes[8];
+            for (size_t i = 0; i < 8; ++i) {
+                lanes[i] = lane;
+            }
+            fa_V128 value = {0};
+            memcpy(&value, lanes, sizeof(lanes));
+            return push_v128_checked(job, &value);
+        }
+        case 17: /* i32x4.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_i32) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint32_t lane = (uint32_t)scalar.payload.i32_value;
+            uint32_t lanes[4];
+            for (size_t i = 0; i < 4; ++i) {
+                lanes[i] = lane;
+            }
+            fa_V128 value = {0};
+            memcpy(&value, lanes, sizeof(lanes));
+            return push_v128_checked(job, &value);
+        }
+        case 18: /* i64x2.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_i64) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const uint64_t lane = (uint64_t)scalar.payload.i64_value;
+            uint64_t lanes[2];
+            lanes[0] = lane;
+            lanes[1] = lane;
+            fa_V128 value = {0};
+            memcpy(&value, lanes, sizeof(lanes));
+            return push_v128_checked(job, &value);
+        }
+        case 19: /* f32x4.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_f32) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const f32 lane = scalar.payload.f32_value;
+            f32 lanes[4];
+            for (size_t i = 0; i < 4; ++i) {
+                lanes[i] = lane;
+            }
+            fa_V128 value = {0};
+            memcpy(&value, lanes, sizeof(lanes));
+            return push_v128_checked(job, &value);
+        }
+        case 20: /* f64x2.splat */
+        {
+            fa_JobValue scalar = {0};
+            if (pop_stack_checked(job, &scalar) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (scalar.kind != fa_job_value_f64) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const f64 lane = scalar.payload.f64_value;
+            f64 lanes[2];
+            lanes[0] = lane;
+            lanes[1] = lane;
+            fa_V128 value = {0};
+            memcpy(&value, lanes, sizeof(lanes));
+            return push_v128_checked(job, &value);
+        }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, fa_ptr init_value, u64* prev_size_out, bool* grew_out) {
+    if (!runtime || !prev_size_out || !grew_out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+    if (!table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    *prev_size_out = table->size;
+    *grew_out = false;
+    if (delta == 0) {
+        *grew_out = true;
+        return FA_RUNTIME_OK;
+    }
+    if (delta > UINT32_MAX - table->size) {
+        return FA_RUNTIME_OK;
+    }
+    const uint32_t new_size = table->size + (uint32_t)delta;
+    if (table->has_max && new_size > table->max_size) {
+        return FA_RUNTIME_OK;
+    }
+    if (new_size > SIZE_MAX / sizeof(fa_ptr)) {
+        return FA_RUNTIME_OK;
+    }
+    fa_ptr* new_data = (fa_ptr*)realloc(table->data, new_size * sizeof(fa_ptr));
+    if (!new_data) {
+        return FA_RUNTIME_OK;
+    }
+    for (uint32_t i = table->size; i < new_size; ++i) {
+        new_data[i] = init_value;
+    }
+    table->data = new_data;
+    table->size = new_size;
+    *grew_out = true;
+    return FA_RUNTIME_OK;
 }
 
 static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pages, u64* prev_pages_out, bool* grew_out) {
