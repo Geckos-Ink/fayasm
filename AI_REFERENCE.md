@@ -23,16 +23,16 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `src/fa_arch.h` – architecture-size macro hook (e.g., pointer width).
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps).
+- `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps, block unwinding).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
-- Control-flow stack unwinding and block result propagation are still missing; `br`/`br_table` do not unwind operand stack frames.
+- Function result typing is still loose (void signatures preserve the operand stack), and multi-value returns are not modeled.
+- Loop label typing (parameter vs result arity) is not validated yet; stack-arity checks remain minimal.
 - Memory64 and multi-memory are unsupported; linear memory operations currently target memory index 0 only.
-- Global initializers only support const expressions; imports and `global.get` initializers are not parsed yet.
-- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, and conversion traps; expand into multi-value returns and stack unwinding.
+- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps, and stack unwinding; expand into multi-value returns and loop label typing.
 
 ## Research Archive (studies/)
 
@@ -67,9 +67,9 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Implement operand stack unwinding and block result propagation for control flow (`br`/`br_table`/`if`).
-2. Support global initializers beyond const expressions (imports, `global.get`) and validate global types.
-3. Extend architecture hooks in `src/fa_arch.h` to influence pointer-size dependent types.
+1. Tighten function result handling (opt-in enforcement for void functions, multi-value returns).
+2. Validate loop label typing and stack arity for `br`/`br_table`.
+3. Thread `src/fa_arch.h` macros into build flags or runtime feature gates where needed.
 
 ### General next steps
 1. Improve traps to allow real time write and move of volatile data on another storage system

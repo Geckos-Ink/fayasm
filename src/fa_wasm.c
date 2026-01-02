@@ -36,6 +36,20 @@ static ssize_t wasm_stream_read(WasmModule* module, void* out, size_t size) {
     return (ssize_t)size;
 }
 
+static bool wasm_is_supported_valtype(uint8_t valtype) {
+    switch (valtype) {
+        case VALTYPE_I32:
+        case VALTYPE_I64:
+        case VALTYPE_F32:
+        case VALTYPE_F64:
+        case VALTYPE_FUNCREF:
+        case VALTYPE_EXTERNREF:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static off_t wasm_stream_seek(WasmModule* module, off_t offset, int whence) {
     if (!module) {
         return -1;
@@ -652,89 +666,234 @@ int wasm_load_memories(WasmModule* module) {
 
 // Carica i globali dalla sezione Global
 int wasm_load_globals(WasmModule* module) {
+    WasmGlobal* imported_globals = NULL;
+    uint32_t imported_count = 0;
+    uint32_t imported_capacity = 0;
+
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type != SECTION_IMPORT) {
+            continue;
+        }
+        if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+            return -1;
+        }
+
+        uint32_t size_read;
+        uint32_t count = read_uleb128(module, &size_read);
+        imported_capacity = count;
+        if (imported_capacity > 0) {
+            imported_globals = (WasmGlobal*)calloc(imported_capacity, sizeof(WasmGlobal));
+            if (!imported_globals) {
+                return -1;
+            }
+        }
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t name_len = 0;
+            char* module_name = read_string(module, &name_len);
+            char* import_name = read_string(module, &name_len);
+            if (module_name) {
+                free(module_name);
+            }
+            if (import_name) {
+                free(import_name);
+            }
+
+            uint8_t kind = 0;
+            if (wasm_stream_read(module, &kind, 1) != 1) {
+                free(imported_globals);
+                return -1;
+            }
+            switch (kind) {
+                case 0: /* func */
+                    (void)read_uleb128(module, &size_read);
+                    break;
+                case 1: /* table */
+                {
+                    uint8_t elem_type = 0;
+                    if (wasm_stream_read(module, &elem_type, 1) != 1) {
+                        free(imported_globals);
+                        return -1;
+                    }
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    (void)read_uleb128(module, &size_read);
+                    if (flags & 0x1) {
+                        (void)read_uleb128(module, &size_read);
+                    }
+                    break;
+                }
+                case 2: /* memory */
+                {
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    const bool memory64 = (flags & 0x4) != 0;
+                    if (memory64) {
+                        (void)read_uleb128_64(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128_64(module, &size_read);
+                        }
+                    } else {
+                        (void)read_uleb128(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128(module, &size_read);
+                        }
+                    }
+                    break;
+                }
+                case 3: /* global */
+                {
+                    uint8_t valtype = 0;
+                    uint8_t mutability = 0;
+                    if (wasm_stream_read(module, &valtype, 1) != 1 ||
+                        wasm_stream_read(module, &mutability, 1) != 1) {
+                        free(imported_globals);
+                        return -1;
+                    }
+                    if (!wasm_is_supported_valtype(valtype) || mutability > 1) {
+                        free(imported_globals);
+                        return -1;
+                    }
+                    WasmGlobal* global = &imported_globals[imported_count++];
+                    global->valtype = valtype;
+                    global->is_mutable = (mutability == 1);
+                    global->is_imported = true;
+                    global->init_kind = WASM_GLOBAL_INIT_NONE;
+                    global->init_index = 0;
+                    global->init_raw = 0;
+                    break;
+                }
+                default:
+                    free(imported_globals);
+                    return -1;
+            }
+        }
+        break;
+    }
+
+    WasmGlobal* globals = NULL;
+    uint32_t defined_count = 0;
+    uint32_t globals_offset = 0;
+    uint32_t global_section_index = UINT32_MAX;
+
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_GLOBAL) {
             if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                free(imported_globals);
                 return -1;
             }
 
             uint32_t size_read;
-            uint32_t count = read_uleb128(module, &size_read);
-
-            module->num_globals = count;
-            module->globals = (WasmGlobal*)malloc(count * sizeof(WasmGlobal));
-            if (!module->globals) {
-                return -1;
-            }
-            memset(module->globals, 0, count * sizeof(WasmGlobal));
-
-            module->globals_offset = module->sections[i].offset + size_read;
-
-            for (uint32_t j = 0; j < count; j++) {
-                uint8_t valtype = 0;
-                if (wasm_stream_read(module, &valtype, 1) != 1) {
-                    return -1;
-                }
-                uint8_t mutability = 0;
-                if (wasm_stream_read(module, &mutability, 1) != 1) {
-                    return -1;
-                }
-                if (mutability > 1) {
-                    return -1;
-                }
-                module->globals[j].valtype = valtype;
-                module->globals[j].is_mutable = (mutability == 1);
-
-                uint8_t init_opcode = 0;
-                if (wasm_stream_read(module, &init_opcode, 1) != 1) {
-                    return -1;
-                }
-                switch (init_opcode) {
-                    case 0x41: /* i32.const */
-                    {
-                        int32_t value = read_sleb128(module, &size_read);
-                        module->globals[j].init_raw = (uint64_t)(int64_t)value;
-                        break;
-                    }
-                    case 0x42: /* i64.const */
-                    {
-                        int64_t value = read_sleb128_64(module, &size_read);
-                        module->globals[j].init_raw = (uint64_t)value;
-                        break;
-                    }
-                    case 0x43: /* f32.const */
-                    {
-                        uint32_t raw = 0;
-                        if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
-                            return -1;
-                        }
-                        module->globals[j].init_raw = raw;
-                        break;
-                    }
-                    case 0x44: /* f64.const */
-                    {
-                        uint64_t raw = 0;
-                        if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
-                            return -1;
-                        }
-                        module->globals[j].init_raw = raw;
-                        break;
-                    }
-                    default:
-                        return -1;
-                }
-
-                uint8_t end = 0;
-                if (wasm_stream_read(module, &end, 1) != 1 || end != 0x0B) {
-                    return -1;
-                }
-            }
-
-            return 0;
+            defined_count = read_uleb128(module, &size_read);
+            globals_offset = module->sections[i].offset + size_read;
+            global_section_index = i;
+            break;
         }
     }
 
-    module->num_globals = 0;
+    const uint32_t total_globals = imported_count + defined_count;
+    if (total_globals > 0) {
+        globals = (WasmGlobal*)calloc(total_globals, sizeof(WasmGlobal));
+        if (!globals) {
+            free(imported_globals);
+            return -1;
+        }
+    }
+    for (uint32_t i = 0; i < imported_count; ++i) {
+        globals[i] = imported_globals[i];
+    }
+    free(imported_globals);
+
+    module->globals = globals;
+    module->num_globals = total_globals;
+    module->globals_offset = globals_offset;
+
+    if (defined_count == 0) {
+        return 0;
+    }
+    if (global_section_index == UINT32_MAX) {
+        return -1;
+    }
+    if (wasm_stream_seek(module, module->sections[global_section_index].offset, SEEK_SET) < 0) {
+        return -1;
+    }
+    {
+        uint32_t size_read;
+        (void)read_uleb128(module, &size_read);
+    }
+
+    for (uint32_t j = 0; j < defined_count; j++) {
+        uint32_t size_read = 0;
+        uint8_t valtype = 0;
+        if (wasm_stream_read(module, &valtype, 1) != 1) {
+            return -1;
+        }
+        uint8_t mutability = 0;
+        if (wasm_stream_read(module, &mutability, 1) != 1) {
+            return -1;
+        }
+        if (!wasm_is_supported_valtype(valtype) || mutability > 1) {
+            return -1;
+        }
+        WasmGlobal* global = &module->globals[imported_count + j];
+        global->valtype = valtype;
+        global->is_mutable = (mutability == 1);
+        global->is_imported = false;
+
+        uint8_t init_opcode = 0;
+        if (wasm_stream_read(module, &init_opcode, 1) != 1) {
+            return -1;
+        }
+        switch (init_opcode) {
+            case 0x41: /* i32.const */
+            {
+                int32_t value = read_sleb128(module, &size_read);
+                global->init_raw = (uint64_t)(int64_t)value;
+                global->init_kind = WASM_GLOBAL_INIT_CONST;
+                break;
+            }
+            case 0x42: /* i64.const */
+            {
+                int64_t value = read_sleb128_64(module, &size_read);
+                global->init_raw = (uint64_t)value;
+                global->init_kind = WASM_GLOBAL_INIT_CONST;
+                break;
+            }
+            case 0x43: /* f32.const */
+            {
+                uint32_t raw = 0;
+                if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
+                    return -1;
+                }
+                global->init_raw = raw;
+                global->init_kind = WASM_GLOBAL_INIT_CONST;
+                break;
+            }
+            case 0x44: /* f64.const */
+            {
+                uint64_t raw = 0;
+                if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
+                    return -1;
+                }
+                global->init_raw = raw;
+                global->init_kind = WASM_GLOBAL_INIT_CONST;
+                break;
+            }
+            case 0x23: /* global.get */
+            {
+                uint32_t index = read_uleb128(module, &size_read);
+                global->init_index = index;
+                global->init_kind = WASM_GLOBAL_INIT_GET;
+                break;
+            }
+            default:
+                return -1;
+        }
+
+        uint8_t end = 0;
+        if (wasm_stream_read(module, &end, 1) != 1 || end != 0x0B) {
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -816,11 +975,29 @@ void wasm_print_info(WasmModule* module) {
     if (module->num_globals > 0) {
         printf("\n=== Globals (%u) ===\n", module->num_globals);
         for (uint32_t i = 0; i < module->num_globals; i++) {
-            printf("Global %u: Type=0x%02X, Mutable=%s, Init=0x%016" PRIx64 "\n",
-                   i,
-                   module->globals[i].valtype,
-                   module->globals[i].is_mutable ? "true" : "false",
-                   module->globals[i].init_raw);
+            const char* kind = module->globals[i].is_imported ? "import" :
+                (module->globals[i].init_kind == WASM_GLOBAL_INIT_GET ? "get" : "const");
+            if (module->globals[i].is_imported) {
+                printf("Global %u: Type=0x%02X, Mutable=%s, Kind=%s\n",
+                       i,
+                       module->globals[i].valtype,
+                       module->globals[i].is_mutable ? "true" : "false",
+                       kind);
+            } else if (module->globals[i].init_kind == WASM_GLOBAL_INIT_GET) {
+                printf("Global %u: Type=0x%02X, Mutable=%s, Kind=%s, Index=%u\n",
+                       i,
+                       module->globals[i].valtype,
+                       module->globals[i].is_mutable ? "true" : "false",
+                       kind,
+                       module->globals[i].init_index);
+            } else {
+                printf("Global %u: Type=0x%02X, Mutable=%s, Kind=%s, Init=0x%016" PRIx64 "\n",
+                       i,
+                       module->globals[i].valtype,
+                       module->globals[i].is_mutable ? "true" : "false",
+                       kind,
+                       module->globals[i].init_raw);
+            }
         }
     }
     

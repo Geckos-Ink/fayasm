@@ -360,6 +360,27 @@ static bool job_value_truthy(const fa_JobValue* value) {
     }
 }
 
+static bool job_value_matches_valtype(const fa_JobValue* value, uint8_t valtype) {
+    if (!value) {
+        return false;
+    }
+    switch (valtype) {
+        case VALTYPE_I32:
+            return value->kind == fa_job_value_i32;
+        case VALTYPE_I64:
+            return value->kind == fa_job_value_i64;
+        case VALTYPE_F32:
+            return value->kind == fa_job_value_f32;
+        case VALTYPE_F64:
+            return value->kind == fa_job_value_f64;
+        case VALTYPE_FUNCREF:
+        case VALTYPE_EXTERNREF:
+            return value->kind == fa_job_value_ref;
+        default:
+            return false;
+    }
+}
+
 static bool trunc_f64_to_i32(double value, bool is_signed, u64* out) {
     if (!out || isnan(value) || !isfinite(value)) {
         return false;
@@ -710,10 +731,14 @@ static OP_RETURN_TYPE op_global(OP_ARGUMENTS) {
     if (!runtime->module || !runtime->module->globals || index >= runtime->module->num_globals) {
         return FA_RUNTIME_ERR_TRAP;
     }
+    const WasmGlobal* global = &runtime->module->globals[index];
     switch (descriptor->id) {
         case 0x23: /* global.get */
         {
             const fa_JobValue value = runtime->globals[index];
+            if (!job_value_matches_valtype(&value, global->valtype)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
             return fa_JobStack_push(&job->stack, &value) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
         }
         case 0x24: /* global.set */
@@ -722,7 +747,10 @@ static OP_RETURN_TYPE op_global(OP_ARGUMENTS) {
             if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            if (!runtime->module->globals[index].is_mutable) {
+            if (!global->is_mutable) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!job_value_matches_valtype(&value, global->valtype)) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             runtime->globals[index] = value;

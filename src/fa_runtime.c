@@ -30,6 +30,10 @@ typedef struct fa_RuntimeControlFrame {
     uint32_t start_pc;
     uint32_t else_pc;
     uint32_t end_pc;
+    uint8_t result_type;
+    bool has_result;
+    bool preserve_stack;
+    size_t stack_height;
 } fa_RuntimeControlFrame;
 
 static ptr fa_default_malloc(int size) {
@@ -93,32 +97,53 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
             runtime_globals_reset(runtime);
             return status;
         }
-        switch (global->valtype) {
-            case VALTYPE_I32:
-                value.payload.i32_value = (i32)global->init_raw;
-                break;
-            case VALTYPE_I64:
-                value.payload.i64_value = (i64)global->init_raw;
-                break;
-            case VALTYPE_F32:
-            {
-                u32 raw = (u32)global->init_raw;
-                memcpy(&value.payload.f32_value, &raw, sizeof(raw));
-                break;
+        if (!global->is_imported) {
+            switch (global->init_kind) {
+                case WASM_GLOBAL_INIT_CONST:
+                    switch (global->valtype) {
+                        case VALTYPE_I32:
+                            value.payload.i32_value = (i32)global->init_raw;
+                            break;
+                        case VALTYPE_I64:
+                            value.payload.i64_value = (i64)global->init_raw;
+                            break;
+                        case VALTYPE_F32:
+                        {
+                            u32 raw = (u32)global->init_raw;
+                            memcpy(&value.payload.f32_value, &raw, sizeof(raw));
+                            break;
+                        }
+                        case VALTYPE_F64:
+                        {
+                            u64 raw = global->init_raw;
+                            memcpy(&value.payload.f64_value, &raw, sizeof(raw));
+                            break;
+                        }
+                        case VALTYPE_FUNCREF:
+                        case VALTYPE_EXTERNREF:
+                            value.payload.ref_value = (fa_ptr)global->init_raw;
+                            break;
+                        default:
+                            runtime_globals_reset(runtime);
+                            return FA_RUNTIME_ERR_UNSUPPORTED;
+                    }
+                    break;
+                case WASM_GLOBAL_INIT_GET:
+                    if (global->init_index >= i) {
+                        runtime_globals_reset(runtime);
+                        return FA_RUNTIME_ERR_UNSUPPORTED;
+                    }
+                    if (module->globals[global->init_index].valtype != global->valtype) {
+                        runtime_globals_reset(runtime);
+                        return FA_RUNTIME_ERR_UNSUPPORTED;
+                    }
+                    value = runtime->globals[global->init_index];
+                    break;
+                case WASM_GLOBAL_INIT_NONE:
+                default:
+                    runtime_globals_reset(runtime);
+                    return FA_RUNTIME_ERR_UNSUPPORTED;
             }
-            case VALTYPE_F64:
-            {
-                u64 raw = global->init_raw;
-                memcpy(&value.payload.f64_value, &raw, sizeof(raw));
-                break;
-            }
-            case VALTYPE_FUNCREF:
-            case VALTYPE_EXTERNREF:
-                value.payload.ref_value = (fa_ptr)global->init_raw;
-                break;
-            default:
-                runtime_globals_reset(runtime);
-                return FA_RUNTIME_ERR_UNSUPPORTED;
         }
         runtime->globals[i] = value;
     }
@@ -207,7 +232,15 @@ static int runtime_control_reserve(fa_RuntimeCallFrame* frame, uint32_t count) {
     return FA_RUNTIME_OK;
 }
 
-static int runtime_control_push(fa_RuntimeCallFrame* frame, fa_RuntimeControlType type, uint32_t start_pc, uint32_t else_pc, uint32_t end_pc) {
+static int runtime_control_push(fa_RuntimeCallFrame* frame,
+                                fa_RuntimeControlType type,
+                                uint32_t start_pc,
+                                uint32_t else_pc,
+                                uint32_t end_pc,
+                                uint8_t result_type,
+                                bool has_result,
+                                bool preserve_stack,
+                                size_t stack_height) {
     if (!frame) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -221,6 +254,10 @@ static int runtime_control_push(fa_RuntimeCallFrame* frame, fa_RuntimeControlTyp
     entry->start_pc = start_pc;
     entry->else_pc = else_pc;
     entry->end_pc = end_pc;
+    entry->result_type = result_type;
+    entry->has_result = has_result;
+    entry->preserve_stack = preserve_stack;
+    entry->stack_height = stack_height;
     frame->control_depth = next_depth;
     return FA_RUNTIME_OK;
 }
@@ -283,6 +320,62 @@ static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype) {
             out->bit_width = (uint8_t)(sizeof(fa_ptr) * 8U);
             out->is_signed = false;
             out->payload.ref_value = 0;
+            return FA_RUNTIME_OK;
+        default:
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+}
+
+static int runtime_decode_block_type(int64_t block_type, uint8_t* result_type, bool* has_result) {
+    if (!result_type || !has_result) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    *result_type = 0;
+    *has_result = false;
+
+    if (block_type == -64 || block_type == 0x40) {
+        return FA_RUNTIME_OK;
+    }
+    if (block_type >= 0) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    switch (block_type) {
+        case -1:
+            *result_type = VALTYPE_I32;
+            *has_result = true;
+            return FA_RUNTIME_OK;
+        case -2:
+            *result_type = VALTYPE_I64;
+            *has_result = true;
+            return FA_RUNTIME_OK;
+        case -3:
+            *result_type = VALTYPE_F32;
+            *has_result = true;
+            return FA_RUNTIME_OK;
+        case -4:
+            *result_type = VALTYPE_F64;
+            *has_result = true;
+            return FA_RUNTIME_OK;
+        default:
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+}
+
+static int runtime_result_from_valtype(uint32_t valtype, uint8_t* result_type, bool* has_result) {
+    if (!result_type || !has_result) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    *result_type = 0;
+    *has_result = false;
+    switch (valtype) {
+        case VALTYPE_I32:
+        case VALTYPE_I64:
+        case VALTYPE_F32:
+        case VALTYPE_F64:
+        case VALTYPE_FUNCREF:
+        case VALTYPE_EXTERNREF:
+            *result_type = (uint8_t)valtype;
+            *has_result = true;
             return FA_RUNTIME_OK;
         default:
             return FA_RUNTIME_ERR_UNSUPPORTED;
@@ -756,7 +849,38 @@ static int runtime_push_frame(fa_Runtime* runtime,
         runtime_free_frame_resources(frame);
         return status;
     }
-    status = runtime_control_push(frame, FA_CONTROL_BLOCK, frame->code_start, 0, frame->body_size);
+
+    uint8_t result_type = 0;
+    bool has_result = false;
+    if (runtime->module) {
+        const uint32_t type_index = runtime->module->functions[function_index].type_index;
+        if (type_index >= runtime->module->num_types) {
+            runtime_free_frame_resources(frame);
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+        }
+        const WasmFunctionType* type = &runtime->module->types[type_index];
+        if (type->num_results > 1) {
+            runtime_free_frame_resources(frame);
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+        if (type->num_results == 1) {
+            const uint32_t valtype = type->result_types[0];
+            if (runtime_result_from_valtype(valtype, &result_type, &has_result) != FA_RUNTIME_OK) {
+                runtime_free_frame_resources(frame);
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+        }
+    }
+
+    status = runtime_control_push(frame,
+                                  FA_CONTROL_BLOCK,
+                                  frame->code_start,
+                                  0,
+                                  frame->body_size,
+                                  result_type,
+                                  has_result,
+                                  !has_result,
+                                  0);
     if (status != FA_RUNTIME_OK) {
         runtime_free_frame_resources(frame);
         return status;
@@ -954,6 +1078,12 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
+            uint8_t result_type = 0;
+            bool has_result = false;
+            status = runtime_decode_block_type(block_type, &result_type, &has_result);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
             uint32_t else_pc = 0;
             uint32_t end_pc = 0;
             status = runtime_scan_block(body, body_size, frame->pc, &else_pc, &end_pc);
@@ -961,7 +1091,15 @@ static int runtime_decode_instruction(const uint8_t* body,
                 return status;
             }
             const fa_RuntimeControlType type = opcode == 0x03 ? FA_CONTROL_LOOP : FA_CONTROL_BLOCK;
-            status = runtime_control_push(frame, type, frame->pc, 0, end_pc);
+            status = runtime_control_push(frame,
+                                          type,
+                                          frame->pc,
+                                          0,
+                                          end_pc,
+                                          result_type,
+                                          has_result,
+                                          false,
+                                          job->stack.size);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
@@ -975,13 +1113,30 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
+            uint8_t result_type = 0;
+            bool has_result = false;
+            status = runtime_decode_block_type(block_type, &result_type, &has_result);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
             uint32_t else_pc = 0;
             uint32_t end_pc = 0;
             status = runtime_scan_block(body, body_size, frame->pc, &else_pc, &end_pc);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            status = runtime_control_push(frame, FA_CONTROL_IF, frame->pc, else_pc, end_pc);
+            if (has_result && else_pc == 0) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            status = runtime_control_push(frame,
+                                          FA_CONTROL_IF,
+                                          frame->pc,
+                                          else_pc,
+                                          end_pc,
+                                          result_type,
+                                          has_result,
+                                          false,
+                                          job->stack.size);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
@@ -1205,16 +1360,59 @@ static void runtime_instruction_context_free(fa_RuntimeInstructionContext* ctx) 
     ctx->br_table_default = 0;
 }
 
-static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, uint32_t label_index) {
+static int runtime_unwind_stack_to(fa_Job* job, size_t target_height, bool keep_result, fa_JobValue* result_out) {
+    if (!job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (job->stack.size < target_height) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue result = {0};
+    if (keep_result) {
+        if (job->stack.size <= target_height) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (!fa_JobStack_pop(&job->stack, &result)) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    while (job->stack.size > target_height) {
+        fa_JobValue discard;
+        if (!fa_JobStack_pop(&job->stack, &discard)) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    if (keep_result) {
+        if (!fa_JobStack_push(&job->stack, &result)) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        if (result_out) {
+            *result_out = result;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint32_t label_index) {
+    if (!frame || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
     fa_RuntimeControlFrame* target = runtime_control_peek(frame, label_index);
     if (!target) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    if (target->type == FA_CONTROL_LOOP) {
-        frame->pc = target->start_pc;
+    const fa_RuntimeControlFrame target_copy = *target;
+    if (!target_copy.preserve_stack) {
+        int status = runtime_unwind_stack_to(job, target_copy.stack_height, target_copy.has_result, NULL);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+    }
+    if (target_copy.type == FA_CONTROL_LOOP) {
+        frame->pc = target_copy.start_pc;
         runtime_control_pop_to(frame, label_index, true);
     } else {
-        frame->pc = target->end_pc;
+        frame->pc = target_copy.end_pc;
         runtime_control_pop_to(frame, label_index, false);
     }
     return FA_RUNTIME_OK;
@@ -1249,33 +1447,37 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             if (!entry || entry->type != FA_CONTROL_IF) {
                 return FA_RUNTIME_ERR_TRAP;
             }
+            entry->stack_height = job->stack.size;
             if (!truthy) {
                 if (entry->else_pc != 0) {
                     frame->pc = entry->else_pc;
                 } else {
-                    frame->pc = entry->end_pc;
-                    runtime_control_pop_one(frame);
+                    return runtime_branch_to_label(frame, job, 0);
                 }
             }
             return FA_RUNTIME_OK;
         }
         case 0x05: /* else */
         {
+            return runtime_branch_to_label(frame, job, 0);
+        }
+        case 0x0B: /* end */
+        {
             fa_RuntimeControlFrame* entry = runtime_control_peek(frame, 0);
-            if (!entry || entry->type != FA_CONTROL_IF) {
-                return FA_RUNTIME_ERR_TRAP;
+            if (!entry) {
+                return FA_RUNTIME_OK;
             }
-            frame->pc = entry->end_pc;
+            if (!entry->preserve_stack) {
+                int status = runtime_unwind_stack_to(job, entry->stack_height, entry->has_result, NULL);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
             runtime_control_pop_one(frame);
             return FA_RUNTIME_OK;
         }
-        case 0x0B: /* end */
-            if (frame->control_depth > 0) {
-                runtime_control_pop_one(frame);
-            }
-            return FA_RUNTIME_OK;
         case 0x0C: /* br */
-            return runtime_branch_to_label(frame, ctx->label_index);
+            return runtime_branch_to_label(frame, job, ctx->label_index);
         case 0x0D: /* br_if */
         {
             fa_JobValue cond;
@@ -1283,7 +1485,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 return FA_RUNTIME_ERR_TRAP;
             }
             if (runtime_job_value_truthy(&cond)) {
-                return runtime_branch_to_label(frame, ctx->label_index);
+                return runtime_branch_to_label(frame, job, ctx->label_index);
             }
             return FA_RUNTIME_OK;
         }
@@ -1301,10 +1503,16 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             if (index < ctx->br_table_count) {
                 label = ctx->br_table_labels[index];
             }
-            return runtime_branch_to_label(frame, label);
+            return runtime_branch_to_label(frame, job, label);
         }
         case 0x0F: /* return */
-            return FA_RUNTIME_OK;
+        {
+            if (frame->control_depth == 0) {
+                return FA_RUNTIME_OK;
+            }
+            uint32_t label_index = frame->control_depth - 1U;
+            return runtime_branch_to_label(frame, job, label_index);
+        }
         default:
             return FA_RUNTIME_OK;
     }

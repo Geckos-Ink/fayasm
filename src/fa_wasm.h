@@ -63,9 +63,18 @@ typedef struct {
     uint32_t body_size;
 } WasmFunction;
 
+typedef enum {
+    WASM_GLOBAL_INIT_NONE = 0,
+    WASM_GLOBAL_INIT_CONST = 1,
+    WASM_GLOBAL_INIT_GET = 2
+} WasmGlobalInitKind;
+
 typedef struct {
     uint8_t valtype;
     bool is_mutable;
+    bool is_imported;
+    uint8_t init_kind;
+    uint32_t init_index;
     uint64_t init_raw;
 } WasmGlobal;
 
