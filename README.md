@@ -5,11 +5,11 @@ Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor d
 ## Goal & Current State
 
 - fayasm can parse real `.wasm` binaries using a file-descriptor driven loader (`fa_wasm.*`) or in-memory buffers via `wasm_module_init_from_memory`. Sections for types, functions, exports, and memories are decoded, cached, and exposed through descriptors that the runtime consumes.
-- The execution runtime (`fa_runtime.*`) owns job creation, call-frame allocation, operand stack reset, a small data-flow register window, and linear memory provisioning from the module memory section. It can stream a function body, decode immediates (LEB128 helpers, const payloads, locals/globals indices, memory operands), dispatch into the opcode table, and propagate traps (divide-by-zero, out-of-bounds memory, conversion overflow/NaN).
-- Opcode metadata lives in `fa_ops.*`. The table contains size/signing metadata, stack effects, and function pointers. Integer bitcount, float unary ops, locals, and basic control flow are wired; unsupported ones surface as `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`, keeping the interpreter honest.
+- The execution runtime (`fa_runtime.*`) owns job creation, call-frame allocation, operand stack reset, a small data-flow register window, and linear memory provisioning from the module memory section. It can stream a function body, decode immediates (LEB128 helpers, const payloads, locals/globals indices, memory operands), run a control stack for `block`/`loop`/`if`/`br`/`br_table`, and propagate traps (divide-by-zero, out-of-bounds memory, conversion overflow/NaN).
+- Opcode metadata lives in `fa_ops.*`. The table contains size/signing metadata, stack effects, and function pointers. Integer bitcount, float unary ops, locals/globals, and basic control flow are wired; unsupported ones surface as `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`, keeping the interpreter honest.
 - `fa_job.*` provides the doubly-linked operand stack plus a fixed-size “register window” (recent values slide through `fa_JobDataFlow`). The runtime resets and reuses jobs to amortize allocations.
 - A deterministic instruction stream helper (`fa_wasm_stream.*`) sits between the module parser and the tests, making it easy to assert cursor positions and encoded immediates.
-- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, i64/f64 arithmetic, and trap paths (division by zero, memory bounds, conversion overflow/NaN).
+- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, globals, branching semantics, i64/f64 arithmetic, and trap paths (division by zero, memory bounds, conversion overflow/NaN).
 
 The interpreter deliberately stops short of executing a full program: many opcodes have placeholders, traps are surfaced as error codes, and host integration is minimal. Even so, the scaffolding for job management, frame unwinding, and constant decoding is in place and stable for further opcode work.
 
@@ -51,10 +51,10 @@ The interpreter deliberately stops short of executing a full program: many opcod
 
 ## Known Gaps & Next Steps
 
-- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (tables, bulk memory, SIMD). Globals are stubbed and structured control flow (`if`/`br`/`br_table`) lacks real branch execution.
+- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (tables, bulk memory, SIMD). Control-flow stack unwinding and block result propagation are not implemented yet.
 - Memory64 and multi-memory are not supported yet; `memory.size`/`memory.grow` and loads/stores currently target memory index 0 only.
-- Trap semantics cover divide-by-zero, linear-memory bounds, and float-to-int conversion traps; structured control flow and global semantics still need real execution.
-- Runtime tests now cover stack effects, call depth, locals, i64/f64 arithmetic, and conversion traps; add coverage for globals, branching semantics, and multi-value returns as new opcodes land.
+- Trap semantics cover divide-by-zero, linear-memory bounds, and float-to-int conversion traps; global initializers only support const expressions.
+- Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, i64/f64 arithmetic, and conversion traps; add coverage for block results, stack unwinding, and multi-value returns as new opcodes land.
 
 Contributions, experiments, and curious questions are welcome. The ambition is for fayasm to remain an approachable deep dive into WebAssembly execution internals while leaving room for JIT experiments or host integration research.
 

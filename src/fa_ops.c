@@ -707,6 +707,9 @@ static OP_RETURN_TYPE op_global(OP_ARGUMENTS) {
     if (!runtime->globals || index >= runtime->globals_count) {
         return FA_RUNTIME_ERR_TRAP;
     }
+    if (!runtime->module || !runtime->module->globals || index >= runtime->module->num_globals) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
     switch (descriptor->id) {
         case 0x23: /* global.get */
         {
@@ -717,6 +720,9 @@ static OP_RETURN_TYPE op_global(OP_ARGUMENTS) {
         {
             fa_JobValue value;
             if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!runtime->module->globals[index].is_mutable) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             runtime->globals[index] = value;

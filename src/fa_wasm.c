@@ -308,6 +308,10 @@ void wasm_module_free(WasmModule* module) {
     if (module->memories) {
         free(module->memories);
     }
+
+    if (module->globals) {
+        free(module->globals);
+    }
     
     free(module);
 }
@@ -646,6 +650,94 @@ int wasm_load_memories(WasmModule* module) {
     return 0;
 }
 
+// Carica i globali dalla sezione Global
+int wasm_load_globals(WasmModule* module) {
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type == SECTION_GLOBAL) {
+            if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                return -1;
+            }
+
+            uint32_t size_read;
+            uint32_t count = read_uleb128(module, &size_read);
+
+            module->num_globals = count;
+            module->globals = (WasmGlobal*)malloc(count * sizeof(WasmGlobal));
+            if (!module->globals) {
+                return -1;
+            }
+            memset(module->globals, 0, count * sizeof(WasmGlobal));
+
+            module->globals_offset = module->sections[i].offset + size_read;
+
+            for (uint32_t j = 0; j < count; j++) {
+                uint8_t valtype = 0;
+                if (wasm_stream_read(module, &valtype, 1) != 1) {
+                    return -1;
+                }
+                uint8_t mutability = 0;
+                if (wasm_stream_read(module, &mutability, 1) != 1) {
+                    return -1;
+                }
+                if (mutability > 1) {
+                    return -1;
+                }
+                module->globals[j].valtype = valtype;
+                module->globals[j].is_mutable = (mutability == 1);
+
+                uint8_t init_opcode = 0;
+                if (wasm_stream_read(module, &init_opcode, 1) != 1) {
+                    return -1;
+                }
+                switch (init_opcode) {
+                    case 0x41: /* i32.const */
+                    {
+                        int32_t value = read_sleb128(module, &size_read);
+                        module->globals[j].init_raw = (uint64_t)(int64_t)value;
+                        break;
+                    }
+                    case 0x42: /* i64.const */
+                    {
+                        int64_t value = read_sleb128_64(module, &size_read);
+                        module->globals[j].init_raw = (uint64_t)value;
+                        break;
+                    }
+                    case 0x43: /* f32.const */
+                    {
+                        uint32_t raw = 0;
+                        if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
+                            return -1;
+                        }
+                        module->globals[j].init_raw = raw;
+                        break;
+                    }
+                    case 0x44: /* f64.const */
+                    {
+                        uint64_t raw = 0;
+                        if (wasm_stream_read(module, &raw, sizeof(raw)) != (ssize_t)sizeof(raw)) {
+                            return -1;
+                        }
+                        module->globals[j].init_raw = raw;
+                        break;
+                    }
+                    default:
+                        return -1;
+                }
+
+                uint8_t end = 0;
+                if (wasm_stream_read(module, &end, 1) != 1 || end != 0x0B) {
+                    return -1;
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    module->num_globals = 0;
+    return 0;
+}
+
 // Carica un byte code di una funzione on-demand
 uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx) {
     if (func_idx >= module->num_functions) {
@@ -720,6 +812,17 @@ void wasm_print_info(WasmModule* module) {
             printf("\n");
         }
     }
+
+    if (module->num_globals > 0) {
+        printf("\n=== Globals (%u) ===\n", module->num_globals);
+        for (uint32_t i = 0; i < module->num_globals; i++) {
+            printf("Global %u: Type=0x%02X, Mutable=%s, Init=0x%016" PRIx64 "\n",
+                   i,
+                   module->globals[i].valtype,
+                   module->globals[i].is_mutable ? "true" : "false",
+                   module->globals[i].init_raw);
+        }
+    }
     
     if (module->num_functions > 0) {
         printf("\n=== Functions (%u) ===\n", module->num_functions);
@@ -775,6 +878,7 @@ int fa_wasm_example(int argc, char** argv) {
     wasm_load_functions(module);
     wasm_load_exports(module);
     wasm_load_memories(module);
+    wasm_load_globals(module);
     
     // Stampa le informazioni sul modulo
     wasm_print_info(module);

@@ -64,6 +64,12 @@ typedef struct {
 } WasmFunction;
 
 typedef struct {
+    uint8_t valtype;
+    bool is_mutable;
+    uint64_t init_raw;
+} WasmGlobal;
+
+typedef struct {
     char* name;
     uint32_t name_len;
     uint32_t kind;         // 0=function, 1=table, 2=memory, 3=global
@@ -97,6 +103,11 @@ typedef struct {
     uint32_t num_memories;
     WasmMemory* memories;
     off_t memories_offset;
+
+    // Globali
+    uint32_t num_globals;
+    WasmGlobal* globals;
+    off_t globals_offset;
     
     // File handle
     int fd;
@@ -119,5 +130,6 @@ int wasm_load_types(WasmModule* module);
 int wasm_load_functions(WasmModule* module);
 int wasm_load_exports(WasmModule* module);
 int wasm_load_memories(WasmModule* module);
+int wasm_load_globals(WasmModule* module);
 uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx);
 void wasm_print_info(WasmModule* module);

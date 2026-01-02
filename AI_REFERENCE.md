@@ -20,18 +20,19 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
-- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, memories).
+- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals, i64/f64 arithmetic, conversion traps).
+- `src/fa_arch.h` – architecture-size macro hook (e.g., pointer width).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
-- Tables and global semantics are still stubbed; structured control flow (`if`/`br`/`br_table`) lacks real branch execution.
+- Control-flow stack unwinding and block result propagation are still missing; `br`/`br_table` do not unwind operand stack frames.
 - Memory64 and multi-memory are unsupported; linear memory operations currently target memory index 0 only.
-- Trap semantics now cover divide-by-zero, bounds checking, and conversion overflow/NaN; control-flow traps still need validation.
-- Interpreter tests now cover stack effects, call depth, locals, i64/f64 arithmetic, and conversion traps; expand into globals, branching semantics, and multi-value returns.
+- Global initializers only support const expressions; imports and `global.get` initializers are not parsed yet.
+- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, and conversion traps; expand into multi-value returns and stack unwinding.
 
 ## Research Archive (studies/)
 
@@ -66,9 +67,9 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Implement real control-flow execution with a control stack for `if`/`br`/`br_table`.
-2. Parse globals (including mutability) and wire global storage to `global.get`/`global.set`.
-3. Expand locals/params handling with typed initialization and add globals/branching semantics tests.
+1. Implement operand stack unwinding and block result propagation for control flow (`br`/`br_table`/`if`).
+2. Support global initializers beyond const expressions (imports, `global.get`) and validate global types.
+3. Extend architecture hooks in `src/fa_arch.h` to influence pointer-size dependent types.
 
 ### General next steps
 1. Improve traps to allow real time write and move of volatile data on another storage system
