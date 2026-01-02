@@ -17,21 +17,21 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, linear memory provisioning.
+- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, memories).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, numeric unary ops, traps).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals, i64/f64 arithmetic, conversion traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
-- Large portions of the opcode table still return `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE` (locals, globals, control flow, tables).
+- Tables and global semantics are still stubbed; structured control flow (`if`/`br`/`br_table`) lacks real branch execution.
 - Memory64 and multi-memory are unsupported; linear memory operations currently target memory index 0 only.
-- Trap semantics cover divide-by-zero and bounds checking, but conversion traps and structured control flow remain unimplemented.
-- Interpreter tests now cover stack effects, call depth, and basic traps; expand into locals/globals, branching, and multi-value returns.
+- Trap semantics now cover divide-by-zero, bounds checking, and conversion overflow/NaN; control-flow traps still need validation.
+- Interpreter tests now cover stack effects, call depth, locals, i64/f64 arithmetic, and conversion traps; expand into globals, branching semantics, and multi-value returns.
 
 ## Research Archive (studies/)
 
@@ -66,9 +66,9 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Extend opcode coverage for locals/globals/control flow (e.g., local.get, br_if) with proper stack effects and traps.
-2. Add conversion-trap regression tests (NaN/overflow) and coverage for new i64/float opcodes.
-3. Clean up the fa_wasm.c printf format warnings using PRIu64/PRIx64 or %lld-style specifiers.
+1. Implement real control-flow execution with a control stack for `if`/`br`/`br_table`.
+2. Parse globals (including mutability) and wire global storage to `global.get`/`global.set`.
+3. Expand locals/params handling with typed initialization and add globals/branching semantics tests.
 
 ### General next steps
 1. Improve traps to allow real time write and move of volatile data on another storage system

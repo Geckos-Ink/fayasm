@@ -37,6 +37,10 @@ typedef struct fa_Runtime {
     jobId_t next_job_id;
     uint32_t max_call_depth;
     fa_RuntimeMemory memory;
+    fa_JobValue* active_locals;
+    uint32_t active_locals_count;
+    fa_JobValue* globals;
+    uint32_t globals_count;
 } fa_Runtime;
 
 fa_Runtime* fa_Runtime_init(void);

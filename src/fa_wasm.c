@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <inttypes.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -678,8 +679,8 @@ void wasm_print_info(WasmModule* module) {
     
     printf("\n=== Sections ===\n");
     for (uint32_t i = 0; i < module->num_sections; i++) {
-        printf("Section %u: Type=%u, Size=%u, Offset=0x%lx", 
-               i, module->sections[i].type, module->sections[i].size, module->sections[i].offset);
+        printf("Section %u: Type=%u, Size=%u, Offset=0x%" PRIxMAX, 
+               i, module->sections[i].type, module->sections[i].size, (uintmax_t)module->sections[i].offset);
         
         if (module->sections[i].type == SECTION_CUSTOM && module->sections[i].name) {
             printf(", Name=\"%s\"", module->sections[i].name);
@@ -706,13 +707,13 @@ void wasm_print_info(WasmModule* module) {
     if (module->num_memories > 0) {
         printf("\n=== Memories (%u) ===\n", module->num_memories);
         for (uint32_t i = 0; i < module->num_memories; i++) {
-            printf("Memory %u: Type=%s, Initial=%lu pages", 
+            printf("Memory %u: Type=%s, Initial=%" PRIu64 " pages", 
                    i, 
                    module->memories[i].is_memory64 ? "Memory64" : "Memory32",
                    module->memories[i].initial_size);
             
             if (module->memories[i].has_max) {
-                printf(", Maximum=%lu pages", module->memories[i].maximum_size);
+                printf(", Maximum=%" PRIu64 " pages", module->memories[i].maximum_size);
             } else {
                 printf(", No maximum");
             }
@@ -723,8 +724,8 @@ void wasm_print_info(WasmModule* module) {
     if (module->num_functions > 0) {
         printf("\n=== Functions (%u) ===\n", module->num_functions);
         for (uint32_t i = 0; i < module->num_functions; i++) {
-            printf("Function %u: Type=%u, Body Offset=0x%lx, Body Size=%u\n", 
-                   i, module->functions[i].type_index, module->functions[i].body_offset, module->functions[i].body_size);
+            printf("Function %u: Type=%u, Body Offset=0x%" PRIxMAX ", Body Size=%u\n", 
+                   i, module->functions[i].type_index, (uintmax_t)module->functions[i].body_offset, module->functions[i].body_size);
         }
     }
     

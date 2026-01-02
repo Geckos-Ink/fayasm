@@ -360,6 +360,42 @@ static bool job_value_truthy(const fa_JobValue* value) {
     }
 }
 
+static bool trunc_f64_to_i32(double value, bool is_signed, u64* out) {
+    if (!out || isnan(value) || !isfinite(value)) {
+        return false;
+    }
+    const double min = is_signed ? (double)INT32_MIN : 0.0;
+    const double max = is_signed ? (double)INT32_MAX : (double)UINT32_MAX;
+    if (value < min || value > max) {
+        return false;
+    }
+    const double truncated = trunc(value);
+    if (is_signed) {
+        *out = (u64)(i32)truncated;
+    } else {
+        *out = (u64)(u32)truncated;
+    }
+    return true;
+}
+
+static bool trunc_f64_to_i64(double value, bool is_signed, u64* out) {
+    if (!out || isnan(value) || !isfinite(value)) {
+        return false;
+    }
+    const double min = is_signed ? (double)INT64_MIN : 0.0;
+    const double max = is_signed ? (double)INT64_MAX : (double)UINT64_MAX;
+    if (value < min || value > max) {
+        return false;
+    }
+    const double truncated = trunc(value);
+    if (is_signed) {
+        *out = (u64)(i64)truncated;
+    } else {
+        *out = (u64)truncated;
+    }
+    return true;
+}
+
 static bool pop_reg_to_buffer(fa_Job* job, void* buffer, size_t size) {
     if (!job || !buffer || size == 0) {
         return false;
@@ -612,6 +648,82 @@ static OP_RETURN_TYPE op_control(OP_ARGUMENTS) {
             return FA_RUNTIME_OK;
         default:
             return FA_RUNTIME_OK;
+    }
+}
+
+static OP_RETURN_TYPE op_local(OP_ARGUMENTS) {
+    if (!runtime || !job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 index = 0;
+    if (pop_reg_u64_checked(job, &index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (!runtime->active_locals || index >= runtime->active_locals_count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    switch (descriptor->id) {
+        case 0x20: /* local.get */
+        {
+            const fa_JobValue value = runtime->active_locals[index];
+            return fa_JobStack_push(&job->stack, &value) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        case 0x21: /* local.set */
+        {
+            fa_JobValue value;
+            if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            runtime->active_locals[index] = value;
+            return FA_RUNTIME_OK;
+        }
+        case 0x22: /* local.tee */
+        {
+            fa_JobValue value;
+            if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const fa_JobValue previous = runtime->active_locals[index];
+            runtime->active_locals[index] = value;
+            if (!fa_JobStack_push(&job->stack, &value)) {
+                runtime->active_locals[index] = previous;
+                return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+            }
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
+    }
+}
+
+static OP_RETURN_TYPE op_global(OP_ARGUMENTS) {
+    if (!runtime || !job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 index = 0;
+    if (pop_reg_u64_checked(job, &index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (!runtime->globals || index >= runtime->globals_count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    switch (descriptor->id) {
+        case 0x23: /* global.get */
+        {
+            const fa_JobValue value = runtime->globals[index];
+            return fa_JobStack_push(&job->stack, &value) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        case 0x24: /* global.set */
+        {
+            fa_JobValue value;
+            if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            runtime->globals[index] = value;
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
     }
 }
 
@@ -1469,7 +1581,12 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_int_checked(job, (i32)value, 32U, true);
+            u64 truncated = 0;
+            if (!trunc_f64_to_i32((double)value, true, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_int_checked(job, truncated, 32U, true);
         }
         case 0xA9: /* i32.trunc_f32_u */
         {
@@ -1478,7 +1595,11 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            u32 truncated = value < 0.0f ? 0U : (u32)value;
+            u64 truncated = 0;
+            if (!trunc_f64_to_i32((double)value, false, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
             return push_int_checked(job, truncated, 32U, false);
         }
         case 0xAA: /* i32.trunc_f64_s */
@@ -1488,7 +1609,12 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_int_checked(job, (i32)value, 32U, true);
+            u64 truncated = 0;
+            if (!trunc_f64_to_i32(value, true, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_int_checked(job, truncated, 32U, true);
         }
         case 0xAB: /* i32.trunc_f64_u */
         {
@@ -1497,7 +1623,11 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            u32 truncated = value < 0.0 ? 0U : (u32)value;
+            u64 truncated = 0;
+            if (!trunc_f64_to_i32(value, false, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
             return push_int_checked(job, truncated, 32U, false);
         }
         case 0xAC: /* i64.extend_i32_s */
@@ -1525,7 +1655,12 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_int_checked(job, (i64)value, 64U, true);
+            u64 truncated = 0;
+            if (!trunc_f64_to_i64((double)value, true, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_int_checked(job, truncated, 64U, true);
         }
         case 0xAF: /* i64.trunc_f32_u */
         {
@@ -1534,7 +1669,11 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            u64 truncated = value < 0.0f ? 0ULL : (u64)value;
+            u64 truncated = 0;
+            if (!trunc_f64_to_i64((double)value, false, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
             return push_int_checked(job, truncated, 64U, false);
         }
         case 0xB0: /* i64.trunc_f64_s */
@@ -1544,7 +1683,12 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_int_checked(job, (i64)value, 64U, true);
+            u64 truncated = 0;
+            if (!trunc_f64_to_i64(value, true, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_int_checked(job, truncated, 64U, true);
         }
         case 0xB1: /* i64.trunc_f64_u */
         {
@@ -1553,7 +1697,11 @@ static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
                 restore_stack_value(job, &source);
                 return FA_RUNTIME_ERR_TRAP;
             }
-            u64 truncated = value < 0.0 ? 0ULL : (u64)value;
+            u64 truncated = 0;
+            if (!trunc_f64_to_i64(value, false, &truncated)) {
+                restore_stack_value(job, &source);
+                return FA_RUNTIME_ERR_TRAP;
+            }
             return push_int_checked(job, truncated, 64U, false);
         }
         case 0xB2: /* f32.convert_i32_s */
@@ -2063,6 +2211,11 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x11, &type_void, wopt_call, 0, 1, 0, 2, op_call_indirect); // call_indirect
     define_op(ops, 0x1A, &type_void, wopt_drop, 0, 1, 0, 0, op_drop); // drop
     define_op(ops, 0x1B, &type_void, wopt_select, 0, 3, 1, 0, op_select); // select
+    define_op(ops, 0x20, &type_void, wopt_unique, 0, 0, 1, 1, op_local); // local.get
+    define_op(ops, 0x21, &type_void, wopt_unique, 0, 1, 0, 1, op_local); // local.set
+    define_op(ops, 0x22, &type_void, wopt_unique, 0, 1, 1, 1, op_local); // local.tee
+    define_op(ops, 0x23, &type_void, wopt_unique, 0, 0, 1, 1, op_global); // global.get
+    define_op(ops, 0x24, &type_void, wopt_unique, 0, 1, 0, 1, op_global); // global.set
     define_op(ops, 0x28, &type_i32, wopt_load, 32, 1, 1, 2, op_load); // i32.load
     define_op(ops, 0x29, &type_i64, wopt_load, 64, 1, 1, 2, op_load); // i64.load
     define_op(ops, 0x2A, &type_f32, wopt_load, 32, 1, 1, 2, op_load); // f32.load
