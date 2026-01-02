@@ -1272,6 +1272,79 @@ static int test_br_table_branch(void) {
     return 0;
 }
 
+static int test_loop_label_result(void) {
+    ByteBuffer locals = {0};
+    bb_write_uleb(&locals, 1);
+    bb_write_uleb(&locals, 1);
+    bb_write_byte(&locals, VALTYPE_I32);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 5);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x21);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x03);
+    bb_write_byte(&instructions, 0x7F);
+    bb_write_byte(&instructions, 0x20);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x45);
+    bb_write_byte(&instructions, 0x04);
+    bb_write_byte(&instructions, 0x40);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x21);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 7);
+    bb_write_byte(&instructions, 0x0C);
+    bb_write_uleb(&instructions, 1);
+    bb_write_byte(&instructions, 0x0B);
+    bb_write_byte(&instructions, 0x0B);
+    bb_write_byte(&instructions, 0x6A);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    const uint8_t* locals_list[] = { locals.data };
+    const size_t locals_sizes[] = { locals.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes, bodies, sizes, locals_list, locals_sizes, 1, NULL, NULL, 0, 0, 0, 0)) {
+        bb_free(&locals);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&locals);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 12) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_global_get_set(void) {
     ByteBuffer globals = {0};
     bb_write_uleb(&globals, 1);
@@ -1339,6 +1412,45 @@ static int test_global_set_immutable_trap(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
     bb_write_sleb32(&instructions, 7);
+    bb_write_byte(&instructions, 0x24);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes, bodies, sizes, NULL, NULL, 1, NULL, &globals, 0, 0, 0, 0)) {
+        bb_free(&globals);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&globals);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
+}
+
+static int test_global_set_type_mismatch_trap(void) {
+    ByteBuffer globals = {0};
+    bb_write_uleb(&globals, 1);
+    bb_write_byte(&globals, VALTYPE_I32);
+    bb_write_byte(&globals, 1);
+    bb_write_byte(&globals, 0x41);
+    bb_write_sleb32(&globals, 0);
+    bb_write_byte(&globals, 0x0B);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x43);
+    bb_write_f32(&instructions, 1.0f);
     bb_write_byte(&instructions, 0x24);
     bb_write_uleb(&instructions, 0);
     bb_write_byte(&instructions, 0x0B);
@@ -1492,6 +1604,10 @@ int main(void) {
         printf("FAIL: test_br_table_branch\n");
         failures++;
     }
+    if (test_loop_label_result() != 0) {
+        printf("FAIL: test_loop_label_result\n");
+        failures++;
+    }
     if (test_global_get_set() != 0) {
         printf("FAIL: test_global_get_set\n");
         failures++;
@@ -1506,6 +1622,10 @@ int main(void) {
     }
     if (test_global_set_immutable_trap() != 0) {
         printf("FAIL: test_global_set_immutable_trap\n");
+        failures++;
+    }
+    if (test_global_set_type_mismatch_trap() != 0) {
+        printf("FAIL: test_global_set_type_mismatch_trap\n");
         failures++;
     }
     if (test_local_f32_default() != 0) {

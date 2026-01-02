@@ -24,7 +24,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
 - `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics, i64/f64 arithmetic, conversion traps, block unwinding).
+- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, i64/f64 arithmetic, conversion traps, block unwinding, global type mismatch traps).
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching

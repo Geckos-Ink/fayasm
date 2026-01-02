@@ -9,7 +9,7 @@ Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor d
 - Opcode metadata lives in `fa_ops.*`. The table contains size/signing metadata, stack effects, and function pointers. Integer bitcount, float unary ops, locals/globals, and basic control flow are wired; unsupported ones surface as `FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE`, keeping the interpreter honest.
 - `fa_job.*` provides the doubly-linked operand stack plus a fixed-size “register window” (recent values slide through `fa_JobDataFlow`). The runtime resets and reuses jobs to amortize allocations.
 - A deterministic instruction stream helper (`fa_wasm_stream.*`) sits between the module parser and the tests, making it easy to assert cursor positions and encoded immediates.
-- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, globals, branching semantics, i64/f64 arithmetic, and trap paths (division by zero, memory bounds, conversion overflow/NaN).
+- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, globals, branching semantics (including loop labels), i64/f64 arithmetic, and trap paths (division by zero, memory bounds, conversion overflow/NaN, global type mismatches).
 
 The interpreter deliberately stops short of executing a full program: many opcodes have placeholders, traps are surfaced as error codes, and host integration is minimal. Even so, the scaffolding for job management, frame unwinding, and constant decoding is in place and stable for further opcode work.
 
