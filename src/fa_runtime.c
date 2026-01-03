@@ -18,6 +18,12 @@ typedef struct {
     struct fa_RuntimeControlFrame* control_stack;
     uint32_t control_depth;
     uint32_t control_capacity;
+    uint8_t* decoded_opcodes;
+    size_t decoded_count;
+    size_t decoded_capacity;
+    fa_JitProgram jit_program;
+    bool jit_program_ready;
+    size_t jit_prepared_count;
 } fa_RuntimeCallFrame;
 
 typedef enum {
@@ -38,6 +44,9 @@ typedef struct fa_RuntimeControlFrame {
     bool preserve_stack;
     size_t stack_height;
 } fa_RuntimeControlFrame;
+
+#define FA_JIT_DECODED_OPS_INITIAL 64U
+#define FA_JIT_UPDATE_INTERVAL 64U
 
 static ptr fa_default_malloc(int size) {
     return malloc((size_t)size);
@@ -721,12 +730,79 @@ static void runtime_free_frame_resources(fa_RuntimeCallFrame* frame) {
         free(frame->control_stack);
         frame->control_stack = NULL;
     }
+    if (frame->decoded_opcodes) {
+        free(frame->decoded_opcodes);
+        frame->decoded_opcodes = NULL;
+    }
+    fa_jit_program_free(&frame->jit_program);
     frame->body_size = 0;
     frame->pc = 0;
     frame->code_start = 0;
     frame->locals_count = 0;
     frame->control_depth = 0;
     frame->control_capacity = 0;
+    frame->decoded_count = 0;
+    frame->decoded_capacity = 0;
+    frame->jit_program_ready = false;
+    frame->jit_prepared_count = 0;
+}
+
+static int runtime_decoded_opcodes_push(fa_RuntimeCallFrame* frame, uint8_t opcode) {
+    if (!frame) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (frame->decoded_count >= frame->decoded_capacity) {
+        size_t new_capacity = frame->decoded_capacity ? frame->decoded_capacity * 2U : FA_JIT_DECODED_OPS_INITIAL;
+        uint8_t* next = (uint8_t*)realloc(frame->decoded_opcodes, new_capacity);
+        if (!next) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        frame->decoded_opcodes = next;
+        frame->decoded_capacity = new_capacity;
+    }
+    frame->decoded_opcodes[frame->decoded_count++] = opcode;
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_jit_record_opcode(fa_Runtime* runtime, fa_RuntimeCallFrame* frame, uint8_t opcode) {
+    if (!runtime || !frame) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    int status = runtime_decoded_opcodes_push(frame, opcode);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    runtime->jit_stats.decoded_ops++;
+    runtime->jit_stats.executed_ops++;
+    if (runtime->jit_stats.executed_ops % FA_JIT_UPDATE_INTERVAL == 0U) {
+        fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
+    }
+    return FA_RUNTIME_OK;
+}
+
+static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* frame) {
+    if (!runtime || !frame) {
+        return;
+    }
+    if (frame->jit_program_ready) {
+        return;
+    }
+    if (runtime->jit_context.decision.tier != FA_JIT_TIER_MICROCODE) {
+        return;
+    }
+    if (frame->decoded_count == 0) {
+        return;
+    }
+    size_t opcode_count = frame->decoded_count;
+    if (runtime->jit_context.decision.budget.max_ops_per_chunk > 0 &&
+        opcode_count > runtime->jit_context.decision.budget.max_ops_per_chunk) {
+        opcode_count = runtime->jit_context.decision.budget.max_ops_per_chunk;
+    }
+    if (!fa_jit_prepare_program_from_opcodes(frame->decoded_opcodes, opcode_count, &frame->jit_program)) {
+        return;
+    }
+    frame->jit_program_ready = true;
+    frame->jit_prepared_count = opcode_count;
 }
 
 static int runtime_read_uleb128(const uint8_t* buffer, uint32_t buffer_size, uint32_t* cursor, uint64_t* out) {
@@ -1264,6 +1340,7 @@ static int runtime_push_frame(fa_Runtime* runtime,
 
     fa_RuntimeCallFrame* frame = &frames[*depth];
     memset(frame, 0, sizeof(*frame));
+    fa_jit_program_init(&frame->jit_program);
     frame->func_index = function_index;
     frame->body = body;
     frame->body_size = runtime->module->functions[function_index].body_size;
@@ -1354,6 +1431,8 @@ fa_Runtime* fa_Runtime_init(void) {
     runtime->elem_segments_count = 0;
     runtime->globals = NULL;
     runtime->globals_count = 0;
+    fa_jit_context_init(&runtime->jit_context, NULL);
+    memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     if (!runtime->jobs) {
         fa_Runtime_free(runtime);
         return NULL;
@@ -2129,7 +2208,7 @@ static int runtime_unwind_stack_to(fa_Job* job,
     return FA_RUNTIME_OK;
 }
 
-static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint32_t label_index) {
+static int runtime_branch_to_label(fa_Runtime* runtime, fa_RuntimeCallFrame* frame, fa_Job* job, uint32_t label_index) {
     if (!frame || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -2151,6 +2230,13 @@ static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint
             return status;
         }
     }
+    if (target_copy.type == FA_CONTROL_LOOP && runtime) {
+        runtime->jit_stats.hot_loop_hits++;
+        if (runtime->jit_stats.hot_loop_hits == runtime->jit_context.config.min_hot_loop_hits) {
+            fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
+            runtime_jit_maybe_prepare(runtime, frame);
+        }
+    }
     if (target_copy.type == FA_CONTROL_LOOP) {
         frame->pc = target_copy.start_pc;
         runtime_control_pop_to(frame, label_index, true);
@@ -2166,7 +2252,6 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                                       fa_Job* job,
                                       fa_RuntimeInstructionContext* ctx,
                                       uint8_t opcode) {
-    (void)runtime;
     if (!frame || !job || !ctx) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -2205,14 +2290,14 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 if (entry->else_pc != 0) {
                     frame->pc = entry->else_pc;
                 } else {
-                    return runtime_branch_to_label(frame, job, 0);
+                    return runtime_branch_to_label(runtime, frame, job, 0);
                 }
             }
             return FA_RUNTIME_OK;
         }
         case 0x05: /* else */
         {
-            return runtime_branch_to_label(frame, job, 0);
+            return runtime_branch_to_label(runtime, frame, job, 0);
         }
         case 0x0B: /* end */
         {
@@ -2233,7 +2318,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             return FA_RUNTIME_OK;
         }
         case 0x0C: /* br */
-            return runtime_branch_to_label(frame, job, ctx->label_index);
+            return runtime_branch_to_label(runtime, frame, job, ctx->label_index);
         case 0x0D: /* br_if */
         {
             fa_JobValue cond;
@@ -2241,7 +2326,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 return FA_RUNTIME_ERR_TRAP;
             }
             if (runtime_job_value_truthy(&cond)) {
-                return runtime_branch_to_label(frame, job, ctx->label_index);
+                return runtime_branch_to_label(runtime, frame, job, ctx->label_index);
             }
             return FA_RUNTIME_OK;
         }
@@ -2259,7 +2344,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             if (index < ctx->br_table_count) {
                 label = ctx->br_table_labels[index];
             }
-            return runtime_branch_to_label(frame, job, label);
+            return runtime_branch_to_label(runtime, frame, job, label);
         }
         case 0x0F: /* return */
         {
@@ -2267,7 +2352,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
                 return FA_RUNTIME_OK;
             }
             uint32_t label_index = frame->control_depth - 1U;
-            return runtime_branch_to_label(frame, job, label_index);
+            return runtime_branch_to_label(runtime, frame, job, label_index);
         }
         default:
             return FA_RUNTIME_OK;
@@ -2286,6 +2371,8 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
     }
 
     fa_Runtime_reset_job_state(job);
+    memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
+    fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
 
     fa_RuntimeCallFrame* frames = runtime_alloc_frames(runtime);
     if (!frames) {
@@ -2317,6 +2404,12 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
             runtime_instruction_context_free(&ctx);
             break;
         }
+        status = runtime_jit_record_opcode(runtime, frame, opcode);
+        if (status != FA_RUNTIME_OK) {
+            runtime_instruction_context_free(&ctx);
+            break;
+        }
+        runtime_jit_maybe_prepare(runtime, frame);
 
         if (ctx.control_op != FA_CTRL_NONE) {
             status = runtime_execute_control_op(runtime, frame, job, &ctx, opcode);

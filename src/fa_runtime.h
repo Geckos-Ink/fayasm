@@ -4,6 +4,7 @@
 #include "helpers/dynamic_list.h"
 #include "fa_job.h"
 #include "fa_wasm_stream.h"
+#include "fa_jit.h"
 
 #define FA_WASM_PAGE_SIZE 65536U
 
@@ -56,6 +57,8 @@ typedef struct fa_Runtime {
     uint32_t active_locals_count;
     fa_JobValue* globals;
     uint32_t globals_count;
+    fa_JitContext jit_context;
+    fa_JitStats jit_stats;
 } fa_Runtime;
 
 fa_Runtime* fa_Runtime_init(void);
