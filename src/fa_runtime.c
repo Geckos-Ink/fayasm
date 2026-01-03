@@ -2142,13 +2142,9 @@ static int runtime_branch_to_label(fa_RuntimeCallFrame* frame, fa_Job* job, uint
         size_t unwind_height = target_copy.stack_height;
         const uint8_t* types = target_copy.result_types;
         uint32_t type_count = target_copy.result_count;
-        if (target_copy.type == FA_CONTROL_LOOP) {
+        if (target_copy.type == FA_CONTROL_LOOP && target_copy.param_count > 0) {
             types = target_copy.param_types;
             type_count = target_copy.param_count;
-            if (unwind_height < target_copy.param_count) {
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            unwind_height -= target_copy.param_count;
         }
         int status = runtime_unwind_stack_to(job, unwind_height, types, type_count);
         if (status != FA_RUNTIME_OK) {

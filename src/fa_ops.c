@@ -1182,259 +1182,6 @@ static OP_RETURN_TYPE op_eqz(OP_ARGUMENTS) {
     return push_bool_checked(job, !job_value_truthy(&value));
 }
 
-static OP_RETURN_TYPE op_compare(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    bool result = false;
-    if (descriptor->type.type == wt_float) {
-        f64 right = 0.0;
-        f64 left = 0.0;
-        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        switch (descriptor->op) {
-            case wopt_eq:
-                result = (left == right);
-                break;
-            case wopt_ne:
-                result = (left != right);
-                break;
-            case wopt_lt:
-                result = (left < right);
-                break;
-            case wopt_gt:
-                result = (left > right);
-                break;
-            case wopt_le:
-                result = (left <= right);
-                break;
-            case wopt_ge:
-                result = (left >= right);
-                break;
-            default:
-                break;
-        }
-    } else {
-        const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-        if (is_signed) {
-            i64 right = 0;
-            i64 left = 0;
-            if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            switch (descriptor->op) {
-                case wopt_eq:
-                    result = (left == right);
-                    break;
-                case wopt_ne:
-                    result = (left != right);
-                    break;
-                case wopt_lt:
-                    result = (left < right);
-                    break;
-                case wopt_gt:
-                    result = (left > right);
-                    break;
-                case wopt_le:
-                    result = (left <= right);
-                    break;
-                case wopt_ge:
-                    result = (left >= right);
-                    break;
-                default:
-                    break;
-            }
-        } else {
-            u64 right = 0;
-            u64 left = 0;
-            if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            switch (descriptor->op) {
-                case wopt_eq:
-                    result = (left == right);
-                    break;
-                case wopt_ne:
-                    result = (left != right);
-                    break;
-                case wopt_lt:
-                    result = (left < right);
-                    break;
-                case wopt_gt:
-                    result = (left > right);
-                    break;
-                case wopt_le:
-                    result = (left <= right);
-                    break;
-                case wopt_ge:
-                    result = (left >= right);
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-    return push_bool_checked(job, result);
-}
-
-static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    if (descriptor->type.type == wt_float) {
-        f64 right = 0.0;
-        f64 left = 0.0;
-        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        double result = 0.0;
-        switch (descriptor->op) {
-            case wopt_add:
-                result = left + right;
-                break;
-            case wopt_sub:
-                result = left - right;
-                break;
-            case wopt_mul:
-                result = left * right;
-                break;
-            case wopt_div:
-                result = left / right;
-                break;
-            default:
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_float_checked(job, result, descriptor->type.size == 8);
-    }
-
-    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
-
-    if (is_signed) {
-        i64 right = 0;
-        i64 left = 0;
-        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        i64 outcome = 0;
-        switch (descriptor->op) {
-            case wopt_add:
-                outcome = left + right;
-                break;
-            case wopt_sub:
-                outcome = left - right;
-                break;
-            case wopt_mul:
-                outcome = left * right;
-                break;
-            case wopt_div:
-                if (right == 0) {
-                    restore_stack_value(job, &lhs);
-                    restore_stack_value(job, &rhs);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                if ((result_bits == 32U && left == (i64)INT32_MIN && right == -1) ||
-                    (result_bits == 64U && left == (i64)INT64_MIN && right == -1)) {
-                    restore_stack_value(job, &lhs);
-                    restore_stack_value(job, &rhs);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                outcome = left / right;
-                break;
-            case wopt_rem:
-                if (right == 0) {
-                    restore_stack_value(job, &lhs);
-                    restore_stack_value(job, &rhs);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                outcome = left % right;
-                break;
-            default:
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_int_checked(job, (u64)outcome, result_bits, true);
-    } else {
-        u64 right = 0;
-        u64 left = 0;
-        if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        u64 outcome = 0;
-        switch (descriptor->op) {
-            case wopt_add:
-                outcome = left + right;
-                break;
-            case wopt_sub:
-                outcome = left - right;
-                break;
-            case wopt_mul:
-                outcome = left * right;
-                break;
-            case wopt_div:
-                if (right == 0) {
-                    restore_stack_value(job, &lhs);
-                    restore_stack_value(job, &rhs);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                outcome = left / right;
-                break;
-            case wopt_rem:
-                if (right == 0) {
-                    restore_stack_value(job, &lhs);
-                    restore_stack_value(job, &rhs);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                outcome = left % right;
-                break;
-            default:
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_int_checked(job, outcome, result_bits, false);
-    }
-}
-
 #define DEFINE_BITWISE_OP(name, expr)                                            \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
         (void)runtime;                                                           \
@@ -2386,238 +2133,6 @@ DEFINE_MICROCODE(mc_convert_i64_extend32_s, op_convert_i64_extend32_s_mc)
 #undef DEFINE_COMPARE_OP
 #undef DEFINE_CONVERT_OP
 
-static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    u64 right = 0;
-    u64 left = 0;
-    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
-        restore_stack_value(job, &lhs);
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    u64 outcome = 0;
-    switch (descriptor->op) {
-        case wopt_and:
-            outcome = left & right;
-            break;
-        case wopt_or:
-            outcome = left | right;
-            break;
-        case wopt_xor:
-            outcome = left ^ right;
-            break;
-        default:
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-    }
-    const uint8_t bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
-    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-    return push_int_checked(job, mask_unsigned_value(outcome, bits), bits, is_signed);
-}
-
-static OP_RETURN_TYPE op_bitcount(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue value;
-    if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    u64 raw = 0;
-    if (!job_value_to_u64(&value, &raw)) {
-        restore_stack_value(job, &value);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
-    u64 result = 0;
-    if (width <= 32U) {
-        const u32 v32 = (u32)raw;
-        switch (descriptor->op) {
-            case wopt_clz:
-                result = clz32(v32);
-                break;
-            case wopt_ctz:
-                result = ctz32(v32);
-                break;
-            case wopt_popcnt:
-                result = popcnt32(v32);
-                break;
-            default:
-                restore_stack_value(job, &value);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-    } else {
-        const u64 v64 = raw;
-        switch (descriptor->op) {
-            case wopt_clz:
-                result = clz64(v64);
-                break;
-            case wopt_ctz:
-                result = ctz64(v64);
-                break;
-            case wopt_popcnt:
-                result = popcnt64(v64);
-                break;
-            default:
-                restore_stack_value(job, &value);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-    }
-
-    return push_int_checked(job, result, width, false);
-}
-
-static OP_RETURN_TYPE op_shift(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    u64 amount_raw = 0;
-    if (!job_value_to_u64(&rhs, &amount_raw)) {
-        restore_stack_value(job, &lhs);
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
-    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-
-    if (width <= 32U) {
-        i64 left_signed = 0;
-        u64 left_unsigned = 0;
-        if (is_signed) {
-            if (!job_value_to_i64(&lhs, &left_signed)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-        } else {
-            if (!job_value_to_u64(&lhs, &left_unsigned)) {
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-        }
-        const uint8_t mask = 31U;
-        const uint8_t amount = (uint8_t)(amount_raw & mask);
-        u32 result = 0;
-        if (descriptor->op == wopt_shl) {
-            const u32 base = is_signed ? (u32)(i32)left_signed : (u32)left_unsigned;
-            result = base << amount;
-        } else if (is_signed) {
-            const i32 base = (i32)left_signed;
-            result = (u32)(base >> amount);
-        } else {
-            const u32 base = (u32)left_unsigned;
-            result = base >> amount;
-        }
-        return push_int_checked(job, result, width, is_signed);
-    }
-
-    i64 left_signed = 0;
-    u64 left_unsigned = 0;
-    if (is_signed) {
-        if (!job_value_to_i64(&lhs, &left_signed)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-    } else {
-        if (!job_value_to_u64(&lhs, &left_unsigned)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-    }
-    const uint8_t mask = 63U;
-    const uint8_t amount = (uint8_t)(amount_raw & mask);
-    u64 result = 0;
-    if (descriptor->op == wopt_shl) {
-        const u64 base = is_signed ? (u64)left_signed : left_unsigned;
-        result = base << amount;
-    } else if (is_signed) {
-        result = (u64)(left_signed >> amount);
-    } else {
-        result = left_unsigned >> amount;
-    }
-    return push_int_checked(job, result, width, is_signed);
-}
-
-static OP_RETURN_TYPE op_rotate(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    u64 amount_raw = 0;
-    if (!job_value_to_u64(&rhs, &amount_raw)) {
-        restore_stack_value(job, &lhs);
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
-    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
-    if (width <= 32U) {
-        u64 value_raw = 0;
-        if (!job_value_to_u64(&lhs, &value_raw)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        const u32 value = (u32)value_raw;
-        const uint8_t amount = (uint8_t)(amount_raw & 31U);
-        u32 result = descriptor->op == wopt_rotl ? rotl32(value, amount) : rotr32(value, amount);
-        return push_int_checked(job, result, width, is_signed);
-    }
-
-    u64 value = 0;
-    if (!job_value_to_u64(&lhs, &value)) {
-        restore_stack_value(job, &lhs);
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    const uint8_t amount = (uint8_t)(amount_raw & 63U);
-    u64 result = descriptor->op == wopt_rotl ? rotl64(value, amount) : rotr64(value, amount);
-    return push_int_checked(job, result, width, is_signed);
-}
-
 static OP_RETURN_TYPE op_float_unary(OP_ARGUMENTS) {
     (void)runtime;
     if (!job || !descriptor) {
@@ -2764,302 +2279,6 @@ static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
                 return FA_RUNTIME_ERR_TRAP;
         }
         return push_float_checked(job, result, false);
-    }
-}
-
-static OP_RETURN_TYPE op_convert(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue source;
-    if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    switch (descriptor->id) {
-        case 0xA7: /* i32.wrap_i64 */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, (u32)value, 32U, true);
-        }
-        case 0xA8: /* i32.trunc_f32_s */
-        {
-            f32 value = 0.0f;
-            if (!job_value_to_f32(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i32((double)value, true, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 32U, true);
-        }
-        case 0xA9: /* i32.trunc_f32_u */
-        {
-            f32 value = 0.0f;
-            if (!job_value_to_f32(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i32((double)value, false, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 32U, false);
-        }
-        case 0xAA: /* i32.trunc_f64_s */
-        {
-            f64 value = 0.0;
-            if (!job_value_to_f64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i32(value, true, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 32U, true);
-        }
-        case 0xAB: /* i32.trunc_f64_u */
-        {
-            f64 value = 0.0;
-            if (!job_value_to_f64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i32(value, false, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 32U, false);
-        }
-        case 0xAC: /* i64.extend_i32_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, sign_extend_value((u64)value, 32U), 64U, true);
-        }
-        case 0xAD: /* i64.extend_i32_u */
-        {
-            u64 value = 0;
-            if (!job_value_to_u64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, mask_unsigned_value(value, 32U), 64U, false);
-        }
-        case 0xAE: /* i64.trunc_f32_s */
-        {
-            f32 value = 0.0f;
-            if (!job_value_to_f32(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i64((double)value, true, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 64U, true);
-        }
-        case 0xAF: /* i64.trunc_f32_u */
-        {
-            f32 value = 0.0f;
-            if (!job_value_to_f32(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i64((double)value, false, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 64U, false);
-        }
-        case 0xB0: /* i64.trunc_f64_s */
-        {
-            f64 value = 0.0;
-            if (!job_value_to_f64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i64(value, true, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 64U, true);
-        }
-        case 0xB1: /* i64.trunc_f64_u */
-        {
-            f64 value = 0.0;
-            if (!job_value_to_f64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            u64 truncated = 0;
-            if (!trunc_f64_to_i64(value, false, &truncated)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_int_checked(job, truncated, 64U, false);
-        }
-        case 0xB2: /* f32.convert_i32_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f32)value, false);
-        }
-        case 0xB3: /* f32.convert_i32_u */
-        {
-            u64 value = 0;
-            if (!job_value_to_u64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f32)value, false);
-        }
-        case 0xB4: /* f32.convert_i64_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f32)value, false);
-        }
-        case 0xB5: /* f32.convert_i64_u */
-        {
-            u64 value = 0;
-            if (!job_value_to_u64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f32)value, false);
-        }
-        case 0xB6: /* f32.demote_f64 */
-        {
-            f64 value = 0.0;
-            if (!job_value_to_f64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f32)value, false);
-        }
-        case 0xB7: /* f64.convert_i32_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f64)value, true);
-        }
-        case 0xB8: /* f64.convert_i32_u */
-        {
-            u64 value = 0;
-            if (!job_value_to_u64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f64)value, true);
-        }
-        case 0xB9: /* f64.convert_i64_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f64)value, true);
-        }
-        case 0xBA: /* f64.convert_i64_u */
-        {
-            u64 value = 0;
-            if (!job_value_to_u64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f64)value, true);
-        }
-        case 0xBB: /* f64.promote_f32 */
-        {
-            f32 value = 0.0f;
-            if (!job_value_to_f32(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            return push_float_checked(job, (f64)value, true);
-        }
-        case 0xC0: /* i32.extend8_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            i32 extended = (i32)(int8_t)(value & 0xFF);
-            return push_int_checked(job, (u32)extended, 32U, true);
-        }
-        case 0xC1: /* i32.extend16_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            i32 extended = (i32)(int16_t)(value & 0xFFFF);
-            return push_int_checked(job, (u32)extended, 32U, true);
-        }
-        case 0xC2: /* i64.extend8_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            i64 extended = (i64)(int8_t)(value & 0xFF);
-            return push_int_checked(job, (u64)extended, 64U, true);
-        }
-        case 0xC3: /* i64.extend16_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            i64 extended = (i64)(int16_t)(value & 0xFFFF);
-            return push_int_checked(job, (u64)extended, 64U, true);
-        }
-        case 0xC4: /* i64.extend32_s */
-        {
-            i64 value = 0;
-            if (!job_value_to_i64(&source, &value)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            i64 extended = (i64)(int32_t)(value & 0xFFFFFFFFULL);
-            return push_int_checked(job, (u64)extended, 64U, true);
-        }
-        default:
-            restore_stack_value(job, &source);
-            return FA_RUNTIME_ERR_TRAP;
     }
 }
 
@@ -4222,74 +3441,74 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x44, &type_f64, wopt_const, 64, 0, 1, 1, op_const); // f64.const
     define_op(ops, 0x45, &type_i32, wopt_eqz, 0, 1, 1, 0, op_eqz); // i32.eqz
     define_op(ops, 0x50, &type_i64, wopt_eqz, 0, 1, 1, 0, op_eqz); // i64.eqz
-    define_op(ops, 0x46, &type_i32, wopt_eq, 0, 2, 1, 0, op_compare); // i32.eq
-    define_op(ops, 0x47, &type_i32, wopt_ne, 0, 2, 1, 0, op_compare); // i32.ne
-    define_op(ops, 0x48, &type_i32, wopt_lt, 0, 2, 1, 0, op_compare); // i32.lt_s
-    define_op(ops, 0x49, &type_u32, wopt_lt, 0, 2, 1, 0, op_compare); // i32.lt_u
-    define_op(ops, 0x4A, &type_i32, wopt_gt, 0, 2, 1, 0, op_compare); // i32.gt_s
-    define_op(ops, 0x4B, &type_u32, wopt_gt, 0, 2, 1, 0, op_compare); // i32.gt_u
-    define_op(ops, 0x4C, &type_i32, wopt_le, 0, 2, 1, 0, op_compare); // i32.le_s
-    define_op(ops, 0x4D, &type_u32, wopt_le, 0, 2, 1, 0, op_compare); // i32.le_u
-    define_op(ops, 0x4E, &type_i32, wopt_ge, 0, 2, 1, 0, op_compare); // i32.ge_s
-    define_op(ops, 0x4F, &type_u32, wopt_ge, 0, 2, 1, 0, op_compare); // i32.ge_u
-    define_op(ops, 0x51, &type_i64, wopt_eq, 0, 2, 1, 0, op_compare); // i64.eq
-    define_op(ops, 0x52, &type_i64, wopt_ne, 0, 2, 1, 0, op_compare); // i64.ne
-    define_op(ops, 0x53, &type_i64, wopt_lt, 0, 2, 1, 0, op_compare); // i64.lt_s
-    define_op(ops, 0x54, &type_u64, wopt_lt, 0, 2, 1, 0, op_compare); // i64.lt_u
-    define_op(ops, 0x55, &type_i64, wopt_gt, 0, 2, 1, 0, op_compare); // i64.gt_s
-    define_op(ops, 0x56, &type_u64, wopt_gt, 0, 2, 1, 0, op_compare); // i64.gt_u
-    define_op(ops, 0x57, &type_i64, wopt_le, 0, 2, 1, 0, op_compare); // i64.le_s
-    define_op(ops, 0x58, &type_u64, wopt_le, 0, 2, 1, 0, op_compare); // i64.le_u
-    define_op(ops, 0x59, &type_i64, wopt_ge, 0, 2, 1, 0, op_compare); // i64.ge_s
-    define_op(ops, 0x5A, &type_u64, wopt_ge, 0, 2, 1, 0, op_compare); // i64.ge_u
-    define_op(ops, 0x5B, &type_f32, wopt_eq, 0, 2, 1, 0, op_compare); // f32.eq
-    define_op(ops, 0x5C, &type_f32, wopt_ne, 0, 2, 1, 0, op_compare); // f32.ne
-    define_op(ops, 0x5D, &type_f32, wopt_lt, 0, 2, 1, 0, op_compare); // f32.lt
-    define_op(ops, 0x5E, &type_f32, wopt_gt, 0, 2, 1, 0, op_compare); // f32.gt
-    define_op(ops, 0x5F, &type_f32, wopt_le, 0, 2, 1, 0, op_compare); // f32.le
-    define_op(ops, 0x60, &type_f32, wopt_ge, 0, 2, 1, 0, op_compare); // f32.ge
-    define_op(ops, 0x61, &type_f64, wopt_eq, 0, 2, 1, 0, op_compare); // f64.eq
-    define_op(ops, 0x62, &type_f64, wopt_ne, 0, 2, 1, 0, op_compare); // f64.ne
-    define_op(ops, 0x63, &type_f64, wopt_lt, 0, 2, 1, 0, op_compare); // f64.lt
-    define_op(ops, 0x64, &type_f64, wopt_gt, 0, 2, 1, 0, op_compare); // f64.gt
-    define_op(ops, 0x65, &type_f64, wopt_le, 0, 2, 1, 0, op_compare); // f64.le
-    define_op(ops, 0x66, &type_f64, wopt_ge, 0, 2, 1, 0, op_compare); // f64.ge
-    define_op(ops, 0x67, &type_i32, wopt_clz, 0, 1, 1, 0, op_bitcount); // i32.clz
-    define_op(ops, 0x68, &type_i32, wopt_ctz, 0, 1, 1, 0, op_bitcount); // i32.ctz
-    define_op(ops, 0x69, &type_i32, wopt_popcnt, 0, 1, 1, 0, op_bitcount); // i32.popcnt
-    define_op(ops, 0x6A, &type_i32, wopt_add, 0, 2, 1, 0, op_arithmetic); // i32.add
-    define_op(ops, 0x6B, &type_i32, wopt_sub, 0, 2, 1, 0, op_arithmetic); // i32.sub
-    define_op(ops, 0x6C, &type_i32, wopt_mul, 0, 2, 1, 0, op_arithmetic); // i32.mul
-    define_op(ops, 0x6D, &type_i32, wopt_div, 0, 2, 1, 0, op_arithmetic); // i32.div_s
-    define_op(ops, 0x6E, &type_u32, wopt_div, 0, 2, 1, 0, op_arithmetic); // i32.div_u
-    define_op(ops, 0x6F, &type_i32, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i32.rem_s
-    define_op(ops, 0x70, &type_u32, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i32.rem_u
-    define_op(ops, 0x71, &type_i32, wopt_and, 0, 2, 1, 0, op_bitwise); // i32.and
-    define_op(ops, 0x72, &type_i32, wopt_or, 0, 2, 1, 0, op_bitwise); // i32.or
-    define_op(ops, 0x73, &type_i32, wopt_xor, 0, 2, 1, 0, op_bitwise); // i32.xor
-    define_op(ops, 0x74, &type_i32, wopt_shl, 0, 2, 1, 0, op_shift); // i32.shl
-    define_op(ops, 0x75, &type_i32, wopt_shr, 0, 2, 1, 0, op_shift); // i32.shr_s
-    define_op(ops, 0x76, &type_u32, wopt_shr, 0, 2, 1, 0, op_shift); // i32.shr_u
-    define_op(ops, 0x77, &type_i32, wopt_rotl, 0, 2, 1, 0, op_rotate); // i32.rotl
-    define_op(ops, 0x78, &type_i32, wopt_rotr, 0, 2, 1, 0, op_rotate); // i32.rotr
-    define_op(ops, 0x79, &type_i64, wopt_clz, 0, 1, 1, 0, op_bitcount); // i64.clz
-    define_op(ops, 0x7A, &type_i64, wopt_ctz, 0, 1, 1, 0, op_bitcount); // i64.ctz
-    define_op(ops, 0x7B, &type_i64, wopt_popcnt, 0, 1, 1, 0, op_bitcount); // i64.popcnt
-    define_op(ops, 0x7C, &type_i64, wopt_add, 0, 2, 1, 0, op_arithmetic); // i64.add
-    define_op(ops, 0x7D, &type_i64, wopt_sub, 0, 2, 1, 0, op_arithmetic); // i64.sub
-    define_op(ops, 0x7E, &type_i64, wopt_mul, 0, 2, 1, 0, op_arithmetic); // i64.mul
-    define_op(ops, 0x7F, &type_i64, wopt_div, 0, 2, 1, 0, op_arithmetic); // i64.div_s
-    define_op(ops, 0x80, &type_u64, wopt_div, 0, 2, 1, 0, op_arithmetic); // i64.div_u
-    define_op(ops, 0x81, &type_i64, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i64.rem_s
-    define_op(ops, 0x82, &type_u64, wopt_rem, 0, 2, 1, 0, op_arithmetic); // i64.rem_u
-    define_op(ops, 0x83, &type_i64, wopt_and, 0, 2, 1, 0, op_bitwise); // i64.and
-    define_op(ops, 0x84, &type_i64, wopt_or, 0, 2, 1, 0, op_bitwise); // i64.or
-    define_op(ops, 0x85, &type_i64, wopt_xor, 0, 2, 1, 0, op_bitwise); // i64.xor
-    define_op(ops, 0x86, &type_i64, wopt_shl, 0, 2, 1, 0, op_shift); // i64.shl
-    define_op(ops, 0x87, &type_i64, wopt_shr, 0, 2, 1, 0, op_shift); // i64.shr_s
-    define_op(ops, 0x88, &type_u64, wopt_shr, 0, 2, 1, 0, op_shift); // i64.shr_u
-    define_op(ops, 0x89, &type_i64, wopt_rotl, 0, 2, 1, 0, op_rotate); // i64.rotl
-    define_op(ops, 0x8A, &type_i64, wopt_rotr, 0, 2, 1, 0, op_rotate); // i64.rotr
+    define_op(ops, 0x46, &type_i32, wopt_eq, 0, 2, 1, 0, op_compare_eq_mc); // i32.eq
+    define_op(ops, 0x47, &type_i32, wopt_ne, 0, 2, 1, 0, op_compare_ne_mc); // i32.ne
+    define_op(ops, 0x48, &type_i32, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // i32.lt_s
+    define_op(ops, 0x49, &type_u32, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // i32.lt_u
+    define_op(ops, 0x4A, &type_i32, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // i32.gt_s
+    define_op(ops, 0x4B, &type_u32, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // i32.gt_u
+    define_op(ops, 0x4C, &type_i32, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // i32.le_s
+    define_op(ops, 0x4D, &type_u32, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // i32.le_u
+    define_op(ops, 0x4E, &type_i32, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // i32.ge_s
+    define_op(ops, 0x4F, &type_u32, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // i32.ge_u
+    define_op(ops, 0x51, &type_i64, wopt_eq, 0, 2, 1, 0, op_compare_eq_mc); // i64.eq
+    define_op(ops, 0x52, &type_i64, wopt_ne, 0, 2, 1, 0, op_compare_ne_mc); // i64.ne
+    define_op(ops, 0x53, &type_i64, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // i64.lt_s
+    define_op(ops, 0x54, &type_u64, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // i64.lt_u
+    define_op(ops, 0x55, &type_i64, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // i64.gt_s
+    define_op(ops, 0x56, &type_u64, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // i64.gt_u
+    define_op(ops, 0x57, &type_i64, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // i64.le_s
+    define_op(ops, 0x58, &type_u64, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // i64.le_u
+    define_op(ops, 0x59, &type_i64, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // i64.ge_s
+    define_op(ops, 0x5A, &type_u64, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // i64.ge_u
+    define_op(ops, 0x5B, &type_f32, wopt_eq, 0, 2, 1, 0, op_compare_eq_mc); // f32.eq
+    define_op(ops, 0x5C, &type_f32, wopt_ne, 0, 2, 1, 0, op_compare_ne_mc); // f32.ne
+    define_op(ops, 0x5D, &type_f32, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // f32.lt
+    define_op(ops, 0x5E, &type_f32, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // f32.gt
+    define_op(ops, 0x5F, &type_f32, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // f32.le
+    define_op(ops, 0x60, &type_f32, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // f32.ge
+    define_op(ops, 0x61, &type_f64, wopt_eq, 0, 2, 1, 0, op_compare_eq_mc); // f64.eq
+    define_op(ops, 0x62, &type_f64, wopt_ne, 0, 2, 1, 0, op_compare_ne_mc); // f64.ne
+    define_op(ops, 0x63, &type_f64, wopt_lt, 0, 2, 1, 0, op_compare_lt_mc); // f64.lt
+    define_op(ops, 0x64, &type_f64, wopt_gt, 0, 2, 1, 0, op_compare_gt_mc); // f64.gt
+    define_op(ops, 0x65, &type_f64, wopt_le, 0, 2, 1, 0, op_compare_le_mc); // f64.le
+    define_op(ops, 0x66, &type_f64, wopt_ge, 0, 2, 1, 0, op_compare_ge_mc); // f64.ge
+    define_op(ops, 0x67, &type_i32, wopt_clz, 0, 1, 1, 0, op_bitcount_clz_mc); // i32.clz
+    define_op(ops, 0x68, &type_i32, wopt_ctz, 0, 1, 1, 0, op_bitcount_ctz_mc); // i32.ctz
+    define_op(ops, 0x69, &type_i32, wopt_popcnt, 0, 1, 1, 0, op_bitcount_popcnt_mc); // i32.popcnt
+    define_op(ops, 0x6A, &type_i32, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // i32.add
+    define_op(ops, 0x6B, &type_i32, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // i32.sub
+    define_op(ops, 0x6C, &type_i32, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // i32.mul
+    define_op(ops, 0x6D, &type_i32, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // i32.div_s
+    define_op(ops, 0x6E, &type_u32, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // i32.div_u
+    define_op(ops, 0x6F, &type_i32, wopt_rem, 0, 2, 1, 0, op_arith_rem_mc); // i32.rem_s
+    define_op(ops, 0x70, &type_u32, wopt_rem, 0, 2, 1, 0, op_arith_rem_mc); // i32.rem_u
+    define_op(ops, 0x71, &type_i32, wopt_and, 0, 2, 1, 0, op_bitwise_and_mc); // i32.and
+    define_op(ops, 0x72, &type_i32, wopt_or, 0, 2, 1, 0, op_bitwise_or_mc); // i32.or
+    define_op(ops, 0x73, &type_i32, wopt_xor, 0, 2, 1, 0, op_bitwise_xor_mc); // i32.xor
+    define_op(ops, 0x74, &type_i32, wopt_shl, 0, 2, 1, 0, op_shift_left_mc); // i32.shl
+    define_op(ops, 0x75, &type_i32, wopt_shr, 0, 2, 1, 0, op_shift_right_signed_mc); // i32.shr_s
+    define_op(ops, 0x76, &type_u32, wopt_shr, 0, 2, 1, 0, op_shift_right_unsigned_mc); // i32.shr_u
+    define_op(ops, 0x77, &type_i32, wopt_rotl, 0, 2, 1, 0, op_rotate_left_mc); // i32.rotl
+    define_op(ops, 0x78, &type_i32, wopt_rotr, 0, 2, 1, 0, op_rotate_right_mc); // i32.rotr
+    define_op(ops, 0x79, &type_i64, wopt_clz, 0, 1, 1, 0, op_bitcount_clz_mc); // i64.clz
+    define_op(ops, 0x7A, &type_i64, wopt_ctz, 0, 1, 1, 0, op_bitcount_ctz_mc); // i64.ctz
+    define_op(ops, 0x7B, &type_i64, wopt_popcnt, 0, 1, 1, 0, op_bitcount_popcnt_mc); // i64.popcnt
+    define_op(ops, 0x7C, &type_i64, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // i64.add
+    define_op(ops, 0x7D, &type_i64, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // i64.sub
+    define_op(ops, 0x7E, &type_i64, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // i64.mul
+    define_op(ops, 0x7F, &type_i64, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // i64.div_s
+    define_op(ops, 0x80, &type_u64, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // i64.div_u
+    define_op(ops, 0x81, &type_i64, wopt_rem, 0, 2, 1, 0, op_arith_rem_mc); // i64.rem_s
+    define_op(ops, 0x82, &type_u64, wopt_rem, 0, 2, 1, 0, op_arith_rem_mc); // i64.rem_u
+    define_op(ops, 0x83, &type_i64, wopt_and, 0, 2, 1, 0, op_bitwise_and_mc); // i64.and
+    define_op(ops, 0x84, &type_i64, wopt_or, 0, 2, 1, 0, op_bitwise_or_mc); // i64.or
+    define_op(ops, 0x85, &type_i64, wopt_xor, 0, 2, 1, 0, op_bitwise_xor_mc); // i64.xor
+    define_op(ops, 0x86, &type_i64, wopt_shl, 0, 2, 1, 0, op_shift_left_mc); // i64.shl
+    define_op(ops, 0x87, &type_i64, wopt_shr, 0, 2, 1, 0, op_shift_right_signed_mc); // i64.shr_s
+    define_op(ops, 0x88, &type_u64, wopt_shr, 0, 2, 1, 0, op_shift_right_unsigned_mc); // i64.shr_u
+    define_op(ops, 0x89, &type_i64, wopt_rotl, 0, 2, 1, 0, op_rotate_left_mc); // i64.rotl
+    define_op(ops, 0x8A, &type_i64, wopt_rotr, 0, 2, 1, 0, op_rotate_right_mc); // i64.rotr
     define_op(ops, 0x8B, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.abs
     define_op(ops, 0x8C, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.neg
     define_op(ops, 0x8D, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.ceil
@@ -4297,10 +3516,10 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x8F, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.trunc
     define_op(ops, 0x90, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.nearest
     define_op(ops, 0x91, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.sqrt
-    define_op(ops, 0x92, &type_f32, wopt_add, 0, 2, 1, 0, op_arithmetic); // f32.add
-    define_op(ops, 0x93, &type_f32, wopt_sub, 0, 2, 1, 0, op_arithmetic); // f32.sub
-    define_op(ops, 0x94, &type_f32, wopt_mul, 0, 2, 1, 0, op_arithmetic); // f32.mul
-    define_op(ops, 0x95, &type_f32, wopt_div, 0, 2, 1, 0, op_arithmetic); // f32.div
+    define_op(ops, 0x92, &type_f32, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // f32.add
+    define_op(ops, 0x93, &type_f32, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // f32.sub
+    define_op(ops, 0x94, &type_f32, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // f32.mul
+    define_op(ops, 0x95, &type_f32, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // f32.div
     define_op(ops, 0x96, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.min
     define_op(ops, 0x97, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.max
     define_op(ops, 0x98, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.copysign
@@ -4311,43 +3530,43 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x9D, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.trunc
     define_op(ops, 0x9E, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.nearest
     define_op(ops, 0x9F, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.sqrt
-    define_op(ops, 0xA0, &type_f64, wopt_add, 0, 2, 1, 0, op_arithmetic); // f64.add
-    define_op(ops, 0xA1, &type_f64, wopt_sub, 0, 2, 1, 0, op_arithmetic); // f64.sub
-    define_op(ops, 0xA2, &type_f64, wopt_mul, 0, 2, 1, 0, op_arithmetic); // f64.mul
-    define_op(ops, 0xA3, &type_f64, wopt_div, 0, 2, 1, 0, op_arithmetic); // f64.div
+    define_op(ops, 0xA0, &type_f64, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // f64.add
+    define_op(ops, 0xA1, &type_f64, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // f64.sub
+    define_op(ops, 0xA2, &type_f64, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // f64.mul
+    define_op(ops, 0xA3, &type_f64, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // f64.div
     define_op(ops, 0xA4, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.min
     define_op(ops, 0xA5, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.max
     define_op(ops, 0xA6, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.copysign
-    define_op(ops, 0xA7, &type_i32, wopt_wrap, 0, 1, 1, 0, op_convert); // i32.wrap_i64
-    define_op(ops, 0xA8, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f32_s
-    define_op(ops, 0xA9, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f32_u
-    define_op(ops, 0xAA, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f64_s
-    define_op(ops, 0xAB, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert); // i32.trunc_f64_u
-    define_op(ops, 0xAC, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend_i32_s
-    define_op(ops, 0xAD, &type_u64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend_i32_u
-    define_op(ops, 0xAE, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f32_s
-    define_op(ops, 0xAF, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f32_u
-    define_op(ops, 0xB0, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f64_s
-    define_op(ops, 0xB1, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert); // i64.trunc_f64_u
-    define_op(ops, 0xB2, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i32_s
-    define_op(ops, 0xB3, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i32_u
-    define_op(ops, 0xB4, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i64_s
-    define_op(ops, 0xB5, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.convert_i64_u
-    define_op(ops, 0xB6, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert); // f32.demote_f64
-    define_op(ops, 0xB7, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i32_s
-    define_op(ops, 0xB8, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i32_u
-    define_op(ops, 0xB9, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i64_s
-    define_op(ops, 0xBA, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.convert_i64_u
-    define_op(ops, 0xBB, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert); // f64.promote_f32
+    define_op(ops, 0xA7, &type_i32, wopt_wrap, 0, 1, 1, 0, op_convert_i32_wrap_i64_mc); // i32.wrap_i64
+    define_op(ops, 0xA8, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f32_s_mc); // i32.trunc_f32_s
+    define_op(ops, 0xA9, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f32_u_mc); // i32.trunc_f32_u
+    define_op(ops, 0xAA, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f64_s_mc); // i32.trunc_f64_s
+    define_op(ops, 0xAB, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f64_u_mc); // i32.trunc_f64_u
+    define_op(ops, 0xAC, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend_i32_s_mc); // i64.extend_i32_s
+    define_op(ops, 0xAD, &type_u64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend_i32_u_mc); // i64.extend_i32_u
+    define_op(ops, 0xAE, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert_i64_trunc_f32_s_mc); // i64.trunc_f32_s
+    define_op(ops, 0xAF, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert_i64_trunc_f32_u_mc); // i64.trunc_f32_u
+    define_op(ops, 0xB0, &type_i64, wopt_trunc, 0, 1, 1, 0, op_convert_i64_trunc_f64_s_mc); // i64.trunc_f64_s
+    define_op(ops, 0xB1, &type_u64, wopt_trunc, 0, 1, 1, 0, op_convert_i64_trunc_f64_u_mc); // i64.trunc_f64_u
+    define_op(ops, 0xB2, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert_f32_from_i32_s_mc); // f32.convert_i32_s
+    define_op(ops, 0xB3, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert_f32_from_i32_u_mc); // f32.convert_i32_u
+    define_op(ops, 0xB4, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert_f32_from_i64_s_mc); // f32.convert_i64_s
+    define_op(ops, 0xB5, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert_f32_from_i64_u_mc); // f32.convert_i64_u
+    define_op(ops, 0xB6, &type_f32, wopt_convert, 0, 1, 1, 0, op_convert_f32_demote_f64_mc); // f32.demote_f64
+    define_op(ops, 0xB7, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i32_s_mc); // f64.convert_i32_s
+    define_op(ops, 0xB8, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i32_u_mc); // f64.convert_i32_u
+    define_op(ops, 0xB9, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i64_s_mc); // f64.convert_i64_s
+    define_op(ops, 0xBA, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i64_u_mc); // f64.convert_i64_u
+    define_op(ops, 0xBB, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_promote_f32_mc); // f64.promote_f32
     define_op(ops, 0xBC, &type_i32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i32.reinterpret_f32
     define_op(ops, 0xBD, &type_i64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i64.reinterpret_f64
     define_op(ops, 0xBE, &type_f32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f32.reinterpret_i32
     define_op(ops, 0xBF, &type_f64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f64.reinterpret_i64
-    define_op(ops, 0xC0, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert); // i32.extend8_s
-    define_op(ops, 0xC1, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert); // i32.extend16_s
-    define_op(ops, 0xC2, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend8_s
-    define_op(ops, 0xC3, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend16_s
-    define_op(ops, 0xC4, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert); // i64.extend32_s
+    define_op(ops, 0xC0, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert_i32_extend8_s_mc); // i32.extend8_s
+    define_op(ops, 0xC1, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert_i32_extend16_s_mc); // i32.extend16_s
+    define_op(ops, 0xC2, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend8_s_mc); // i64.extend8_s
+    define_op(ops, 0xC3, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend16_s_mc); // i64.extend16_s
+    define_op(ops, 0xC4, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend32_s_mc); // i64.extend32_s
     define_op(ops, 0x3F, &type_i32, wopt_unique, 0, 0, 1, 1, op_memory_size); // memory.size
     define_op(ops, 0x40, &type_i32, wopt_unique, 0, 1, 1, 1, op_memory_grow); // memory.grow
     define_op(ops, 0xFC, &type_void, wopt_unique, 0, 0, 0, 1, op_bulk_memory); // bulk memory/table prefix
