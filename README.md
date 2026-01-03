@@ -49,6 +49,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
   - `fa_wasm_stream.*` – bytecode cursor helpers used by tests and future interpreter work.
   - `fa_arch.h` – architecture-size/endianness/cpu-family macros with override hooks.
   - `helpers/dynamic_list.h` – header-only dynamic array for `void*` (runtime job registry).
+- `ROADMAP.md` – near-term and medium-term priorities for runtime, JIT, and microcode work.
 - `test/` – CMake-driven harness (`fayasm_test_main`) with stream navigation and parser coverage; supports `--list` and substring filters to focus on a specific area.
 - `studies/` – research archive covering JIT experiments, WASM decoding notes, and runtime prototypes; cross-reference entries when reusing ideas.
 - `build.sh` – clean rebuild + test runner script; keep its CMake flags in sync with the docs.
@@ -61,6 +62,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
 - Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, multi-value returns, i64/f64 arithmetic, memory64/multi-memory behavior, table ops, element/data segments, SIMD v128.const/splat, and conversion traps; they now specify function result types and exercise imported-global overrides.
 - Microcode compilation is now scaffolded for select bit/compare/arithmetic/convert ops with per-op handlers; the runtime now caches per-function decoded opcodes and can dispatch JIT-prepared microcode ops, but control flow remains interpreter-driven and the engine does not yet execute fully precompiled microcode streams end-to-end.
 - Roadmap directive: make JIT/runtime ready for real-time RAM load/offload so microcode caches can spill on ESP32-class devices without PSRAM.
+- Roadmap directive: treat ESP32 configuration as compile-time selection (CMake/defines), not runtime probing.
 
 Contributions, experiments, and curious questions are welcome. The ambition is for fayasm to remain an approachable deep dive into WebAssembly execution internals while leaving room for JIT experiments or host integration research.
 

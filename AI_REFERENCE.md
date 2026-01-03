@@ -5,6 +5,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Collaboration Rules
 
 - After every code edit, refresh both `README.md` and `AI_REFERENCE.md` with any relevant behavioural, architectural, or tooling changes.
+- Keep `ROADMAP.md` updated when priorities shift or new directives are added.
 - Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
 - Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
 
@@ -13,6 +14,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
 - Keep `fa_jit` tied to microcode preparation and WASM-to-microcode conversions; feed decoded opcode streams into `fa_jit_prepare_program_from_opcodes` as the runtime executes.
 - Prepare JIT/runtime for real-time RAM load/offload so microcode caches can spill on ESP32-class devices without PSRAM.
+- Treat ESP32 configuration as compile-time selection (CMake/defines), not runtime discovery.
 
 ## Build & Test Checklist
 
@@ -32,6 +34,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
 - `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
+- `ROADMAP.md` – prioritized roadmap with near-term and medium-term planning directives.
 - `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
 
