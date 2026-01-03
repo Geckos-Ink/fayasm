@@ -1,5 +1,6 @@
 #include "fa_ops.h"
 #include "fa_runtime.h"
+#include "fa_arch.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,8 +11,16 @@
 
 #define OP_KEYWORD
 
+typedef struct {
+    const Operation* steps;
+    uint8_t step_count;
+} fa_Microcode;
+
 static fa_WasmOp g_ops[256];
 static bool g_ops_initialized = false;
+static const fa_Microcode* g_microcode[256];
+static bool g_microcode_initialized = false;
+static bool g_microcode_enabled = false;
 
 static size_t op_value_width(const fa_WasmOp* op) {
     if (!op) {
@@ -1415,6 +1424,293 @@ static OP_RETURN_TYPE op_arithmetic(OP_ARGUMENTS) {
         return push_int_checked(job, outcome, result_bits, false);
     }
 }
+
+#define DEFINE_BITWISE_OP(name, expr)                                            \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
+        (void)runtime;                                                           \
+        if (!job || !descriptor) {                                               \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                              \
+        }                                                                        \
+        fa_JobValue rhs;                                                         \
+        if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {                     \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        fa_JobValue lhs;                                                         \
+        if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {                     \
+            restore_stack_value(job, &rhs);                                      \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        u64 right = 0;                                                           \
+        u64 left = 0;                                                            \
+        if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) { \
+            restore_stack_value(job, &lhs);                                      \
+            restore_stack_value(job, &rhs);                                      \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        u64 outcome = (expr);                                                    \
+        const uint8_t bits = descriptor->type.size ? descriptor->type.size * 8U : 32U; \
+        const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed; \
+        return push_int_checked(job, mask_unsigned_value(outcome, bits), bits, is_signed); \
+    }
+
+DEFINE_BITWISE_OP(op_bitwise_and_mc, left & right)
+DEFINE_BITWISE_OP(op_bitwise_or_mc, left | right)
+DEFINE_BITWISE_OP(op_bitwise_xor_mc, left ^ right)
+
+#define DEFINE_BITCOUNT_OP(name, op32, op64)                                     \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
+        (void)runtime;                                                           \
+        if (!job || !descriptor) {                                               \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                              \
+        }                                                                        \
+        fa_JobValue value;                                                       \
+        if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {                   \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        u64 raw = 0;                                                             \
+        if (!job_value_to_u64(&value, &raw)) {                                   \
+            restore_stack_value(job, &value);                                    \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U; \
+        u64 result = 0;                                                          \
+        if (width <= 32U) {                                                      \
+            result = (u64)(op32((u32)raw));                                      \
+        } else {                                                                 \
+            result = (u64)(op64(raw));                                           \
+        }                                                                        \
+        return push_int_checked(job, result, width, false);                      \
+    }
+
+DEFINE_BITCOUNT_OP(op_bitcount_clz_mc, clz32, clz64)
+DEFINE_BITCOUNT_OP(op_bitcount_ctz_mc, ctz32, ctz64)
+DEFINE_BITCOUNT_OP(op_bitcount_popcnt_mc, popcnt32, popcnt64)
+
+static OP_RETURN_TYPE op_shift_left_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 amount_raw = 0;
+    if (!job_value_to_u64(&rhs, &amount_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 left_raw = 0;
+    if (!job_value_to_u64(&lhs, &left_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const uint8_t mask = width <= 32U ? 31U : 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 outcome = 0;
+    if (width <= 32U) {
+        const u32 base = (u32)left_raw;
+        outcome = (u64)(base << amount);
+    } else {
+        const u64 base = left_raw;
+        outcome = base << amount;
+    }
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    return push_int_checked(job, outcome, width, is_signed);
+}
+
+static OP_RETURN_TYPE op_shift_right_signed_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 amount_raw = 0;
+    if (!job_value_to_u64(&rhs, &amount_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i64 left_signed = 0;
+    if (!job_value_to_i64(&lhs, &left_signed)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const uint8_t mask = width <= 32U ? 31U : 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 outcome = 0;
+    if (width <= 32U) {
+        const i32 base = (i32)left_signed;
+        outcome = (u64)(i32)(base >> amount);
+    } else {
+        const i64 base = left_signed;
+        outcome = (u64)(base >> amount);
+    }
+    return push_int_checked(job, outcome, width, true);
+}
+
+static OP_RETURN_TYPE op_shift_right_unsigned_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 amount_raw = 0;
+    if (!job_value_to_u64(&rhs, &amount_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 left_unsigned = 0;
+    if (!job_value_to_u64(&lhs, &left_unsigned)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const uint8_t mask = width <= 32U ? 31U : 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 outcome = 0;
+    if (width <= 32U) {
+        const u32 base = (u32)left_unsigned;
+        outcome = (u64)(base >> amount);
+    } else {
+        const u64 base = left_unsigned;
+        outcome = base >> amount;
+    }
+    return push_int_checked(job, outcome, width, false);
+}
+
+static OP_RETURN_TYPE op_rotate_left_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 amount_raw = 0;
+    if (!job_value_to_u64(&rhs, &amount_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 value_raw = 0;
+    if (!job_value_to_u64(&lhs, &value_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const uint8_t mask = width <= 32U ? 31U : 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 outcome = 0;
+    if (width <= 32U) {
+        const u32 value = (u32)value_raw;
+        outcome = (u64)rotl32(value, amount);
+    } else {
+        const u64 value = value_raw;
+        outcome = rotl64(value, amount);
+    }
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    return push_int_checked(job, outcome, width, is_signed);
+}
+
+static OP_RETURN_TYPE op_rotate_right_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 amount_raw = 0;
+    if (!job_value_to_u64(&rhs, &amount_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 value_raw = 0;
+    if (!job_value_to_u64(&lhs, &value_raw)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const uint8_t width = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    const uint8_t mask = width <= 32U ? 31U : 63U;
+    const uint8_t amount = (uint8_t)(amount_raw & mask);
+    u64 outcome = 0;
+    if (width <= 32U) {
+        const u32 value = (u32)value_raw;
+        outcome = (u64)rotr32(value, amount);
+    } else {
+        const u64 value = value_raw;
+        outcome = rotr64(value, amount);
+    }
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    return push_int_checked(job, outcome, width, is_signed);
+}
+
+#define DEFINE_MICROCODE(name, ...)                                            \
+    static const Operation name##_steps[] = { __VA_ARGS__ };                   \
+    static const fa_Microcode name = {                                         \
+        name##_steps,                                                          \
+        (uint8_t)(sizeof(name##_steps) / sizeof(name##_steps[0]))              \
+    };
+
+DEFINE_MICROCODE(mc_bitwise_and, op_bitwise_and_mc)
+DEFINE_MICROCODE(mc_bitwise_or, op_bitwise_or_mc)
+DEFINE_MICROCODE(mc_bitwise_xor, op_bitwise_xor_mc)
+DEFINE_MICROCODE(mc_bitcount_clz, op_bitcount_clz_mc)
+DEFINE_MICROCODE(mc_bitcount_ctz, op_bitcount_ctz_mc)
+DEFINE_MICROCODE(mc_bitcount_popcnt, op_bitcount_popcnt_mc)
+DEFINE_MICROCODE(mc_shift_left, op_shift_left_mc)
+DEFINE_MICROCODE(mc_shift_right_signed, op_shift_right_signed_mc)
+DEFINE_MICROCODE(mc_shift_right_unsigned, op_shift_right_unsigned_mc)
+DEFINE_MICROCODE(mc_rotate_left, op_rotate_left_mc)
+DEFINE_MICROCODE(mc_rotate_right, op_rotate_right_mc)
+
+#undef DEFINE_MICROCODE
+#undef DEFINE_BITCOUNT_OP
+#undef DEFINE_BITWISE_OP
 
 static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
     (void)runtime;
@@ -2922,11 +3218,78 @@ static void define_op(
     dst->operation = handler;
 }
 
+static bool microcode_env_override(bool* enabled_out) {
+    if (!enabled_out) {
+        return false;
+    }
+    const char* env = getenv("FAYASM_MICROCODE");
+    if (!env) {
+        return false;
+    }
+    if (strcmp(env, "1") == 0 || strcmp(env, "true") == 0 || strcmp(env, "on") == 0) {
+        *enabled_out = true;
+        return true;
+    }
+    if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 || strcmp(env, "off") == 0) {
+        *enabled_out = false;
+        return true;
+    }
+    return false;
+}
+
+static bool microcode_should_enable(void) {
+    bool enabled = false;
+    if (microcode_env_override(&enabled)) {
+        return enabled;
+    }
+#if defined(FA_ARCH_CPU_XTENSA)
+    return false;
+#endif
+#if defined(FA_ARCH_PTR_BYTES) && (FA_ARCH_PTR_BYTES <= 4)
+    return false;
+#endif
+    return true;
+}
+
+static void init_microcode_once(void) {
+    if (g_microcode_initialized) {
+        return;
+    }
+    memset(g_microcode, 0, sizeof(g_microcode));
+    g_microcode_enabled = microcode_should_enable();
+    if (g_microcode_enabled) {
+        g_microcode[0x67] = &mc_bitcount_clz;     // i32.clz
+        g_microcode[0x68] = &mc_bitcount_ctz;     // i32.ctz
+        g_microcode[0x69] = &mc_bitcount_popcnt;  // i32.popcnt
+        g_microcode[0x71] = &mc_bitwise_and;      // i32.and
+        g_microcode[0x72] = &mc_bitwise_or;       // i32.or
+        g_microcode[0x73] = &mc_bitwise_xor;      // i32.xor
+        g_microcode[0x74] = &mc_shift_left;       // i32.shl
+        g_microcode[0x75] = &mc_shift_right_signed;   // i32.shr_s
+        g_microcode[0x76] = &mc_shift_right_unsigned; // i32.shr_u
+        g_microcode[0x77] = &mc_rotate_left;      // i32.rotl
+        g_microcode[0x78] = &mc_rotate_right;     // i32.rotr
+        g_microcode[0x79] = &mc_bitcount_clz;     // i64.clz
+        g_microcode[0x7A] = &mc_bitcount_ctz;     // i64.ctz
+        g_microcode[0x7B] = &mc_bitcount_popcnt;  // i64.popcnt
+        g_microcode[0x83] = &mc_bitwise_and;      // i64.and
+        g_microcode[0x84] = &mc_bitwise_or;       // i64.or
+        g_microcode[0x85] = &mc_bitwise_xor;      // i64.xor
+        g_microcode[0x86] = &mc_shift_left;       // i64.shl
+        g_microcode[0x87] = &mc_shift_right_signed;   // i64.shr_s
+        g_microcode[0x88] = &mc_shift_right_unsigned; // i64.shr_u
+        g_microcode[0x89] = &mc_rotate_left;      // i64.rotl
+        g_microcode[0x8A] = &mc_rotate_right;     // i64.rotr
+    }
+    g_microcode_initialized = true;
+}
+
 static void init_ops_once(void) {
     if (g_ops_initialized) {
         return;
     }
     fa_ops_defs_populate(g_ops);
+    init_microcode_once();
     g_ops_initialized = true;
 }
 
@@ -2940,10 +3303,36 @@ const fa_WasmOp* fa_get_op(uint8_t opcode) {
     return &g_ops[opcode];
 }
 
+static OP_RETURN_TYPE execute_microcode(const fa_Microcode* microcode,
+                                        fa_Runtime* runtime,
+                                        fa_Job* job,
+                                        const fa_WasmOp* descriptor) {
+    if (!microcode || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    for (uint8_t i = 0; i < microcode->step_count; ++i) {
+        Operation step = microcode->steps[i];
+        if (!step) {
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+        }
+        const int status = step(runtime, job, descriptor);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
 OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Runtime* runtime, fa_Job* job) {
     const fa_WasmOp* op = fa_get_op(opcode);
     if (!op || !op->operation) {
         return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+    if (g_microcode_enabled) {
+        const fa_Microcode* microcode = g_microcode[opcode];
+        if (microcode) {
+            return execute_microcode(microcode, runtime, job, op);
+        }
     }
     return op->operation(runtime, job, op);
 }

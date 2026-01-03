@@ -8,6 +8,10 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
 - Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
 
+## High Priority Directive
+
+- Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by device RAM/CPU budgets.
+
 ## Build & Test Checklist
 
 - Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
@@ -20,7 +24,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, label arity checks, and imported-global overrides via `fa_Runtime_set_imported_global`.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` – opcode descriptors plus the delegate table; numeric bitcount and float unary handlers are now wired alongside arithmetic.
+- `src/fa_ops.*` – opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate ops (toggle via `FAYASM_MICROCODE`).
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
@@ -68,9 +72,10 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
-2. Expand element/data segment support to ref.func expressions and externref tables.
-3. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
+1. Expand microcode compilation coverage beyond bit ops (compare/arithmetic/convert) and fold in a resource-aware JIT precompile pass.
+2. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
+3. Expand element/data segment support to ref.func expressions and externref tables.
+4. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
 
 ### General next steps
 1. Improve traps to allow real time write and move of volatile data on another storage system
