@@ -77,3 +77,5 @@ const fa_WasmOp* fa_instance_ops(void);
 const fa_WasmOp* fa_get_op(uint8_t opcode);
 OP_RETURN_TYPE fa_execute_op(uint8_t opcode, struct fa_Runtime* runtime, fa_Job* job);
 void fa_ops_defs_populate(fa_WasmOp* ops);
+bool fa_ops_microcode_enabled(void);
+bool fa_ops_get_microcode_steps(uint8_t opcode, const Operation** steps_out, uint8_t* step_count_out);

@@ -6,6 +6,8 @@
 #include "fa_wasm_stream.h"
 #include "fa_jit.h"
 
+struct fa_JitProgramCacheEntry;
+
 #define FA_WASM_PAGE_SIZE 65536U
 
 enum {
@@ -59,6 +61,8 @@ typedef struct fa_Runtime {
     uint32_t globals_count;
     fa_JitContext jit_context;
     fa_JitStats jit_stats;
+    struct fa_JitProgramCacheEntry* jit_cache;
+    uint32_t jit_cache_count;
 } fa_Runtime;
 
 fa_Runtime* fa_Runtime_init(void);

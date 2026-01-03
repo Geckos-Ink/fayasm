@@ -90,3 +90,4 @@ void fa_jit_program_free(fa_JitProgram* program);
 bool fa_jit_prepare_op(const fa_WasmOp* descriptor, fa_JitPreparedOp* out);
 bool fa_jit_prepare_program_from_opcodes(const uint8_t* opcodes, size_t opcode_count, fa_JitProgram* program);
 size_t fa_jit_program_estimate_bytes(const fa_JitProgram* program);
+OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job);

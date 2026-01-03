@@ -23,10 +23,10 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, plus decoded-opcode capture and JIT context updates for microcode preparation.
+- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, plus per-function JIT opcode caches that feed microcode preparation and dispatch.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` – opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
-- `src/fa_jit.*` – JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions.
+- `src/fa_jit.*` – JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers.
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.

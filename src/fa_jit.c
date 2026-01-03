@@ -1,4 +1,5 @@
 #include "fa_jit.h"
+#include "fa_runtime.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -190,6 +191,16 @@ bool fa_jit_prepare_op(const fa_WasmOp* descriptor, fa_JitPreparedOp* out) {
     }
     memset(out, 0, sizeof(*out));
     out->descriptor = descriptor;
+    const Operation* mc_steps = NULL;
+    uint8_t mc_count = 0;
+    if (fa_ops_get_microcode_steps(descriptor->id, &mc_steps, &mc_count) && mc_steps && mc_count > 0) {
+        if (mc_count > FA_JIT_MAX_STEPS_PER_OP) {
+            mc_count = FA_JIT_MAX_STEPS_PER_OP;
+        }
+        memcpy(out->steps, mc_steps, (size_t)mc_count * sizeof(Operation));
+        out->step_count = mc_count;
+        return true;
+    }
     if (!descriptor->operation) {
         return false;
     }
@@ -217,6 +228,26 @@ bool fa_jit_prepare_program_from_opcodes(const uint8_t* opcodes, size_t opcode_c
         program->count++;
     }
     return true;
+}
+
+OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job) {
+    if (!prepared || !prepared->descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (prepared->step_count == 0) {
+        return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+    for (uint8_t i = 0; i < prepared->step_count; ++i) {
+        Operation step = prepared->steps[i];
+        if (!step) {
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+        }
+        int status = step(runtime, job, prepared->descriptor);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+    }
+    return FA_RUNTIME_OK;
 }
 
 size_t fa_jit_program_estimate_bytes(const fa_JitProgram* program) {

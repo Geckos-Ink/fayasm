@@ -3342,6 +3342,29 @@ const fa_WasmOp* fa_get_op(uint8_t opcode) {
     return &g_ops[opcode];
 }
 
+bool fa_ops_microcode_enabled(void) {
+    init_ops_once();
+    return g_microcode_enabled;
+}
+
+bool fa_ops_get_microcode_steps(uint8_t opcode, const Operation** steps_out, uint8_t* step_count_out) {
+    init_ops_once();
+    if (!g_microcode_enabled) {
+        return false;
+    }
+    const fa_Microcode* microcode = g_microcode[opcode];
+    if (!microcode) {
+        return false;
+    }
+    if (steps_out) {
+        *steps_out = microcode->steps;
+    }
+    if (step_count_out) {
+        *step_count_out = microcode->step_count;
+    }
+    return true;
+}
+
 static OP_RETURN_TYPE execute_microcode(const fa_Microcode* microcode,
                                         fa_Runtime* runtime,
                                         fa_Job* job,
