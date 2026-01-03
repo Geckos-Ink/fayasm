@@ -9,6 +9,16 @@
 #include <math.h>
 #include <limits.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
+#elif defined(__unix__) || defined(__linux__) || defined(__ANDROID__)
+#include <unistd.h>
+#endif
+
 #define OP_KEYWORD
 
 typedef struct {
@@ -1689,6 +1699,631 @@ static OP_RETURN_TYPE op_rotate_right_mc(OP_ARGUMENTS) {
     return push_int_checked(job, outcome, width, is_signed);
 }
 
+#define DEFINE_COMPARE_OP(name, cmp)                                            \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                  \
+        (void)runtime;                                                          \
+        if (!job || !descriptor) {                                              \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                             \
+        }                                                                       \
+        fa_JobValue rhs;                                                        \
+        if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {                    \
+            return FA_RUNTIME_ERR_TRAP;                                         \
+        }                                                                       \
+        fa_JobValue lhs;                                                        \
+        if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {                    \
+            restore_stack_value(job, &rhs);                                     \
+            return FA_RUNTIME_ERR_TRAP;                                         \
+        }                                                                       \
+        bool result = false;                                                    \
+        if (descriptor->type.type == wt_float) {                                \
+            f64 right = 0.0;                                                    \
+            f64 left = 0.0;                                                     \
+            if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) { \
+                restore_stack_value(job, &lhs);                                 \
+                restore_stack_value(job, &rhs);                                 \
+                return FA_RUNTIME_ERR_TRAP;                                     \
+            }                                                                   \
+            result = (left cmp right);                                          \
+        } else {                                                                \
+            const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed; \
+            if (is_signed) {                                                    \
+                i64 right = 0;                                                  \
+                i64 left = 0;                                                   \
+                if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) { \
+                    restore_stack_value(job, &lhs);                             \
+                    restore_stack_value(job, &rhs);                             \
+                    return FA_RUNTIME_ERR_TRAP;                                 \
+                }                                                               \
+                result = (left cmp right);                                      \
+            } else {                                                            \
+                u64 right = 0;                                                  \
+                u64 left = 0;                                                   \
+                if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) { \
+                    restore_stack_value(job, &lhs);                             \
+                    restore_stack_value(job, &rhs);                             \
+                    return FA_RUNTIME_ERR_TRAP;                                 \
+                }                                                               \
+                result = (left cmp right);                                      \
+            }                                                                   \
+        }                                                                       \
+        return push_bool_checked(job, result);                                  \
+    }
+
+DEFINE_COMPARE_OP(op_compare_eq_mc, ==)
+DEFINE_COMPARE_OP(op_compare_ne_mc, !=)
+DEFINE_COMPARE_OP(op_compare_lt_mc, <)
+DEFINE_COMPARE_OP(op_compare_gt_mc, >)
+DEFINE_COMPARE_OP(op_compare_le_mc, <=)
+DEFINE_COMPARE_OP(op_compare_ge_mc, >=)
+
+static OP_RETURN_TYPE op_arith_add_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    if (descriptor->type.type == wt_float) {
+        f64 right = 0.0;
+        f64 left = 0.0;
+        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        return push_float_checked(job, left + right, descriptor->type.size == 8);
+    }
+
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    if (is_signed) {
+        i64 right = 0;
+        i64 left = 0;
+        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        i64 outcome = left + right;
+        return push_int_checked(job, (u64)outcome, result_bits, true);
+    }
+
+    u64 right = 0;
+    u64 left = 0;
+    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 outcome = left + right;
+    return push_int_checked(job, outcome, result_bits, false);
+}
+
+static OP_RETURN_TYPE op_arith_sub_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    if (descriptor->type.type == wt_float) {
+        f64 right = 0.0;
+        f64 left = 0.0;
+        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        return push_float_checked(job, left - right, descriptor->type.size == 8);
+    }
+
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    if (is_signed) {
+        i64 right = 0;
+        i64 left = 0;
+        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        i64 outcome = left - right;
+        return push_int_checked(job, (u64)outcome, result_bits, true);
+    }
+
+    u64 right = 0;
+    u64 left = 0;
+    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 outcome = left - right;
+    return push_int_checked(job, outcome, result_bits, false);
+}
+
+static OP_RETURN_TYPE op_arith_mul_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    if (descriptor->type.type == wt_float) {
+        f64 right = 0.0;
+        f64 left = 0.0;
+        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        return push_float_checked(job, left * right, descriptor->type.size == 8);
+    }
+
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    if (is_signed) {
+        i64 right = 0;
+        i64 left = 0;
+        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        i64 outcome = left * right;
+        return push_int_checked(job, (u64)outcome, result_bits, true);
+    }
+
+    u64 right = 0;
+    u64 left = 0;
+    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 outcome = left * right;
+    return push_int_checked(job, outcome, result_bits, false);
+}
+
+static OP_RETURN_TYPE op_arith_div_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    if (descriptor->type.type == wt_float) {
+        f64 right = 0.0;
+        f64 left = 0.0;
+        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        return push_float_checked(job, left / right, descriptor->type.size == 8);
+    }
+
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    if (is_signed) {
+        i64 right = 0;
+        i64 left = 0;
+        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (right == 0) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if ((result_bits == 32U && left == (i64)INT32_MIN && right == -1) ||
+            (result_bits == 64U && left == (i64)INT64_MIN && right == -1)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        i64 outcome = left / right;
+        return push_int_checked(job, (u64)outcome, result_bits, true);
+    }
+
+    u64 right = 0;
+    u64 left = 0;
+    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (right == 0) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 outcome = left / right;
+    return push_int_checked(job, outcome, result_bits, false);
+}
+
+static OP_RETURN_TYPE op_arith_rem_mc(OP_ARGUMENTS) {
+    (void)runtime;
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JobValue rhs;
+    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue lhs;
+    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    if (descriptor->type.type == wt_float) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    const bool is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed;
+    const uint8_t result_bits = descriptor->type.size ? descriptor->type.size * 8U : 32U;
+    if (is_signed) {
+        i64 right = 0;
+        i64 left = 0;
+        if (!job_value_to_i64(&rhs, &right) || !job_value_to_i64(&lhs, &left)) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (right == 0) {
+            restore_stack_value(job, &lhs);
+            restore_stack_value(job, &rhs);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        i64 outcome = left % right;
+        return push_int_checked(job, (u64)outcome, result_bits, true);
+    }
+
+    u64 right = 0;
+    u64 left = 0;
+    if (!job_value_to_u64(&rhs, &right) || !job_value_to_u64(&lhs, &left)) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (right == 0) {
+        restore_stack_value(job, &lhs);
+        restore_stack_value(job, &rhs);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 outcome = left % right;
+    return push_int_checked(job, outcome, result_bits, false);
+}
+
+#define DEFINE_CONVERT_OP(name, body)                                            \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
+        (void)runtime;                                                           \
+        if (!job || !descriptor) {                                               \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                              \
+        }                                                                        \
+        fa_JobValue source;                                                      \
+        if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {                  \
+            return FA_RUNTIME_ERR_TRAP;                                          \
+        }                                                                        \
+        body                                                                     \
+    }
+
+DEFINE_CONVERT_OP(op_convert_i32_wrap_i64_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, (u32)value, 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_f32_s_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i32((double)value, true, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_f32_u_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i32((double)value, false, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 32U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_f64_s_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i32(value, true, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_f64_u_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i32(value, false, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 32U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_extend_i32_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, sign_extend_value((u64)value, 32U), 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_extend_i32_u_mc, {
+    u64 value = 0;
+    if (!job_value_to_u64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, mask_unsigned_value(value, 32U), 64U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_f32_s_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i64((double)value, true, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_f32_u_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i64((double)value, false, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 64U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_f64_s_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i64(value, true, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_f64_u_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    u64 truncated = 0;
+    if (!trunc_f64_to_i64(value, false, &truncated)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, truncated, 64U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f32_from_i32_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f32)value, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f32_from_i32_u_mc, {
+    u64 value = 0;
+    if (!job_value_to_u64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f32)value, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f32_from_i64_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f32)value, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f32_from_i64_u_mc, {
+    u64 value = 0;
+    if (!job_value_to_u64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f32)value, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f32_demote_f64_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f32)value, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_f64_from_i32_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f64)value, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_f64_from_i32_u_mc, {
+    u64 value = 0;
+    if (!job_value_to_u64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f64)value, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_f64_from_i64_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f64)value, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_f64_from_i64_u_mc, {
+    u64 value = 0;
+    if (!job_value_to_u64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f64)value, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_f64_promote_f32_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_float_checked(job, (f64)value, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_extend8_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i32 extended = (i32)(int8_t)(value & 0xFF);
+    return push_int_checked(job, (u32)extended, 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_extend16_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i32 extended = (i32)(int16_t)(value & 0xFFFF);
+    return push_int_checked(job, (u32)extended, 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_extend8_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i64 extended = (i64)(int8_t)(value & 0xFF);
+    return push_int_checked(job, (u64)extended, 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_extend16_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i64 extended = (i64)(int16_t)(value & 0xFFFF);
+    return push_int_checked(job, (u64)extended, 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_extend32_s_mc, {
+    i64 value = 0;
+    if (!job_value_to_i64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    i64 extended = (i64)(int32_t)(value & 0xFFFFFFFFULL);
+    return push_int_checked(job, (u64)extended, 64U, true);
+})
+
 #define DEFINE_MICROCODE(name, ...)                                            \
     static const Operation name##_steps[] = { __VA_ARGS__ };                   \
     static const fa_Microcode name = {                                         \
@@ -1707,10 +2342,49 @@ DEFINE_MICROCODE(mc_shift_right_signed, op_shift_right_signed_mc)
 DEFINE_MICROCODE(mc_shift_right_unsigned, op_shift_right_unsigned_mc)
 DEFINE_MICROCODE(mc_rotate_left, op_rotate_left_mc)
 DEFINE_MICROCODE(mc_rotate_right, op_rotate_right_mc)
+DEFINE_MICROCODE(mc_compare_eq, op_compare_eq_mc)
+DEFINE_MICROCODE(mc_compare_ne, op_compare_ne_mc)
+DEFINE_MICROCODE(mc_compare_lt, op_compare_lt_mc)
+DEFINE_MICROCODE(mc_compare_gt, op_compare_gt_mc)
+DEFINE_MICROCODE(mc_compare_le, op_compare_le_mc)
+DEFINE_MICROCODE(mc_compare_ge, op_compare_ge_mc)
+DEFINE_MICROCODE(mc_arith_add, op_arith_add_mc)
+DEFINE_MICROCODE(mc_arith_sub, op_arith_sub_mc)
+DEFINE_MICROCODE(mc_arith_mul, op_arith_mul_mc)
+DEFINE_MICROCODE(mc_arith_div, op_arith_div_mc)
+DEFINE_MICROCODE(mc_arith_rem, op_arith_rem_mc)
+DEFINE_MICROCODE(mc_convert_i32_wrap_i64, op_convert_i32_wrap_i64_mc)
+DEFINE_MICROCODE(mc_convert_i32_trunc_f32_s, op_convert_i32_trunc_f32_s_mc)
+DEFINE_MICROCODE(mc_convert_i32_trunc_f32_u, op_convert_i32_trunc_f32_u_mc)
+DEFINE_MICROCODE(mc_convert_i32_trunc_f64_s, op_convert_i32_trunc_f64_s_mc)
+DEFINE_MICROCODE(mc_convert_i32_trunc_f64_u, op_convert_i32_trunc_f64_u_mc)
+DEFINE_MICROCODE(mc_convert_i64_extend_i32_s, op_convert_i64_extend_i32_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_extend_i32_u, op_convert_i64_extend_i32_u_mc)
+DEFINE_MICROCODE(mc_convert_i64_trunc_f32_s, op_convert_i64_trunc_f32_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_trunc_f32_u, op_convert_i64_trunc_f32_u_mc)
+DEFINE_MICROCODE(mc_convert_i64_trunc_f64_s, op_convert_i64_trunc_f64_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_trunc_f64_u, op_convert_i64_trunc_f64_u_mc)
+DEFINE_MICROCODE(mc_convert_f32_from_i32_s, op_convert_f32_from_i32_s_mc)
+DEFINE_MICROCODE(mc_convert_f32_from_i32_u, op_convert_f32_from_i32_u_mc)
+DEFINE_MICROCODE(mc_convert_f32_from_i64_s, op_convert_f32_from_i64_s_mc)
+DEFINE_MICROCODE(mc_convert_f32_from_i64_u, op_convert_f32_from_i64_u_mc)
+DEFINE_MICROCODE(mc_convert_f32_demote_f64, op_convert_f32_demote_f64_mc)
+DEFINE_MICROCODE(mc_convert_f64_from_i32_s, op_convert_f64_from_i32_s_mc)
+DEFINE_MICROCODE(mc_convert_f64_from_i32_u, op_convert_f64_from_i32_u_mc)
+DEFINE_MICROCODE(mc_convert_f64_from_i64_s, op_convert_f64_from_i64_s_mc)
+DEFINE_MICROCODE(mc_convert_f64_from_i64_u, op_convert_f64_from_i64_u_mc)
+DEFINE_MICROCODE(mc_convert_f64_promote_f32, op_convert_f64_promote_f32_mc)
+DEFINE_MICROCODE(mc_convert_i32_extend8_s, op_convert_i32_extend8_s_mc)
+DEFINE_MICROCODE(mc_convert_i32_extend16_s, op_convert_i32_extend16_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_extend8_s, op_convert_i64_extend8_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_extend16_s, op_convert_i64_extend16_s_mc)
+DEFINE_MICROCODE(mc_convert_i64_extend32_s, op_convert_i64_extend32_s_mc)
 
 #undef DEFINE_MICROCODE
 #undef DEFINE_BITCOUNT_OP
 #undef DEFINE_BITWISE_OP
+#undef DEFINE_COMPARE_OP
+#undef DEFINE_CONVERT_OP
 
 static OP_RETURN_TYPE op_bitwise(OP_ARGUMENTS) {
     (void)runtime;
@@ -3218,6 +3892,68 @@ static void define_op(
     dst->operation = handler;
 }
 
+typedef struct {
+    uint64_t ram_bytes;
+    uint32_t cpu_count;
+    bool ok;
+} fa_SystemProbe;
+
+#ifndef FA_MICROCODE_MIN_RAM_BYTES
+#define FA_MICROCODE_MIN_RAM_BYTES (64ULL * 1024ULL * 1024ULL)
+#endif
+
+#ifndef FA_MICROCODE_MIN_CPU_COUNT
+#define FA_MICROCODE_MIN_CPU_COUNT 2U
+#endif
+
+static fa_SystemProbe probe_system_resources(void) {
+    fa_SystemProbe probe;
+    memset(&probe, 0, sizeof(probe));
+#if defined(_WIN32)
+    MEMORYSTATUSEX memory;
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory)) {
+        probe.ram_bytes = (uint64_t)memory.ullTotalPhys;
+    }
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    if (info.dwNumberOfProcessors > 0) {
+        probe.cpu_count = (uint32_t)info.dwNumberOfProcessors;
+    }
+#elif defined(__APPLE__) || defined(__unix__) || defined(__linux__) || defined(__ANDROID__)
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page_size > 0) {
+        probe.ram_bytes = (uint64_t)pages * (uint64_t)page_size;
+    }
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpus < 1) {
+        cpus = sysconf(_SC_NPROCESSORS_CONF);
+    }
+    if (cpus > 0) {
+        probe.cpu_count = (uint32_t)cpus;
+    }
+#if defined(__APPLE__)
+    if (probe.ram_bytes == 0) {
+        uint64_t memsize = 0;
+        size_t len = sizeof(memsize);
+        if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) == 0 && memsize > 0) {
+            probe.ram_bytes = memsize;
+        }
+    }
+    if (probe.cpu_count == 0) {
+        uint32_t ncpu = 0;
+        size_t len = sizeof(ncpu);
+        if (sysctlbyname("hw.ncpu", &ncpu, &len, NULL, 0) == 0 && ncpu > 0) {
+            probe.cpu_count = ncpu;
+        }
+    }
+#endif
+#endif
+    probe.ok = (probe.ram_bytes > 0 && probe.cpu_count > 0);
+    return probe;
+}
+
 static bool microcode_env_override(bool* enabled_out) {
     if (!enabled_out) {
         return false;
@@ -3242,12 +3978,16 @@ static bool microcode_should_enable(void) {
     if (microcode_env_override(&enabled)) {
         return enabled;
     }
-#if defined(FA_ARCH_CPU_XTENSA)
-    return false;
-#endif
-#if defined(FA_ARCH_PTR_BYTES) && (FA_ARCH_PTR_BYTES <= 4)
-    return false;
-#endif
+    const fa_SystemProbe probe = probe_system_resources();
+    if (!probe.ok) {
+        return false;
+    }
+    if (probe.ram_bytes < FA_MICROCODE_MIN_RAM_BYTES) {
+        return false;
+    }
+    if (probe.cpu_count < FA_MICROCODE_MIN_CPU_COUNT) {
+        return false;
+    }
     return true;
 }
 
@@ -3280,6 +4020,86 @@ static void init_microcode_once(void) {
         g_microcode[0x88] = &mc_shift_right_unsigned; // i64.shr_u
         g_microcode[0x89] = &mc_rotate_left;      // i64.rotl
         g_microcode[0x8A] = &mc_rotate_right;     // i64.rotr
+        g_microcode[0x46] = &mc_compare_eq;       // i32.eq
+        g_microcode[0x47] = &mc_compare_ne;       // i32.ne
+        g_microcode[0x48] = &mc_compare_lt;       // i32.lt_s
+        g_microcode[0x49] = &mc_compare_lt;       // i32.lt_u
+        g_microcode[0x4A] = &mc_compare_gt;       // i32.gt_s
+        g_microcode[0x4B] = &mc_compare_gt;       // i32.gt_u
+        g_microcode[0x4C] = &mc_compare_le;       // i32.le_s
+        g_microcode[0x4D] = &mc_compare_le;       // i32.le_u
+        g_microcode[0x4E] = &mc_compare_ge;       // i32.ge_s
+        g_microcode[0x4F] = &mc_compare_ge;       // i32.ge_u
+        g_microcode[0x51] = &mc_compare_eq;       // i64.eq
+        g_microcode[0x52] = &mc_compare_ne;       // i64.ne
+        g_microcode[0x53] = &mc_compare_lt;       // i64.lt_s
+        g_microcode[0x54] = &mc_compare_lt;       // i64.lt_u
+        g_microcode[0x55] = &mc_compare_gt;       // i64.gt_s
+        g_microcode[0x56] = &mc_compare_gt;       // i64.gt_u
+        g_microcode[0x57] = &mc_compare_le;       // i64.le_s
+        g_microcode[0x58] = &mc_compare_le;       // i64.le_u
+        g_microcode[0x59] = &mc_compare_ge;       // i64.ge_s
+        g_microcode[0x5A] = &mc_compare_ge;       // i64.ge_u
+        g_microcode[0x5B] = &mc_compare_eq;       // f32.eq
+        g_microcode[0x5C] = &mc_compare_ne;       // f32.ne
+        g_microcode[0x5D] = &mc_compare_lt;       // f32.lt
+        g_microcode[0x5E] = &mc_compare_gt;       // f32.gt
+        g_microcode[0x5F] = &mc_compare_le;       // f32.le
+        g_microcode[0x60] = &mc_compare_ge;       // f32.ge
+        g_microcode[0x61] = &mc_compare_eq;       // f64.eq
+        g_microcode[0x62] = &mc_compare_ne;       // f64.ne
+        g_microcode[0x63] = &mc_compare_lt;       // f64.lt
+        g_microcode[0x64] = &mc_compare_gt;       // f64.gt
+        g_microcode[0x65] = &mc_compare_le;       // f64.le
+        g_microcode[0x66] = &mc_compare_ge;       // f64.ge
+        g_microcode[0x6A] = &mc_arith_add;        // i32.add
+        g_microcode[0x6B] = &mc_arith_sub;        // i32.sub
+        g_microcode[0x6C] = &mc_arith_mul;        // i32.mul
+        g_microcode[0x6D] = &mc_arith_div;        // i32.div_s
+        g_microcode[0x6E] = &mc_arith_div;        // i32.div_u
+        g_microcode[0x6F] = &mc_arith_rem;        // i32.rem_s
+        g_microcode[0x70] = &mc_arith_rem;        // i32.rem_u
+        g_microcode[0x7C] = &mc_arith_add;        // i64.add
+        g_microcode[0x7D] = &mc_arith_sub;        // i64.sub
+        g_microcode[0x7E] = &mc_arith_mul;        // i64.mul
+        g_microcode[0x7F] = &mc_arith_div;        // i64.div_s
+        g_microcode[0x80] = &mc_arith_div;        // i64.div_u
+        g_microcode[0x81] = &mc_arith_rem;        // i64.rem_s
+        g_microcode[0x82] = &mc_arith_rem;        // i64.rem_u
+        g_microcode[0x92] = &mc_arith_add;        // f32.add
+        g_microcode[0x93] = &mc_arith_sub;        // f32.sub
+        g_microcode[0x94] = &mc_arith_mul;        // f32.mul
+        g_microcode[0x95] = &mc_arith_div;        // f32.div
+        g_microcode[0xA0] = &mc_arith_add;        // f64.add
+        g_microcode[0xA1] = &mc_arith_sub;        // f64.sub
+        g_microcode[0xA2] = &mc_arith_mul;        // f64.mul
+        g_microcode[0xA3] = &mc_arith_div;        // f64.div
+        g_microcode[0xA7] = &mc_convert_i32_wrap_i64;      // i32.wrap_i64
+        g_microcode[0xA8] = &mc_convert_i32_trunc_f32_s;   // i32.trunc_f32_s
+        g_microcode[0xA9] = &mc_convert_i32_trunc_f32_u;   // i32.trunc_f32_u
+        g_microcode[0xAA] = &mc_convert_i32_trunc_f64_s;   // i32.trunc_f64_s
+        g_microcode[0xAB] = &mc_convert_i32_trunc_f64_u;   // i32.trunc_f64_u
+        g_microcode[0xAC] = &mc_convert_i64_extend_i32_s;  // i64.extend_i32_s
+        g_microcode[0xAD] = &mc_convert_i64_extend_i32_u;  // i64.extend_i32_u
+        g_microcode[0xAE] = &mc_convert_i64_trunc_f32_s;   // i64.trunc_f32_s
+        g_microcode[0xAF] = &mc_convert_i64_trunc_f32_u;   // i64.trunc_f32_u
+        g_microcode[0xB0] = &mc_convert_i64_trunc_f64_s;   // i64.trunc_f64_s
+        g_microcode[0xB1] = &mc_convert_i64_trunc_f64_u;   // i64.trunc_f64_u
+        g_microcode[0xB2] = &mc_convert_f32_from_i32_s;    // f32.convert_i32_s
+        g_microcode[0xB3] = &mc_convert_f32_from_i32_u;    // f32.convert_i32_u
+        g_microcode[0xB4] = &mc_convert_f32_from_i64_s;    // f32.convert_i64_s
+        g_microcode[0xB5] = &mc_convert_f32_from_i64_u;    // f32.convert_i64_u
+        g_microcode[0xB6] = &mc_convert_f32_demote_f64;    // f32.demote_f64
+        g_microcode[0xB7] = &mc_convert_f64_from_i32_s;    // f64.convert_i32_s
+        g_microcode[0xB8] = &mc_convert_f64_from_i32_u;    // f64.convert_i32_u
+        g_microcode[0xB9] = &mc_convert_f64_from_i64_s;    // f64.convert_i64_s
+        g_microcode[0xBA] = &mc_convert_f64_from_i64_u;    // f64.convert_i64_u
+        g_microcode[0xBB] = &mc_convert_f64_promote_f32;   // f64.promote_f32
+        g_microcode[0xC0] = &mc_convert_i32_extend8_s;     // i32.extend8_s
+        g_microcode[0xC1] = &mc_convert_i32_extend16_s;    // i32.extend16_s
+        g_microcode[0xC2] = &mc_convert_i64_extend8_s;     // i64.extend8_s
+        g_microcode[0xC3] = &mc_convert_i64_extend16_s;    // i64.extend16_s
+        g_microcode[0xC4] = &mc_convert_i64_extend32_s;    // i64.extend32_s
     }
     g_microcode_initialized = true;
 }

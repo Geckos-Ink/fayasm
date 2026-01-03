@@ -10,7 +10,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## High Priority Directive
 
-- Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by device RAM/CPU budgets.
+- Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
 
 ## Build & Test Checklist
 
@@ -24,7 +24,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, label arity checks, and imported-global overrides via `fa_Runtime_set_imported_global`.
 - `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` – opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate ops (toggle via `FAYASM_MICROCODE`).
+- `src/fa_ops.*` – opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert ops, gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
 - `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
 - `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
@@ -72,7 +72,7 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Expand microcode compilation coverage beyond bit ops (compare/arithmetic/convert) and fold in a resource-aware JIT precompile pass.
+1. Extend microcode coverage to float unary/special ops plus reinterpret/select, and fold in a resource-aware JIT precompile pass for per-function sequences.
 2. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
 3. Expand element/data segment support to ref.func expressions and externref tables.
 4. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
