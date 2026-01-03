@@ -24,6 +24,25 @@ static uint64_t clamp_u64(uint64_t value, uint64_t min, uint64_t max) {
     return value;
 }
 
+static bool jit_env_flag(const char* name, bool* out) {
+    if (!name || !out) {
+        return false;
+    }
+    const char* value = getenv(name);
+    if (!value) {
+        return false;
+    }
+    if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "on") == 0) {
+        *out = true;
+        return true;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0 || strcmp(value, "off") == 0) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
 fa_JitProbe fa_jit_probe_system(void) {
     fa_JitProbe probe;
     memset(&probe, 0, sizeof(probe));
@@ -82,6 +101,8 @@ fa_JitConfig fa_jit_default_config(void) {
     config.min_hot_loop_hits = 16U;
     config.min_executed_ops = 1024ULL;
     config.min_advantage_score = 0.55f;
+    config.prescan_functions = false;
+    (void)jit_env_flag("FAYASM_JIT_PRESCAN", &config.prescan_functions);
     return config;
 }
 

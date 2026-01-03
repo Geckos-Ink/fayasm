@@ -37,6 +37,7 @@ typedef struct {
     uint32_t min_hot_loop_hits;
     uint64_t min_executed_ops;
     float min_advantage_score;
+    bool prescan_functions;
 } fa_JitConfig;
 
 typedef struct {

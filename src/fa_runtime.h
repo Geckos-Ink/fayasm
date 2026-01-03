@@ -63,6 +63,7 @@ typedef struct fa_Runtime {
     fa_JitStats jit_stats;
     struct fa_JitProgramCacheEntry* jit_cache;
     uint32_t jit_cache_count;
+    uint64_t jit_prepared_executions;
 } fa_Runtime;
 
 fa_Runtime* fa_Runtime_init(void);

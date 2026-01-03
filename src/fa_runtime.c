@@ -125,6 +125,8 @@ static void runtime_globals_reset(fa_Runtime* runtime) {
 
 static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype);
 static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t valtype);
+static int runtime_read_uleb128(const uint8_t* buffer, uint32_t buffer_size, uint32_t* cursor, uint64_t* out);
+static int runtime_read_sleb128(const uint8_t* buffer, uint32_t buffer_size, uint32_t* cursor, int64_t* out);
 
 static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
     if (!runtime || !module) {
@@ -776,6 +778,8 @@ static void runtime_jit_cache_clear(fa_Runtime* runtime) {
     runtime->jit_cache_count = 0;
 }
 
+static int runtime_jit_cache_prescan(fa_Runtime* runtime);
+
 static int runtime_jit_cache_init(fa_Runtime* runtime) {
     if (!runtime || !runtime->module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -793,6 +797,13 @@ static int runtime_jit_cache_init(fa_Runtime* runtime) {
         runtime->jit_cache[i].func_index = i;
         runtime->jit_cache[i].body_size = runtime->module->functions[i].body_size;
         fa_jit_program_init(&runtime->jit_cache[i].program);
+    }
+    if (runtime->jit_context.config.prescan_functions) {
+        int status = runtime_jit_cache_prescan(runtime);
+        if (status != FA_RUNTIME_OK) {
+            runtime_jit_cache_clear(runtime);
+            return status;
+        }
     }
     return FA_RUNTIME_OK;
 }
@@ -868,6 +879,250 @@ static int runtime_jit_cache_record_opcode(fa_JitProgramCacheEntry* entry, uint3
     entry->offsets[entry->count] = opcode_pc;
     entry->pc_to_index[opcode_pc] = (int32_t)entry->count;
     entry->count++;
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_prescan_skip_locals(const uint8_t* body, uint32_t body_size, uint32_t* cursor_out) {
+    if (!body || !cursor_out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    uint32_t cursor = 0;
+    uint64_t local_decl_count = 0;
+    int status = runtime_read_uleb128(body, body_size, &cursor, &local_decl_count);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    for (uint64_t i = 0; i < local_decl_count; ++i) {
+        uint64_t repeat = 0;
+        status = runtime_read_uleb128(body, body_size, &cursor, &repeat);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+        if (cursor >= body_size) {
+            return FA_RUNTIME_ERR_STREAM;
+        }
+        cursor += 1U; // valtype
+    }
+    *cursor_out = cursor;
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_prescan_read_uleb128(const uint8_t* body, uint32_t body_size, uint32_t* cursor) {
+    uint64_t value = 0;
+    return runtime_read_uleb128(body, body_size, cursor, &value);
+}
+
+static int runtime_prescan_read_sleb128(const uint8_t* body, uint32_t body_size, uint32_t* cursor) {
+    int64_t value = 0;
+    return runtime_read_sleb128(body, body_size, cursor, &value);
+}
+
+static int runtime_prescan_skip_memarg(const fa_Runtime* runtime,
+                                       const uint8_t* body,
+                                       uint32_t body_size,
+                                       uint32_t* cursor) {
+    if (!body || !cursor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (runtime && runtime->module && runtime->module->num_memories > 1) {
+        int status = runtime_prescan_read_uleb128(body, body_size, cursor);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+    }
+    int status = runtime_prescan_read_uleb128(body, body_size, cursor);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    return runtime_prescan_read_uleb128(body, body_size, cursor);
+}
+
+static int runtime_prescan_skip_immediates(const fa_Runtime* runtime,
+                                           const uint8_t* body,
+                                           uint32_t body_size,
+                                           uint32_t* cursor,
+                                           uint8_t opcode) {
+    if (!body || !cursor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    switch (opcode) {
+        case 0x02: /* block */
+        case 0x03: /* loop */
+        case 0x04: /* if */
+            return runtime_prescan_read_sleb128(body, body_size, cursor);
+        case 0x0C: /* br */
+        case 0x0D: /* br_if */
+        case 0x10: /* call */
+        case 0x20: /* local.get */
+        case 0x21: /* local.set */
+        case 0x22: /* local.tee */
+        case 0x23: /* global.get */
+        case 0x24: /* global.set */
+        case 0x25: /* table.get */
+        case 0x26: /* table.set */
+        case 0x3F: /* memory.size */
+        case 0x40: /* memory.grow */
+            return runtime_prescan_read_uleb128(body, body_size, cursor);
+        case 0x0E: /* br_table */
+        {
+            uint64_t label_count = 0;
+            int status = runtime_read_uleb128(body, body_size, cursor, &label_count);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            for (uint64_t i = 0; i < label_count; ++i) {
+                status = runtime_prescan_read_uleb128(body, body_size, cursor);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
+            return runtime_prescan_read_uleb128(body, body_size, cursor);
+        }
+        case 0x11: /* call_indirect */
+        {
+            int status = runtime_prescan_read_uleb128(body, body_size, cursor);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            return runtime_prescan_read_uleb128(body, body_size, cursor);
+        }
+        case 0x41: /* i32.const */
+        case 0x42: /* i64.const */
+            return runtime_prescan_read_sleb128(body, body_size, cursor);
+        case 0x43: /* f32.const */
+            if (*cursor + 4U > body_size) {
+                return FA_RUNTIME_ERR_STREAM;
+            }
+            *cursor += 4U;
+            return FA_RUNTIME_OK;
+        case 0x44: /* f64.const */
+            if (*cursor + 8U > body_size) {
+                return FA_RUNTIME_ERR_STREAM;
+            }
+            *cursor += 8U;
+            return FA_RUNTIME_OK;
+        case 0x28: case 0x29: case 0x2A: case 0x2B:
+        case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+        case 0x30: case 0x31: case 0x32: case 0x33:
+        case 0x34: case 0x35: case 0x36: case 0x37:
+        case 0x38: case 0x39: case 0x3A: case 0x3B:
+        case 0x3C: case 0x3D: case 0x3E:
+            return runtime_prescan_skip_memarg(runtime, body, body_size, cursor);
+        case 0xFC: /* bulk memory/table prefix */
+        {
+            uint64_t subopcode = 0;
+            int status = runtime_read_uleb128(body, body_size, cursor, &subopcode);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            switch (subopcode) {
+                case 8: /* memory.init */
+                    status = runtime_prescan_read_uleb128(body, body_size, cursor);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 9: /* data.drop */
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 10: /* memory.copy */
+                    status = runtime_prescan_read_uleb128(body, body_size, cursor);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 11: /* memory.fill */
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 12: /* table.init */
+                    status = runtime_prescan_read_uleb128(body, body_size, cursor);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 13: /* elem.drop */
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 14: /* table.copy */
+                    status = runtime_prescan_read_uleb128(body, body_size, cursor);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                case 15: /* table.grow */
+                case 16: /* table.size */
+                case 17: /* table.fill */
+                    return runtime_prescan_read_uleb128(body, body_size, cursor);
+                default:
+                    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+            }
+        }
+        case 0xFD: /* simd prefix */
+        {
+            uint64_t subopcode = 0;
+            int status = runtime_read_uleb128(body, body_size, cursor, &subopcode);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (subopcode == 12) {
+                if (*cursor + 16U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                *cursor += 16U;
+            }
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_OK;
+    }
+}
+
+static int runtime_jit_prescan_function(fa_Runtime* runtime,
+                                        fa_JitProgramCacheEntry* entry,
+                                        const uint8_t* body,
+                                        uint32_t body_size) {
+    if (!runtime || !entry || !body) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    uint32_t cursor = 0;
+    int status = runtime_prescan_skip_locals(body, body_size, &cursor);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    while (cursor < body_size) {
+        uint32_t opcode_pc = cursor;
+        uint8_t opcode = body[cursor++];
+        status = runtime_jit_cache_record_opcode(entry, opcode_pc, opcode);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+        status = runtime_prescan_skip_immediates(runtime, body, body_size, &cursor, opcode);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+        if (opcode == 0x0B && cursor >= body_size) {
+            break;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
+    if (!runtime || !runtime->module) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    for (uint32_t i = 0; i < runtime->module->num_functions; ++i) {
+        fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry(runtime, i);
+        if (!entry) {
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+        }
+        uint8_t* body = wasm_load_function_body(runtime->module, i);
+        if (!body) {
+            return FA_RUNTIME_ERR_STREAM;
+        }
+        int status = runtime_jit_prescan_function(runtime, entry, body, entry->body_size);
+        free(body);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+    }
     return FA_RUNTIME_OK;
 }
 
@@ -1582,6 +1837,7 @@ fa_Runtime* fa_Runtime_init(void) {
     runtime->globals_count = 0;
     fa_jit_context_init(&runtime->jit_context, NULL);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
+    runtime->jit_prepared_executions = 0;
     if (!runtime->jobs) {
         fa_Runtime_free(runtime);
         return NULL;
@@ -2534,6 +2790,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
 
     fa_Runtime_reset_job_state(job);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
+    runtime->jit_prepared_executions = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
 
     fa_RuntimeCallFrame* frames = runtime_alloc_frames(runtime);
@@ -2597,6 +2854,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
         const fa_JitPreparedOp* prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
         if (prepared) {
             status = fa_jit_execute_prepared_op(prepared, runtime, job);
+            runtime->jit_prepared_executions++;
         } else {
             status = fa_execute_op(opcode, runtime, job);
         }

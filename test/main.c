@@ -131,6 +131,25 @@ static int bb_write_uleb64(ByteBuffer* buffer, uint64_t value) {
     return 1;
 }
 
+static void test_set_env(const char* name, const char* value) {
+    if (!name) {
+        return;
+    }
+#if defined(_WIN32)
+    if (!value) {
+        _putenv_s(name, "");
+    } else {
+        _putenv_s(name, value);
+    }
+#else
+    if (!value) {
+        unsetenv(name);
+    } else {
+        setenv(name, value, 1);
+    }
+#endif
+}
+
 static int bb_write_f32(ByteBuffer* buffer, float value) {
     uint8_t bytes[sizeof(value)];
     memcpy(bytes, &value, sizeof(value));
@@ -748,6 +767,83 @@ static int test_stack_arithmetic(void) {
 
     const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
     if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 12) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_jit_cache_dispatch(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    test_set_env("FAYASM_JIT_PRESCAN", "1");
+
+    ByteBuffer instructions = {0};
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 7)) {
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 5)) {
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x6A) || !bb_write_byte(&instructions, 0x0B)) {
+        bb_free(&instructions);
+        return 1;
+    }
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_executed_ops = 1;
+    runtime->jit_context.config.min_advantage_score = 0.0f;
+    runtime->jit_context.config.prescan_functions = true;
+
+    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Job* job = fa_Runtime_create_job(runtime);
+    if (!job) {
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 12) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!fa_ops_microcode_enabled() || runtime->jit_prepared_executions == 0) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
@@ -3026,6 +3122,7 @@ static int test_local_f32_default(void) {
 
 #define TEST_CASE(name, area, hint, fn) { name, area, hint, fn }
 static const TestCase kTestCases[] = {
+    TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
