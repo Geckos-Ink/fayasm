@@ -95,3 +95,75 @@
         #define FA_ARCH_CPU_UNKNOWN 1
     #endif
 #endif
+
+#ifndef FAYASM_TARGET_ESP32
+    #if defined(ESP_PLATFORM) || defined(ESP32)
+        #define FAYASM_TARGET_ESP32 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_X86_64
+    #if defined(FA_ARCH_CPU_X86_64)
+        #define FAYASM_TARGET_X86_64 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_X86
+    #if defined(FA_ARCH_CPU_X86)
+        #define FAYASM_TARGET_X86 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_AARCH64
+    #if defined(FA_ARCH_CPU_AARCH64)
+        #define FAYASM_TARGET_AARCH64 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_ARM
+    #if defined(FA_ARCH_CPU_ARM)
+        #define FAYASM_TARGET_ARM 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_RISCV
+    #if defined(FA_ARCH_CPU_RISCV)
+        #define FAYASM_TARGET_RISCV 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_XTENSA
+    #if defined(FA_ARCH_CPU_XTENSA) || defined(FAYASM_TARGET_ESP32)
+        #define FAYASM_TARGET_XTENSA 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_WASM
+    #if defined(FA_ARCH_CPU_WASM)
+        #define FAYASM_TARGET_WASM 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_EMBEDDED
+    #if defined(FAYASM_TARGET_ESP32)
+        #define FAYASM_TARGET_EMBEDDED 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_DESKTOP
+    #if defined(FAYASM_TARGET_X86_64) || defined(FAYASM_TARGET_X86) || defined(FAYASM_TARGET_AARCH64)
+        #define FAYASM_TARGET_DESKTOP 1
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_RAM_BYTES
+    #if defined(FAYASM_TARGET_ESP32)
+        #define FAYASM_TARGET_RAM_BYTES (520ULL * 1024ULL)
+    #endif
+#endif
+
+#ifndef FAYASM_TARGET_CPU_COUNT
+    #if defined(FAYASM_TARGET_ESP32)
+        #define FAYASM_TARGET_CPU_COUNT 2U
+    #endif
+#endif

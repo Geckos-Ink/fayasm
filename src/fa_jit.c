@@ -1,5 +1,6 @@
 #include "fa_jit.h"
 #include "fa_runtime.h"
+#include "fa_arch.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,16 @@ static bool jit_env_flag(const char* name, bool* out) {
 fa_JitProbe fa_jit_probe_system(void) {
     fa_JitProbe probe;
     memset(&probe, 0, sizeof(probe));
+#if defined(FAYASM_TARGET_EMBEDDED)
+    #if defined(FAYASM_TARGET_RAM_BYTES)
+    probe.ram_bytes = (uint64_t)FAYASM_TARGET_RAM_BYTES;
+    #endif
+    #if defined(FAYASM_TARGET_CPU_COUNT)
+    probe.cpu_count = (uint32_t)FAYASM_TARGET_CPU_COUNT;
+    #endif
+    probe.ok = (probe.ram_bytes > 0 && probe.cpu_count > 0);
+    return probe;
+#endif
 #if defined(_WIN32)
     MEMORYSTATUSEX memory;
     memory.dwLength = sizeof(memory);
@@ -102,7 +113,13 @@ fa_JitConfig fa_jit_default_config(void) {
     config.min_executed_ops = 1024ULL;
     config.min_advantage_score = 0.55f;
     config.prescan_functions = false;
+    config.prescan_force = false;
     (void)jit_env_flag("FAYASM_JIT_PRESCAN", &config.prescan_functions);
+    bool force_prescan = false;
+    if (jit_env_flag("FAYASM_JIT_PRESCAN_FORCE", &force_prescan) && force_prescan) {
+        config.prescan_functions = true;
+        config.prescan_force = true;
+    }
     return config;
 }
 
@@ -187,6 +204,23 @@ void fa_jit_context_update(fa_JitContext* ctx, const fa_JitStats* stats) {
     }
     ctx->probe = fa_jit_probe_system();
     ctx->decision = fa_jit_decide(&ctx->probe, &ctx->config, stats);
+}
+
+void fa_jit_context_apply_env_overrides(fa_JitContext* ctx) {
+    if (!ctx) {
+        return;
+    }
+    bool prescan = ctx->config.prescan_functions;
+    if (jit_env_flag("FAYASM_JIT_PRESCAN", &prescan)) {
+        ctx->config.prescan_functions = prescan;
+    }
+    bool force = ctx->config.prescan_force;
+    if (jit_env_flag("FAYASM_JIT_PRESCAN_FORCE", &force)) {
+        ctx->config.prescan_force = force;
+        if (force) {
+            ctx->config.prescan_functions = true;
+        }
+    }
 }
 
 void fa_jit_program_init(fa_JitProgram* program) {

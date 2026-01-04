@@ -4,9 +4,9 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Near-Term
 
-- Add a small eviction/spill policy stub for the JIT cache to align with the RAM load/offload directive (targeting ESP32-class devices without PSRAM).
-- Add a CLI/env toggle to force JIT prescan at runtime for profiling (without modifying code).
-- Ensure ESP32 configuration is selected at compile time (CMake/defines), not via runtime probes.
+- Harden JIT microcode spill formats with versioning for cross-boot reuse (avoid raw function pointers).
+- Add tests for function traps and spill/load hooks (memory reloads, JIT cache eviction paths).
+- Expand `samples/esp32-trap` to use the hardened spill format and document SD wear/perf considerations.
 
 ## Medium-Term
 
@@ -15,7 +15,13 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Expand element/data segment support to ref.func expressions and externref tables.
 - Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
 
+## Recently Completed
+
+- Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
+- Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
+- Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).
+
 ## Long-Term
 
-- Improve possible traps like to allow real-time write and move of volatile data (WASM runtime memory and microcode) on another storage system.
-- Implement macros for handling compilation on different architecture targets (x86, x86_64, ESP32, ..).
+- Integrate background offload/prefetch for JIT/memory spill with wear-aware storage strategies.
+- Validate embedded resource heuristics on additional targets and tune `FAYASM_TARGET_*` defaults.

@@ -629,6 +629,22 @@ static fa_RuntimeMemory* runtime_get_memory(fa_Runtime* runtime, u64 index) {
     return &runtime->memories[(uint32_t)index];
 }
 
+static int runtime_require_memory(fa_Runtime* runtime, u64 index, fa_RuntimeMemory** memory_out) {
+    if (!runtime || !memory_out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeMemory* memory = runtime_get_memory(runtime, index);
+    if (!memory) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    int status = fa_Runtime_ensure_memory_loaded(runtime, (uint32_t)index);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    *memory_out = memory;
+    return FA_RUNTIME_OK;
+}
+
 static fa_RuntimeTable* runtime_get_table(fa_Runtime* runtime, u64 index) {
     if (!runtime || !runtime->tables) {
         return NULL;
@@ -991,9 +1007,10 @@ static OP_RETURN_TYPE op_load(OP_ARGUMENTS) {
         }
     }
 
-    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
-    if (!memory) {
-        return FA_RUNTIME_ERR_TRAP;
+    fa_RuntimeMemory* memory = NULL;
+    int status = runtime_require_memory(runtime, mem_index, &memory);
+    if (status != FA_RUNTIME_OK) {
+        return status;
     }
     u64 base = 0;
     if (pop_address_checked_typed(job, &base, memory->is_memory64) != FA_RUNTIME_OK) {
@@ -1074,10 +1091,11 @@ static OP_RETURN_TYPE op_store(OP_ARGUMENTS) {
         }
     }
 
-    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
-    if (!memory) {
+    fa_RuntimeMemory* memory = NULL;
+    int status = runtime_require_memory(runtime, mem_index, &memory);
+    if (status != FA_RUNTIME_OK) {
         restore_stack_value(job, &value);
-        return FA_RUNTIME_ERR_TRAP;
+        return status;
     }
     u64 base = 0;
     if (pop_address_checked_typed(job, &base, memory->is_memory64) != FA_RUNTIME_OK) {
@@ -2506,9 +2524,10 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
                 pop_reg_u64_checked(job, &data_index) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
-            if (!memory) {
-                return FA_RUNTIME_ERR_TRAP;
+            fa_RuntimeMemory* memory = NULL;
+            int status = runtime_require_memory(runtime, mem_index, &memory);
+            if (status != FA_RUNTIME_OK) {
+                return status;
             }
             const WasmDataSegment* segment = runtime_get_data_segment(runtime, data_index);
             if (!segment || !runtime->data_segments_dropped ||
@@ -2567,10 +2586,15 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
                 pop_reg_u64_checked(job, &dst_index) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            fa_RuntimeMemory* src_memory = runtime_get_memory(runtime, src_index);
-            fa_RuntimeMemory* dst_memory = runtime_get_memory(runtime, dst_index);
-            if (!src_memory || !dst_memory) {
-                return FA_RUNTIME_ERR_TRAP;
+            fa_RuntimeMemory* src_memory = NULL;
+            fa_RuntimeMemory* dst_memory = NULL;
+            int status = runtime_require_memory(runtime, src_index, &src_memory);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            status = runtime_require_memory(runtime, dst_index, &dst_memory);
+            if (status != FA_RUNTIME_OK) {
+                return status;
             }
             const bool length_is_64 = src_memory->is_memory64 || dst_memory->is_memory64;
             u64 length = 0;
@@ -2602,9 +2626,10 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
             if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
-            if (!memory) {
-                return FA_RUNTIME_ERR_TRAP;
+            fa_RuntimeMemory* memory = NULL;
+            int status = runtime_require_memory(runtime, mem_index, &memory);
+            if (status != FA_RUNTIME_OK) {
+                return status;
             }
             u64 length = 0;
             if (pop_length_checked(job, memory->is_memory64, &length) != FA_RUNTIME_OK) {
@@ -2961,6 +2986,10 @@ static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pag
     if (!memory) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
+    int status = fa_Runtime_ensure_memory_loaded(runtime, (uint32_t)mem_index);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
     const uint64_t prev_pages = memory->size_bytes / FA_WASM_PAGE_SIZE;
     if (!memory->is_memory64 && prev_pages > UINT32_MAX) {
         return FA_RUNTIME_ERR_UNSUPPORTED;
@@ -3042,9 +3071,10 @@ static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
     if (pop_reg_u64_checked(job, &mem_index) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    fa_RuntimeMemory* memory = runtime_get_memory(runtime, mem_index);
-    if (!memory) {
-        return FA_RUNTIME_ERR_TRAP;
+    fa_RuntimeMemory* memory = NULL;
+    int status = runtime_require_memory(runtime, mem_index, &memory);
+    if (status != FA_RUNTIME_OK) {
+        return status;
     }
     fa_JobValue delta;
     if (pop_stack_checked(job, &delta) != FA_RUNTIME_OK) {
@@ -3128,6 +3158,16 @@ typedef struct {
 static fa_SystemProbe probe_system_resources(void) {
     fa_SystemProbe probe;
     memset(&probe, 0, sizeof(probe));
+#if defined(FAYASM_TARGET_EMBEDDED)
+    #if defined(FAYASM_TARGET_RAM_BYTES)
+    probe.ram_bytes = (uint64_t)FAYASM_TARGET_RAM_BYTES;
+    #endif
+    #if defined(FAYASM_TARGET_CPU_COUNT)
+    probe.cpu_count = (uint32_t)FAYASM_TARGET_CPU_COUNT;
+    #endif
+    probe.ok = (probe.ram_bytes > 0 && probe.cpu_count > 0);
+    return probe;
+#endif
 #if defined(_WIN32)
     MEMORYSTATUSEX memory;
     memory.dwLength = sizeof(memory);

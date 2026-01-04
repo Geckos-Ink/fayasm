@@ -36,6 +36,10 @@ elseif(WIN32)
     add_definitions(-DFAYASM_WINDOWS)
 endif()
 
+if(FAYASM_TARGET_ESP32)
+    add_definitions(-DFAYASM_TARGET_ESP32)
+endif()
+
 # Crea la libreria condivisa
 if(FAYASM_BUILD_SHARED)
     add_library(fayasm SHARED ${FAYASM_SOURCES})

@@ -38,6 +38,7 @@ typedef struct {
     uint64_t min_executed_ops;
     float min_advantage_score;
     bool prescan_functions;
+    bool prescan_force;
 } fa_JitConfig;
 
 typedef struct {
@@ -85,6 +86,7 @@ fa_JitDecision fa_jit_decide(const fa_JitProbe* probe, const fa_JitConfig* confi
 
 void fa_jit_context_init(fa_JitContext* ctx, const fa_JitConfig* config);
 void fa_jit_context_update(fa_JitContext* ctx, const fa_JitStats* stats);
+void fa_jit_context_apply_env_overrides(fa_JitContext* ctx);
 
 void fa_jit_program_init(fa_JitProgram* program);
 void fa_jit_program_free(fa_JitProgram* program);

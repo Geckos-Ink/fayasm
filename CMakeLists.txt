@@ -5,6 +5,7 @@ project(fayasm VERSION 0.1.0 DESCRIPTION "Experimental, lightweight WebAssembly 
 option(FAYASM_BUILD_SHARED "Build as shared library" ON)
 option(FAYASM_BUILD_STATIC "Build as static library" ON)
 option(FAYASM_BUILD_TESTS "Build tests" ON)
+option(FAYASM_TARGET_ESP32 "Target ESP32 at compile time" OFF)
 
 # Impostazioni standard di compilazione
 set(CMAKE_C_STANDARD 99)

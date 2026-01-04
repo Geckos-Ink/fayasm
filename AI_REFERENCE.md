@@ -13,8 +13,8 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
 - Keep `fa_jit` tied to microcode preparation and WASM-to-microcode conversions; feed decoded opcode streams into `fa_jit_prepare_program_from_opcodes` as the runtime executes.
-- Prepare JIT/runtime for real-time RAM load/offload so microcode caches can spill on ESP32-class devices without PSRAM.
-- Treat ESP32 configuration as compile-time selection (CMake/defines), not runtime discovery.
+- Maintain trap plus spill/load hooks for offload; harden spill formats so microcode and memory can persist across boots (avoid raw function pointers).
+- Keep ESP32 configuration compile-time via `FAYASM_TARGET_ESP32`/`FAYASM_TARGET_*` macros (CMake/defines), not runtime discovery.
 
 ## Build & Test Checklist
 
@@ -22,21 +22,23 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Invoke the provided helper: `./build.sh` (cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
 - Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory.
 - Test filtering: `build/bin/fayasm_test_main --list` shows areas + hints; pass a substring filter to run a subset.
+- JIT prescan toggles: `build/bin/fayasm_test_main --jit-prescan` or `--jit-prescan-force` (mirrors `FAYASM_JIT_PRESCAN_FORCE`).
 - Ensure new tests land alongside new features; runtime code lacks extensive coverage, so favour regression tests around control flow and stack behaviour.
 
 ## Core Code Map
 
-- `src/fa_runtime.*` – execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN`) that feed microcode preparation and dispatch.
-- `src/fa_job.*` – linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` – opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
-- `src/fa_jit.*` – JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers and optional prescan configuration.
-- `src/fa_wasm.*` – disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
-- `src/fa_wasm_stream.*` – cursor helpers used in the tests to exercise streaming reads.
-- `src/helpers/dynamic_list.h` – pointer vector used by ancillary tools.
-- `src/fa_arch.h` – architecture macros with override hooks (pointer width, endianness, CPU family).
-- `ROADMAP.md` – prioritized roadmap with near-term and medium-term planning directives.
-- `test/` – CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
-- `build.sh` – one-shot rebuild + test script; keep options in sync with documented build flags.
+- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, optional per-function trap hooks, spill/load hooks for JIT programs and memory, JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation and dispatch.
+- `src/fa_job.*` - linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
+- `src/fa_ops.*` - opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
+- `src/fa_jit.*` - JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers, optional prescan configuration (`FAYASM_JIT_PRESCAN`/`FAYASM_JIT_PRESCAN_FORCE`), and `fa_jit_context_apply_env_overrides`.
+- `src/fa_wasm.*` - disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
+- `src/fa_wasm_stream.*` - cursor helpers used in the tests to exercise streaming reads.
+- `src/helpers/dynamic_list.h` - pointer vector used by ancillary tools.
+- `src/fa_arch.h` - architecture macros with override hooks (pointer width, endianness, CPU family), plus `FAYASM_TARGET_*` selection and embedded resource hints (`FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`).
+- `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
+- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps, function trap allow/block). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
+- `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory.
+- `build.sh` - one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
 
@@ -44,6 +46,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
 - Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD is still partial (v128.const + splats wired).
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat, conversion traps, stack unwinding, and imported-global overrides.
+- JIT spill/load hooks currently persist pointer-based microcode; a stable, versioned format is needed for cross-boot reuse and broader testing.
 
 ## Research Archive (studies/)
 
@@ -84,9 +87,9 @@ Keep this index synchronized when new material lands in `studies/`.
 4. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
 
 ### General next steps
-1. Improve traps to allow real time write and move of volatile data on another storage system
-2. Implement macros for handling compilation on different architecture (x86, x86_64, ESP32, ..)
-3. Add real-time RAM load/offload hooks for JIT/microcode caches targeting ESP32 without PSRAM
+1. Harden JIT spill/load formats to remove raw function pointers and add versioning for persistence across boots.
+2. Add tests for function traps and spill/load hooks (memory reloads, JIT cache eviction paths).
+3. Expand the ESP32 trap/offload sample to use the hardened spill format and document SD wear/perf tradeoffs.
 
 ## Contact & Credits
 

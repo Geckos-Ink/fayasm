@@ -28,6 +28,22 @@ typedef struct {
     TestFn fn;
 } TestCase;
 
+typedef struct {
+    int calls;
+    int status;
+} TrapState;
+
+static int trap_handler(fa_Runtime* runtime, uint32_t function_index, void* user_data) {
+    (void)runtime;
+    (void)function_index;
+    TrapState* state = (TrapState*)user_data;
+    if (state) {
+        state->calls += 1;
+        return state->status;
+    }
+    return FA_RUNTIME_ERR_TRAP;
+}
+
 static const uint8_t kResultI32[] = { VALTYPE_I32 };
 static const uint8_t kResultI64[] = { VALTYPE_I64 };
 static const uint8_t kResultF32[] = { VALTYPE_F32 };
@@ -958,6 +974,93 @@ static int test_call_depth_trap(void) {
     int status = fa_Runtime_execute_job(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_CALL_DEPTH_EXCEEDED ? 0 : 1;
+}
+
+static int test_function_trap_allow(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 7);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    TrapState state = {0};
+    state.status = FA_RUNTIME_OK;
+    fa_RuntimeTrapHooks hooks = { trap_handler, &state };
+    fa_Runtime_set_trap_hooks(runtime, &hooks);
+    if (fa_Runtime_set_function_trap(runtime, 0, true) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_OK || state.calls != 1) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 7) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_function_trap_block(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x01);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, NULL, 0, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    TrapState state = {0};
+    state.status = FA_RUNTIME_ERR_TRAP;
+    fa_RuntimeTrapHooks hooks = { trap_handler, &state };
+    fa_Runtime_set_trap_hooks(runtime, &hooks);
+    if (fa_Runtime_set_function_trap(runtime, 0, true) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 0);
+    if (status != FA_RUNTIME_ERR_TRAP || state.calls != 1) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
 }
 
 static int test_memory_oob_trap(void) {
@@ -3127,6 +3230,8 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
     TEST_CASE("test_call_depth_trap", "control", "src/fa_runtime.c (call depth)", test_call_depth_trap),
+    TEST_CASE("test_function_trap_allow", "trap", "src/fa_runtime.c (function trap hooks)", test_function_trap_allow),
+    TEST_CASE("test_function_trap_block", "trap", "src/fa_runtime.c (function trap hooks)", test_function_trap_block),
     TEST_CASE("test_memory_oob_trap", "memory", "src/fa_ops.c (load/store), src/fa_runtime.c (bounds)", test_memory_oob_trap),
     TEST_CASE("test_memory_grow_failure", "memory", "src/fa_ops.c (memory.grow), src/fa_runtime.c (grow)", test_memory_grow_failure),
     TEST_CASE("test_memory64_grow_size", "memory64", "src/fa_ops.c (memory.grow), src/fa_runtime.c (grow)", test_memory64_grow_size),
@@ -3188,9 +3293,11 @@ static int test_matches_filter(const TestCase* test, const char* filter) {
 
 static void print_usage(const char* exe) {
     const char* name = (exe && exe[0] != '\0') ? exe : "fayasm_test_main";
-    printf("Usage: %s [--list] [filter]\n", name);
-    printf("  --list   List tests with area and hint\n");
-    printf("  filter   Substring match on name, area, or hint\n");
+    printf("Usage: %s [options] [filter]\n", name);
+    printf("  --list               List tests with area and hint\n");
+    printf("  --jit-prescan        Enable JIT prescan\n");
+    printf("  --jit-prescan-force  Force JIT prescan at runtime\n");
+    printf("  filter               Substring match on name, area, or hint\n");
 }
 
 static void list_tests(void) {
@@ -3245,16 +3352,30 @@ static int run_tests(const char* filter) {
 
 int main(int argc, char** argv) {
     const char* filter = NULL;
-    if (argc > 1) {
-        if (strcmp(argv[1], "--list") == 0) {
-            list_tests();
-            return 0;
+    int list_only = 0;
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (strcmp(arg, "--list") == 0) {
+            list_only = 1;
+            continue;
         }
-        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage(argv[0]);
             return 0;
         }
-        filter = argv[1];
+        if (strcmp(arg, "--jit-prescan") == 0) {
+            test_set_env("FAYASM_JIT_PRESCAN", "1");
+            continue;
+        }
+        if (strcmp(arg, "--jit-prescan-force") == 0) {
+            test_set_env("FAYASM_JIT_PRESCAN_FORCE", "1");
+            continue;
+        }
+        filter = arg;
+    }
+    if (list_only) {
+        list_tests();
+        return 0;
     }
     return run_tests(filter);
 }

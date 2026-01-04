@@ -49,8 +49,10 @@ typedef struct fa_JitProgramCacheEntry {
     int32_t* pc_to_index;
     size_t pc_to_index_len;
     fa_JitProgram program;
+    size_t program_bytes;
     size_t prepared_count;
     bool ready;
+    bool spilled;
 } fa_JitProgramCacheEntry;
 
 #define FA_JIT_CACHE_OPS_INITIAL 64U
@@ -121,6 +123,15 @@ static void runtime_globals_reset(fa_Runtime* runtime) {
         runtime->globals = NULL;
     }
     runtime->globals_count = 0;
+}
+
+static void runtime_traps_reset(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    free(runtime->function_traps);
+    runtime->function_traps = NULL;
+    runtime->function_trap_count = 0;
 }
 
 static int runtime_init_value_from_valtype(fa_JobValue* out, uint32_t valtype);
@@ -259,6 +270,7 @@ static int runtime_memory_init(fa_Runtime* runtime, const WasmModule* module) {
         fa_RuntimeMemory* dst = &runtime->memories[i];
         dst->is_memory64 = memory->is_memory64;
         dst->has_max = memory->has_max;
+        dst->is_spilled = false;
 
         if (!memory->is_memory64) {
             if (memory->initial_size > UINT32_MAX) {
@@ -748,11 +760,28 @@ static void runtime_free_frame_resources(fa_RuntimeCallFrame* frame) {
     frame->control_capacity = 0;
 }
 
-static void runtime_jit_cache_entry_free(fa_JitProgramCacheEntry* entry) {
+static size_t runtime_jit_program_bytes_for_ops(size_t opcode_count) {
+    return opcode_count * sizeof(fa_JitPreparedOp);
+}
+
+static void runtime_jit_cache_release_program(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
     if (!entry) {
         return;
     }
+    if (runtime && entry->program_bytes > 0 && runtime->jit_cache_bytes >= entry->program_bytes) {
+        runtime->jit_cache_bytes -= entry->program_bytes;
+    }
     fa_jit_program_free(&entry->program);
+    entry->program_bytes = 0;
+    entry->prepared_count = 0;
+    entry->ready = false;
+}
+
+static void runtime_jit_cache_entry_free(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
+    if (!entry) {
+        return;
+    }
+    runtime_jit_cache_release_program(runtime, entry);
     free(entry->opcodes);
     free(entry->offsets);
     free(entry->pc_to_index);
@@ -762,20 +791,109 @@ static void runtime_jit_cache_entry_free(fa_JitProgramCacheEntry* entry) {
     entry->count = 0;
     entry->capacity = 0;
     entry->pc_to_index_len = 0;
-    entry->prepared_count = 0;
-    entry->ready = false;
+    entry->spilled = false;
 }
 
 static void runtime_jit_cache_clear(fa_Runtime* runtime) {
-    if (!runtime || !runtime->jit_cache) {
+    if (!runtime) {
         return;
     }
-    for (uint32_t i = 0; i < runtime->jit_cache_count; ++i) {
-        runtime_jit_cache_entry_free(&runtime->jit_cache[i]);
+    if (runtime->jit_cache) {
+        for (uint32_t i = 0; i < runtime->jit_cache_count; ++i) {
+            runtime_jit_cache_entry_free(runtime, &runtime->jit_cache[i]);
+        }
+        free(runtime->jit_cache);
     }
-    free(runtime->jit_cache);
     runtime->jit_cache = NULL;
     runtime->jit_cache_count = 0;
+    runtime->jit_cache_bytes = 0;
+    runtime->jit_cache_eviction_cursor = 0;
+    runtime->jit_cache_prescanned = false;
+}
+
+static void runtime_jit_cache_evict_entry(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
+    if (!runtime || !entry) {
+        return;
+    }
+    bool spilled = false;
+    if (entry->ready && entry->program.count > 0 && runtime->spill_hooks.jit_spill) {
+        int status = runtime->spill_hooks.jit_spill(runtime,
+                                                    entry->func_index,
+                                                    &entry->program,
+                                                    entry->program_bytes,
+                                                    runtime->spill_hooks.user_data);
+        spilled = (status == FA_RUNTIME_OK);
+    }
+    runtime_jit_cache_release_program(runtime, entry);
+    entry->spilled = spilled;
+}
+
+static bool runtime_jit_cache_reserve_bytes(fa_Runtime* runtime, size_t bytes_needed, uint32_t protect_index) {
+    if (!runtime) {
+        return false;
+    }
+    const size_t budget = (size_t)runtime->jit_context.decision.budget.cache_budget_bytes;
+    if (budget == 0 || bytes_needed == 0) {
+        return true;
+    }
+    if (bytes_needed > budget) {
+        return false;
+    }
+    if (runtime->jit_cache_bytes + bytes_needed <= budget) {
+        return true;
+    }
+    if (!runtime->jit_cache || runtime->jit_cache_count == 0) {
+        return false;
+    }
+    size_t attempts = runtime->jit_cache_count;
+    while (runtime->jit_cache_bytes + bytes_needed > budget && attempts > 0) {
+        uint32_t index = runtime->jit_cache_eviction_cursor % runtime->jit_cache_count;
+        runtime->jit_cache_eviction_cursor = (index + 1U) % runtime->jit_cache_count;
+        if (index == protect_index) {
+            --attempts;
+            continue;
+        }
+        fa_JitProgramCacheEntry* entry = &runtime->jit_cache[index];
+        if (!entry->ready || entry->program.count == 0) {
+            --attempts;
+            continue;
+        }
+        runtime_jit_cache_evict_entry(runtime, entry);
+        --attempts;
+    }
+    return runtime->jit_cache_bytes + bytes_needed <= budget;
+}
+
+static int runtime_jit_cache_load_entry(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
+    if (!runtime || !entry) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->spill_hooks.jit_load) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!entry->pc_to_index || entry->pc_to_index_len == 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JitProgram loaded;
+    fa_jit_program_init(&loaded);
+    int status = runtime->spill_hooks.jit_load(runtime, entry->func_index, &loaded, runtime->spill_hooks.user_data);
+    if (status != FA_RUNTIME_OK) {
+        fa_jit_program_free(&loaded);
+        return status;
+    }
+    size_t bytes = fa_jit_program_estimate_bytes(&loaded);
+    if (!runtime_jit_cache_reserve_bytes(runtime, bytes, entry->func_index)) {
+        fa_jit_program_free(&loaded);
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    runtime_jit_cache_release_program(runtime, entry);
+    entry->program = loaded;
+    entry->program_bytes = bytes;
+    runtime->jit_cache_bytes += bytes;
+    entry->prepared_count = entry->program.count;
+    entry->ready = entry->program.count > 0;
+    entry->spilled = false;
+    return entry->ready ? FA_RUNTIME_OK : FA_RUNTIME_ERR_INVALID_ARGUMENT;
 }
 
 static int runtime_jit_cache_prescan(fa_Runtime* runtime);
@@ -785,6 +903,9 @@ static int runtime_jit_cache_init(fa_Runtime* runtime) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     runtime_jit_cache_clear(runtime);
+    runtime->jit_cache_bytes = 0;
+    runtime->jit_cache_eviction_cursor = 0;
+    runtime->jit_cache_prescanned = false;
     if (runtime->module->num_functions == 0) {
         return FA_RUNTIME_OK;
     }
@@ -797,25 +918,21 @@ static int runtime_jit_cache_init(fa_Runtime* runtime) {
         runtime->jit_cache[i].func_index = i;
         runtime->jit_cache[i].body_size = runtime->module->functions[i].body_size;
         fa_jit_program_init(&runtime->jit_cache[i].program);
+        runtime->jit_cache[i].program_bytes = 0;
+        runtime->jit_cache[i].spilled = false;
     }
-    if (runtime->jit_context.config.prescan_functions) {
+    if (runtime->jit_context.config.prescan_functions || runtime->jit_context.config.prescan_force) {
         int status = runtime_jit_cache_prescan(runtime);
         if (status != FA_RUNTIME_OK) {
             runtime_jit_cache_clear(runtime);
             return status;
         }
+        runtime->jit_cache_prescanned = true;
     }
     return FA_RUNTIME_OK;
 }
 
 static fa_JitProgramCacheEntry* runtime_jit_cache_entry(fa_Runtime* runtime, uint32_t func_index) {
-    if (!runtime || !runtime->jit_cache || func_index >= runtime->jit_cache_count) {
-        return NULL;
-    }
-    return &runtime->jit_cache[func_index];
-}
-
-static const fa_JitProgramCacheEntry* runtime_jit_cache_entry_const(const fa_Runtime* runtime, uint32_t func_index) {
     if (!runtime || !runtime->jit_cache || func_index >= runtime->jit_cache_count) {
         return NULL;
     }
@@ -1123,6 +1240,7 @@ static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
             return status;
         }
     }
+    runtime->jit_cache_prescanned = true;
     return FA_RUNTIME_OK;
 }
 
@@ -1145,8 +1263,12 @@ static int runtime_jit_record_opcode(fa_Runtime* runtime, fa_RuntimeCallFrame* f
     return FA_RUNTIME_OK;
 }
 
-static bool runtime_jit_prepare_program(fa_JitProgramCacheEntry* entry, size_t opcode_count) {
-    if (!entry || opcode_count == 0) {
+static bool runtime_jit_prepare_program(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry, size_t opcode_count) {
+    if (!runtime || !entry || opcode_count == 0) {
+        return false;
+    }
+    const size_t estimate_bytes = runtime_jit_program_bytes_for_ops(opcode_count);
+    if (!runtime_jit_cache_reserve_bytes(runtime, estimate_bytes, entry->func_index)) {
         return false;
     }
     fa_JitProgram temp;
@@ -1155,10 +1277,18 @@ static bool runtime_jit_prepare_program(fa_JitProgramCacheEntry* entry, size_t o
         fa_jit_program_free(&temp);
         return false;
     }
-    fa_jit_program_free(&entry->program);
+    const size_t program_bytes = fa_jit_program_estimate_bytes(&temp);
+    if (!runtime_jit_cache_reserve_bytes(runtime, program_bytes, entry->func_index)) {
+        fa_jit_program_free(&temp);
+        return false;
+    }
+    runtime_jit_cache_release_program(runtime, entry);
     entry->program = temp;
+    entry->program_bytes = program_bytes;
+    runtime->jit_cache_bytes += program_bytes;
     entry->prepared_count = entry->program.count;
     entry->ready = true;
+    entry->spilled = false;
     return true;
 }
 
@@ -1176,6 +1306,11 @@ static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* 
     if (!entry || entry->count == 0) {
         return;
     }
+    if (entry->spilled && runtime->spill_hooks.jit_load) {
+        if (runtime_jit_cache_load_entry(runtime, entry) == FA_RUNTIME_OK) {
+            return;
+        }
+    }
     if (entry->prepared_count == entry->count && entry->ready) {
         return;
     }
@@ -1184,11 +1319,11 @@ static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* 
         opcode_count > runtime->jit_context.decision.budget.max_ops_per_chunk) {
         opcode_count = runtime->jit_context.decision.budget.max_ops_per_chunk;
     }
-    (void)runtime_jit_prepare_program(entry, opcode_count);
+    (void)runtime_jit_prepare_program(runtime, entry, opcode_count);
 }
 
-static const fa_JitPreparedOp* runtime_jit_lookup_prepared(const fa_Runtime* runtime,
-                                                           const fa_RuntimeCallFrame* frame,
+static const fa_JitPreparedOp* runtime_jit_lookup_prepared(fa_Runtime* runtime,
+                                                           fa_RuntimeCallFrame* frame,
                                                            uint32_t opcode_pc) {
     if (!runtime || !frame) {
         return NULL;
@@ -1199,8 +1334,16 @@ static const fa_JitPreparedOp* runtime_jit_lookup_prepared(const fa_Runtime* run
     if (!fa_ops_microcode_enabled()) {
         return NULL;
     }
-    const fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry_const(runtime, frame->func_index);
-    if (!entry || !entry->ready || !entry->pc_to_index || opcode_pc >= entry->pc_to_index_len) {
+    fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry(runtime, frame->func_index);
+    if (!entry) {
+        return NULL;
+    }
+    if (!entry->ready && entry->spilled && runtime->spill_hooks.jit_load) {
+        if (runtime_jit_cache_load_entry(runtime, entry) != FA_RUNTIME_OK) {
+            return NULL;
+        }
+    }
+    if (!entry->ready || !entry->pc_to_index || opcode_pc >= entry->pc_to_index_len) {
         return NULL;
     }
     int32_t index = entry->pc_to_index[opcode_pc];
@@ -1738,6 +1881,19 @@ static int runtime_push_frame(fa_Runtime* runtime,
         return FA_RUNTIME_ERR_CALL_DEPTH_EXCEEDED;
     }
 
+    if (runtime->function_traps && function_index < runtime->function_trap_count &&
+        runtime->function_traps[function_index]) {
+        if (!runtime->trap_hooks.on_function_trap) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        int trap_status = runtime->trap_hooks.on_function_trap(runtime,
+                                                              function_index,
+                                                              runtime->trap_hooks.user_data);
+        if (trap_status != FA_RUNTIME_OK) {
+            return trap_status;
+        }
+    }
+
     uint8_t* body = wasm_load_function_body(runtime->module, function_index);
     if (!body) {
         return FA_RUNTIME_ERR_STREAM;
@@ -1838,6 +1994,11 @@ fa_Runtime* fa_Runtime_init(void) {
     fa_jit_context_init(&runtime->jit_context, NULL);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
+    runtime->jit_cache_bytes = 0;
+    runtime->jit_cache_eviction_cursor = 0;
+    runtime->jit_cache_prescanned = false;
+    runtime->function_traps = NULL;
+    runtime->function_trap_count = 0;
     if (!runtime->jobs) {
         fa_Runtime_free(runtime);
         return NULL;
@@ -1870,6 +2031,7 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_Runtime_detach_module(runtime);
+    fa_jit_context_apply_env_overrides(&runtime->jit_context);
     runtime->module = module;
     runtime->stream = wasm_instruction_stream_init(module);
     if (!runtime->stream) {
@@ -1912,16 +2074,18 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
         runtime->module = NULL;
         return status;
     }
+    runtime_traps_reset(runtime);
+    if (module->num_functions > 0) {
+        runtime->function_traps = (uint8_t*)calloc(module->num_functions, sizeof(uint8_t));
+        if (!runtime->function_traps) {
+            fa_Runtime_detach_module(runtime);
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+        runtime->function_trap_count = module->num_functions;
+    }
     status = runtime_jit_cache_init(runtime);
     if (status != FA_RUNTIME_OK) {
-        wasm_instruction_stream_free(runtime->stream);
-        runtime->stream = NULL;
-        runtime_jit_cache_clear(runtime);
-        runtime_globals_reset(runtime);
-        runtime_segments_reset(runtime);
-        runtime_tables_reset(runtime);
-        runtime_memory_reset(runtime);
-        runtime->module = NULL;
+        fa_Runtime_detach_module(runtime);
         return status;
     }
     return FA_RUNTIME_OK;
@@ -1940,6 +2104,7 @@ void fa_Runtime_detach_module(fa_Runtime* runtime) {
     runtime_tables_reset(runtime);
     runtime_memory_reset(runtime);
     runtime_jit_cache_clear(runtime);
+    runtime_traps_reset(runtime);
     runtime->module = NULL;
     runtime->active_locals = NULL;
     runtime->active_locals_count = 0;
@@ -1995,6 +2160,169 @@ int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, c
     }
     runtime->globals[global_index] = *value;
     return runtime_init_globals(runtime, runtime->module);
+}
+
+void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks) {
+    if (!runtime) {
+        return;
+    }
+    if (hooks) {
+        runtime->trap_hooks = *hooks;
+    } else {
+        memset(&runtime->trap_hooks, 0, sizeof(runtime->trap_hooks));
+    }
+}
+
+int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, bool enabled) {
+    if (!runtime) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->module || !runtime->function_traps) {
+        return FA_RUNTIME_ERR_NO_MODULE;
+    }
+    if (function_index >= runtime->function_trap_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    runtime->function_traps[function_index] = enabled ? 1U : 0U;
+    return FA_RUNTIME_OK;
+}
+
+void fa_Runtime_clear_function_traps(fa_Runtime* runtime) {
+    if (!runtime || !runtime->function_traps || runtime->function_trap_count == 0) {
+        return;
+    }
+    memset(runtime->function_traps, 0, runtime->function_trap_count * sizeof(uint8_t));
+}
+
+void fa_Runtime_set_spill_hooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks* hooks) {
+    if (!runtime) {
+        return;
+    }
+    if (hooks) {
+        runtime->spill_hooks = *hooks;
+    } else {
+        memset(&runtime->spill_hooks, 0, sizeof(runtime->spill_hooks));
+    }
+}
+
+int fa_Runtime_jit_spill_program(fa_Runtime* runtime, uint32_t function_index) {
+    if (!runtime || !runtime->jit_cache) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (function_index >= runtime->jit_cache_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JitProgramCacheEntry* entry = &runtime->jit_cache[function_index];
+    if (!entry->ready || entry->program.count == 0) {
+        return FA_RUNTIME_OK;
+    }
+    runtime_jit_cache_evict_entry(runtime, entry);
+    return FA_RUNTIME_OK;
+}
+
+int fa_Runtime_jit_load_program(fa_Runtime* runtime, uint32_t function_index) {
+    if (!runtime || !runtime->jit_cache) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (function_index >= runtime->jit_cache_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_JitProgramCacheEntry* entry = &runtime->jit_cache[function_index];
+    if (entry->ready) {
+        return FA_RUNTIME_OK;
+    }
+    return runtime_jit_cache_load_entry(runtime, entry);
+}
+
+int fa_Runtime_spill_memory(fa_Runtime* runtime, uint32_t memory_index) {
+    if (!runtime || !runtime->memories) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (memory_index >= runtime->memories_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    if (memory->size_bytes == 0) {
+        memory->is_spilled = false;
+        return FA_RUNTIME_OK;
+    }
+    if (!memory->data) {
+        memory->is_spilled = true;
+        return FA_RUNTIME_OK;
+    }
+    if (!runtime->spill_hooks.memory_spill) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    int status = runtime->spill_hooks.memory_spill(runtime, memory_index, memory, runtime->spill_hooks.user_data);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    runtime->free(memory->data);
+    memory->data = NULL;
+    memory->is_spilled = true;
+    return FA_RUNTIME_OK;
+}
+
+int fa_Runtime_load_memory(fa_Runtime* runtime, uint32_t memory_index) {
+    if (!runtime || !runtime->memories) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (memory_index >= runtime->memories_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    if (memory->size_bytes == 0) {
+        memory->is_spilled = false;
+        return FA_RUNTIME_OK;
+    }
+    if (memory->data) {
+        memory->is_spilled = false;
+        return FA_RUNTIME_OK;
+    }
+    if (!runtime->spill_hooks.memory_load) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    int status = runtime->spill_hooks.memory_load(runtime, memory_index, memory, runtime->spill_hooks.user_data);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    if (!memory->data) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    memory->is_spilled = false;
+    return FA_RUNTIME_OK;
+}
+
+int fa_Runtime_ensure_memory_loaded(fa_Runtime* runtime, uint32_t memory_index) {
+    if (!runtime || !runtime->memories) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (memory_index >= runtime->memories_count) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    if (memory->size_bytes == 0) {
+        return FA_RUNTIME_OK;
+    }
+    if (memory->data) {
+        memory->is_spilled = false;
+        return FA_RUNTIME_OK;
+    }
+    if (!memory->is_spilled) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (!runtime->spill_hooks.memory_load) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    int status = runtime->spill_hooks.memory_load(runtime, memory_index, memory, runtime->spill_hooks.user_data);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    if (!memory->data) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    memory->is_spilled = false;
+    return FA_RUNTIME_OK;
 }
 
 typedef enum {
@@ -2792,6 +3120,12 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
+    if (runtime->jit_context.config.prescan_force && !runtime->jit_cache_prescanned) {
+        int prescan_status = runtime_jit_cache_prescan(runtime);
+        if (prescan_status != FA_RUNTIME_OK) {
+            return prescan_status;
+        }
+    }
 
     fa_RuntimeCallFrame* frames = runtime_alloc_frames(runtime);
     if (!frames) {
