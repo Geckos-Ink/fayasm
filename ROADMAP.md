@@ -17,5 +17,5 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Long-Term
 
-- Improve traps to allow real-time write and move of volatile data on another storage system.
+- Improve possible traps like to allow real-time write and move of volatile data (WASM runtime memory and microcode) on another storage system.
 - Implement macros for handling compilation on different architecture targets (x86, x86_64, ESP32, ..).
