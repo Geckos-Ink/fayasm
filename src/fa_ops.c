@@ -2089,6 +2089,125 @@ DEFINE_CONVERT_OP(op_convert_i64_extend32_s_mc, {
     return push_int_checked(job, (u64)extended, 64U, true);
 })
 
+#define DEFINE_FLOAT_UNARY_OP(name, ctype, to_func, expr, is_64)                \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                 \
+        (void)runtime;                                                         \
+        if (!job || !descriptor) {                                             \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                            \
+        }                                                                      \
+        fa_JobValue value;                                                     \
+        if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {                 \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        ctype source = 0;                                                      \
+        if (!to_func(&value, &source)) {                                       \
+            restore_stack_value(job, &value);                                  \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        ctype result = (expr);                                                 \
+        return push_float_checked(job, result, is_64);                         \
+    }
+
+#define DEFINE_FLOAT_BINARY_SPECIAL_OP(name, ctype, to_func, expr, is_64)       \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                 \
+        (void)runtime;                                                         \
+        if (!job || !descriptor) {                                             \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                            \
+        }                                                                      \
+        fa_JobValue rhs;                                                       \
+        if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {                   \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        fa_JobValue lhs;                                                       \
+        if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {                   \
+            restore_stack_value(job, &rhs);                                    \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        ctype right = 0;                                                       \
+        ctype left = 0;                                                        \
+        if (!to_func(&rhs, &right) || !to_func(&lhs, &left)) {                 \
+            restore_stack_value(job, &lhs);                                    \
+            restore_stack_value(job, &rhs);                                    \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        ctype result = (expr);                                                 \
+        return push_float_checked(job, result, is_64);                         \
+    }
+
+#define DEFINE_REINTERPRET_FLOAT_TO_INT_OP(name, float_kind, float_field, float_type, to_func, int_type, int_bits) \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                 \
+        (void)runtime;                                                         \
+        if (!job || !descriptor) {                                             \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                            \
+        }                                                                      \
+        fa_JobValue source;                                                    \
+        if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {                \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        int_type raw = 0;                                                      \
+        if (source.kind == float_kind) {                                       \
+            memcpy(&raw, &source.payload.float_field, sizeof(raw));            \
+        } else {                                                               \
+            float_type value = 0;                                              \
+            if (!to_func(&source, &value)) {                                   \
+                restore_stack_value(job, &source);                             \
+                return FA_RUNTIME_ERR_TRAP;                                    \
+            }                                                                  \
+            memcpy(&raw, &value, sizeof(raw));                                 \
+        }                                                                      \
+        return push_int_checked(job, (u64)raw, int_bits, true);                 \
+    }
+
+#define DEFINE_REINTERPRET_INT_TO_FLOAT_OP(name, int_type, float_type, is_64)   \
+    static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                 \
+        (void)runtime;                                                         \
+        if (!job || !descriptor) {                                             \
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;                            \
+        }                                                                      \
+        fa_JobValue source;                                                    \
+        if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {                \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        u64 raw = 0;                                                           \
+        if (!job_value_to_u64(&source, &raw)) {                                \
+            restore_stack_value(job, &source);                                 \
+            return FA_RUNTIME_ERR_TRAP;                                        \
+        }                                                                      \
+        int_type cast_raw = (int_type)raw;                                     \
+        float_type value = 0;                                                  \
+        memcpy(&value, &cast_raw, sizeof(value));                              \
+        return push_float_checked(job, value, is_64);                          \
+    }
+
+DEFINE_FLOAT_UNARY_OP(op_float_abs_f32_mc, f32, job_value_to_f32, fabsf(source), false)
+DEFINE_FLOAT_UNARY_OP(op_float_neg_f32_mc, f32, job_value_to_f32, -source, false)
+DEFINE_FLOAT_UNARY_OP(op_float_ceil_f32_mc, f32, job_value_to_f32, ceilf(source), false)
+DEFINE_FLOAT_UNARY_OP(op_float_floor_f32_mc, f32, job_value_to_f32, floorf(source), false)
+DEFINE_FLOAT_UNARY_OP(op_float_trunc_f32_mc, f32, job_value_to_f32, truncf(source), false)
+DEFINE_FLOAT_UNARY_OP(op_float_nearest_f32_mc, f32, job_value_to_f32, nearbyintf(source), false)
+DEFINE_FLOAT_UNARY_OP(op_float_sqrt_f32_mc, f32, job_value_to_f32, sqrtf(source), false)
+
+DEFINE_FLOAT_UNARY_OP(op_float_abs_f64_mc, f64, job_value_to_f64, fabs(source), true)
+DEFINE_FLOAT_UNARY_OP(op_float_neg_f64_mc, f64, job_value_to_f64, -source, true)
+DEFINE_FLOAT_UNARY_OP(op_float_ceil_f64_mc, f64, job_value_to_f64, ceil(source), true)
+DEFINE_FLOAT_UNARY_OP(op_float_floor_f64_mc, f64, job_value_to_f64, floor(source), true)
+DEFINE_FLOAT_UNARY_OP(op_float_trunc_f64_mc, f64, job_value_to_f64, trunc(source), true)
+DEFINE_FLOAT_UNARY_OP(op_float_nearest_f64_mc, f64, job_value_to_f64, nearbyint(source), true)
+DEFINE_FLOAT_UNARY_OP(op_float_sqrt_f64_mc, f64, job_value_to_f64, sqrt(source), true)
+
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_min_f32_mc, f32, job_value_to_f32, fminf(left, right), false)
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_max_f32_mc, f32, job_value_to_f32, fmaxf(left, right), false)
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_copysign_f32_mc, f32, job_value_to_f32, copysignf(left, right), false)
+
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_min_f64_mc, f64, job_value_to_f64, fmin(left, right), true)
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_max_f64_mc, f64, job_value_to_f64, fmax(left, right), true)
+DEFINE_FLOAT_BINARY_SPECIAL_OP(op_float_copysign_f64_mc, f64, job_value_to_f64, copysign(left, right), true)
+
+DEFINE_REINTERPRET_FLOAT_TO_INT_OP(op_reinterpret_i32_from_f32_mc, fa_job_value_f32, f32_value, f32, job_value_to_f32, u32, 32U)
+DEFINE_REINTERPRET_FLOAT_TO_INT_OP(op_reinterpret_i64_from_f64_mc, fa_job_value_f64, f64_value, f64, job_value_to_f64, u64, 64U)
+DEFINE_REINTERPRET_INT_TO_FLOAT_OP(op_reinterpret_f32_from_i32_mc, u32, f32, false)
+DEFINE_REINTERPRET_INT_TO_FLOAT_OP(op_reinterpret_f64_from_i64_mc, u64, f64, true)
+
 #define DEFINE_MICROCODE(name, ...)                                            \
     static const Operation name##_steps[] = { __VA_ARGS__ };                   \
     static const fa_Microcode name = {                                         \
@@ -2150,225 +2269,10 @@ DEFINE_MICROCODE(mc_convert_i64_extend32_s, op_convert_i64_extend32_s_mc)
 #undef DEFINE_BITWISE_OP
 #undef DEFINE_COMPARE_OP
 #undef DEFINE_CONVERT_OP
-
-static OP_RETURN_TYPE op_float_unary(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue value;
-    if (pop_stack_checked(job, &value) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    if (descriptor->type.size == 8) {
-        f64 source = 0.0;
-        if (!job_value_to_f64(&value, &source)) {
-            restore_stack_value(job, &value);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        f64 result = 0.0;
-        switch (descriptor->id) {
-            case 0x99: /* f64.abs */
-                result = fabs(source);
-                break;
-            case 0x9A: /* f64.neg */
-                result = -source;
-                break;
-            case 0x9B: /* f64.ceil */
-                result = ceil(source);
-                break;
-            case 0x9C: /* f64.floor */
-                result = floor(source);
-                break;
-            case 0x9D: /* f64.trunc */
-                result = trunc(source);
-                break;
-            case 0x9E: /* f64.nearest */
-                result = nearbyint(source);
-                break;
-            case 0x9F: /* f64.sqrt */
-                result = sqrt(source);
-                break;
-            default:
-                restore_stack_value(job, &value);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_float_checked(job, result, true);
-    }
-
-    f32 source = 0.0f;
-    if (!job_value_to_f32(&value, &source)) {
-        restore_stack_value(job, &value);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    f32 result = 0.0f;
-    switch (descriptor->id) {
-        case 0x8B: /* f32.abs */
-            result = fabsf(source);
-            break;
-        case 0x8C: /* f32.neg */
-            result = -source;
-            break;
-        case 0x8D: /* f32.ceil */
-            result = ceilf(source);
-            break;
-        case 0x8E: /* f32.floor */
-            result = floorf(source);
-            break;
-        case 0x8F: /* f32.trunc */
-            result = truncf(source);
-            break;
-        case 0x90: /* f32.nearest */
-            result = nearbyintf(source);
-            break;
-        case 0x91: /* f32.sqrt */
-            result = sqrtf(source);
-            break;
-        default:
-            restore_stack_value(job, &value);
-            return FA_RUNTIME_ERR_TRAP;
-    }
-    return push_float_checked(job, result, false);
-}
-
-static OP_RETURN_TYPE op_float_binary_special(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue rhs;
-    if (pop_stack_checked(job, &rhs) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-    fa_JobValue lhs;
-    if (pop_stack_checked(job, &lhs) != FA_RUNTIME_OK) {
-        restore_stack_value(job, &rhs);
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    if (descriptor->type.size == 8) {
-        f64 right = 0.0;
-        f64 left = 0.0;
-        if (!job_value_to_f64(&rhs, &right) || !job_value_to_f64(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        f64 result = 0.0;
-        switch (descriptor->id) {
-            case 0xA4: /* f64.min */
-                result = fmin(left, right);
-                break;
-            case 0xA5: /* f64.max */
-                result = fmax(left, right);
-                break;
-            case 0xA6: /* f64.copysign */
-                result = copysign(left, right);
-                break;
-            default:
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_float_checked(job, result, true);
-    } else {
-        f32 right = 0.0f;
-        f32 left = 0.0f;
-        if (!job_value_to_f32(&rhs, &right) || !job_value_to_f32(&lhs, &left)) {
-            restore_stack_value(job, &lhs);
-            restore_stack_value(job, &rhs);
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        f32 result = 0.0f;
-        switch (descriptor->id) {
-            case 0x96: /* f32.min */
-                result = fminf(left, right);
-                break;
-            case 0x97: /* f32.max */
-                result = fmaxf(left, right);
-                break;
-            case 0x98: /* f32.copysign */
-                result = copysignf(left, right);
-                break;
-            default:
-                restore_stack_value(job, &lhs);
-                restore_stack_value(job, &rhs);
-                return FA_RUNTIME_ERR_TRAP;
-        }
-        return push_float_checked(job, result, false);
-    }
-}
-
-static OP_RETURN_TYPE op_reinterpret(OP_ARGUMENTS) {
-    (void)runtime;
-    if (!job || !descriptor) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    fa_JobValue source;
-    if (pop_stack_checked(job, &source) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
-
-    switch (descriptor->id) {
-        case 0xBC: /* i32.reinterpret_f32 */
-        {
-            u32 raw = 0;
-            if (source.kind == fa_job_value_f32) {
-                memcpy(&raw, &source.payload.f32_value, sizeof(raw));
-            } else {
-                f32 value = 0.0f;
-                if (!job_value_to_f32(&source, &value)) {
-                    restore_stack_value(job, &source);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                memcpy(&raw, &value, sizeof(raw));
-            }
-            return push_int_checked(job, raw, 32U, true);
-        }
-        case 0xBD: /* i64.reinterpret_f64 */
-        {
-            u64 raw = 0;
-            if (source.kind == fa_job_value_f64) {
-                memcpy(&raw, &source.payload.f64_value, sizeof(raw));
-            } else {
-                f64 value = 0.0;
-                if (!job_value_to_f64(&source, &value)) {
-                    restore_stack_value(job, &source);
-                    return FA_RUNTIME_ERR_TRAP;
-                }
-                memcpy(&raw, &value, sizeof(raw));
-            }
-            return push_int_checked(job, raw, 64U, true);
-        }
-        case 0xBE: /* f32.reinterpret_i32 */
-        {
-            u64 raw64 = 0;
-            if (!job_value_to_u64(&source, &raw64)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            const u32 raw = (u32)raw64;
-            f32 value = 0.0f;
-            memcpy(&value, &raw, sizeof(value));
-            return push_float_checked(job, value, false);
-        }
-        case 0xBF: /* f64.reinterpret_i64 */
-        {
-            u64 raw = 0;
-            if (!job_value_to_u64(&source, &raw)) {
-                restore_stack_value(job, &source);
-                return FA_RUNTIME_ERR_TRAP;
-            }
-            f64 value = 0.0;
-            memcpy(&value, &raw, sizeof(value));
-            return push_float_checked(job, value, true);
-        }
-        default:
-            restore_stack_value(job, &source);
-            return FA_RUNTIME_ERR_TRAP;
-    }
-}
+#undef DEFINE_FLOAT_UNARY_OP
+#undef DEFINE_FLOAT_BINARY_SPECIAL_OP
+#undef DEFINE_REINTERPRET_FLOAT_TO_INT_OP
+#undef DEFINE_REINTERPRET_INT_TO_FLOAT_OP
 
 static OP_RETURN_TYPE op_drop(OP_ARGUMENTS) {
     (void)runtime;
@@ -3572,34 +3476,34 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x88, &type_u64, wopt_shr, 0, 2, 1, 0, op_shift_right_unsigned_mc); // i64.shr_u
     define_op(ops, 0x89, &type_i64, wopt_rotl, 0, 2, 1, 0, op_rotate_left_mc); // i64.rotl
     define_op(ops, 0x8A, &type_i64, wopt_rotr, 0, 2, 1, 0, op_rotate_right_mc); // i64.rotr
-    define_op(ops, 0x8B, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.abs
-    define_op(ops, 0x8C, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.neg
-    define_op(ops, 0x8D, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.ceil
-    define_op(ops, 0x8E, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.floor
-    define_op(ops, 0x8F, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.trunc
-    define_op(ops, 0x90, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.nearest
-    define_op(ops, 0x91, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_unary); // f32.sqrt
+    define_op(ops, 0x8B, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_abs_f32_mc); // f32.abs
+    define_op(ops, 0x8C, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_neg_f32_mc); // f32.neg
+    define_op(ops, 0x8D, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_ceil_f32_mc); // f32.ceil
+    define_op(ops, 0x8E, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_floor_f32_mc); // f32.floor
+    define_op(ops, 0x8F, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_trunc_f32_mc); // f32.trunc
+    define_op(ops, 0x90, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_nearest_f32_mc); // f32.nearest
+    define_op(ops, 0x91, &type_f32, wopt_unique, 0, 1, 1, 0, op_float_sqrt_f32_mc); // f32.sqrt
     define_op(ops, 0x92, &type_f32, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // f32.add
     define_op(ops, 0x93, &type_f32, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // f32.sub
     define_op(ops, 0x94, &type_f32, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // f32.mul
     define_op(ops, 0x95, &type_f32, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // f32.div
-    define_op(ops, 0x96, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.min
-    define_op(ops, 0x97, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.max
-    define_op(ops, 0x98, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f32.copysign
-    define_op(ops, 0x99, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.abs
-    define_op(ops, 0x9A, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.neg
-    define_op(ops, 0x9B, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.ceil
-    define_op(ops, 0x9C, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.floor
-    define_op(ops, 0x9D, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.trunc
-    define_op(ops, 0x9E, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.nearest
-    define_op(ops, 0x9F, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_unary); // f64.sqrt
+    define_op(ops, 0x96, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_min_f32_mc); // f32.min
+    define_op(ops, 0x97, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_max_f32_mc); // f32.max
+    define_op(ops, 0x98, &type_f32, wopt_unique, 0, 2, 1, 0, op_float_copysign_f32_mc); // f32.copysign
+    define_op(ops, 0x99, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_abs_f64_mc); // f64.abs
+    define_op(ops, 0x9A, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_neg_f64_mc); // f64.neg
+    define_op(ops, 0x9B, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_ceil_f64_mc); // f64.ceil
+    define_op(ops, 0x9C, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_floor_f64_mc); // f64.floor
+    define_op(ops, 0x9D, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_trunc_f64_mc); // f64.trunc
+    define_op(ops, 0x9E, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_nearest_f64_mc); // f64.nearest
+    define_op(ops, 0x9F, &type_f64, wopt_unique, 0, 1, 1, 0, op_float_sqrt_f64_mc); // f64.sqrt
     define_op(ops, 0xA0, &type_f64, wopt_add, 0, 2, 1, 0, op_arith_add_mc); // f64.add
     define_op(ops, 0xA1, &type_f64, wopt_sub, 0, 2, 1, 0, op_arith_sub_mc); // f64.sub
     define_op(ops, 0xA2, &type_f64, wopt_mul, 0, 2, 1, 0, op_arith_mul_mc); // f64.mul
     define_op(ops, 0xA3, &type_f64, wopt_div, 0, 2, 1, 0, op_arith_div_mc); // f64.div
-    define_op(ops, 0xA4, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.min
-    define_op(ops, 0xA5, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.max
-    define_op(ops, 0xA6, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_binary_special); // f64.copysign
+    define_op(ops, 0xA4, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_min_f64_mc); // f64.min
+    define_op(ops, 0xA5, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_max_f64_mc); // f64.max
+    define_op(ops, 0xA6, &type_f64, wopt_unique, 0, 2, 1, 0, op_float_copysign_f64_mc); // f64.copysign
     define_op(ops, 0xA7, &type_i32, wopt_wrap, 0, 1, 1, 0, op_convert_i32_wrap_i64_mc); // i32.wrap_i64
     define_op(ops, 0xA8, &type_i32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f32_s_mc); // i32.trunc_f32_s
     define_op(ops, 0xA9, &type_u32, wopt_trunc, 0, 1, 1, 0, op_convert_i32_trunc_f32_u_mc); // i32.trunc_f32_u
@@ -3621,10 +3525,10 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0xB9, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i64_s_mc); // f64.convert_i64_s
     define_op(ops, 0xBA, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_from_i64_u_mc); // f64.convert_i64_u
     define_op(ops, 0xBB, &type_f64, wopt_convert, 0, 1, 1, 0, op_convert_f64_promote_f32_mc); // f64.promote_f32
-    define_op(ops, 0xBC, &type_i32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i32.reinterpret_f32
-    define_op(ops, 0xBD, &type_i64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // i64.reinterpret_f64
-    define_op(ops, 0xBE, &type_f32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f32.reinterpret_i32
-    define_op(ops, 0xBF, &type_f64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret); // f64.reinterpret_i64
+    define_op(ops, 0xBC, &type_i32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret_i32_from_f32_mc); // i32.reinterpret_f32
+    define_op(ops, 0xBD, &type_i64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret_i64_from_f64_mc); // i64.reinterpret_f64
+    define_op(ops, 0xBE, &type_f32, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret_f32_from_i32_mc); // f32.reinterpret_i32
+    define_op(ops, 0xBF, &type_f64, wopt_reinterpret, 0, 1, 1, 0, op_reinterpret_f64_from_i64_mc); // f64.reinterpret_i64
     define_op(ops, 0xC0, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert_i32_extend8_s_mc); // i32.extend8_s
     define_op(ops, 0xC1, &type_i32, wopt_extend, 0, 1, 1, 0, op_convert_i32_extend16_s_mc); // i32.extend16_s
     define_op(ops, 0xC2, &type_i64, wopt_extend, 0, 1, 1, 0, op_convert_i64_extend8_s_mc); // i64.extend8_s
