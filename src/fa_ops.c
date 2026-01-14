@@ -2889,8 +2889,11 @@ static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, f
     if (delta > UINT32_MAX - table->size) {
         return FA_RUNTIME_OK;
     }
-    const uint32_t new_size = table->size + (uint32_t)delta;
-    if (table->has_max && new_size > table->max_size) {
+    const size_t new_size = (size_t)table->size + (size_t)delta;
+    if (new_size > UINT32_MAX) {
+        return FA_RUNTIME_OK;
+    }
+    if (table->has_max && new_size > (size_t)table->max_size) {
         return FA_RUNTIME_OK;
     }
     if (new_size > SIZE_MAX / sizeof(fa_ptr)) {
@@ -2900,11 +2903,11 @@ static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, f
     if (!new_data) {
         return FA_RUNTIME_OK;
     }
-    for (uint32_t i = table->size; i < new_size; ++i) {
+    for (uint32_t i = table->size; i < (uint32_t)new_size; ++i) {
         new_data[i] = init_value;
     }
     table->data = new_data;
-    table->size = new_size;
+    table->size = (uint32_t)new_size;
     *grew_out = true;
     return FA_RUNTIME_OK;
 }

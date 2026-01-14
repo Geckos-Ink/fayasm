@@ -338,6 +338,10 @@ void wasm_module_free(WasmModule* module) {
     }
     
     if (module->functions) {
+        for (uint32_t i = 0; i < module->num_functions; i++) {
+            free(module->functions[i].import_module);
+            free(module->functions[i].import_name);
+        }
         free(module->functions);
     }
     
@@ -556,64 +560,222 @@ int wasm_load_types(WasmModule* module) {
 
 // Carica gli indici dei tipi delle funzioni dalla sezione Function
 int wasm_load_functions(WasmModule* module) {
+    if (!module) {
+        return -1;
+    }
+
+    WasmFunction* imported_functions = NULL;
+    uint32_t imported_count = 0;
+    uint32_t imported_capacity = 0;
+
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type != SECTION_IMPORT) {
+            continue;
+        }
+        if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+            return -1;
+        }
+
+        uint32_t size_read;
+        uint32_t count = read_uleb128(module, &size_read);
+        imported_capacity = count;
+        if (imported_capacity > 0) {
+            imported_functions = (WasmFunction*)calloc(imported_capacity, sizeof(WasmFunction));
+            if (!imported_functions) {
+                return -1;
+            }
+        }
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t module_len = 0;
+            uint32_t name_len = 0;
+            char* module_name = read_string(module, &module_len);
+            char* import_name = read_string(module, &name_len);
+            if (!module_name && module_len == 0) {
+                module_name = (char*)calloc(1, 1);
+            }
+            if (!import_name && name_len == 0) {
+                import_name = (char*)calloc(1, 1);
+            }
+            if (!module_name || !import_name) {
+                free(module_name);
+                free(import_name);
+                free(imported_functions);
+                return -1;
+            }
+
+            uint8_t kind = 0;
+            if (wasm_stream_read(module, &kind, 1) != 1) {
+                free(module_name);
+                free(import_name);
+                free(imported_functions);
+                return -1;
+            }
+            switch (kind) {
+                case 0: /* func */
+                {
+                    uint32_t type_index = read_uleb128(module, &size_read);
+                    WasmFunction* func = &imported_functions[imported_count++];
+                    func->type_index = type_index;
+                    func->body_offset = 0;
+                    func->body_size = 0;
+                    func->is_imported = true;
+                    func->import_module = module_name;
+                    func->import_module_len = module_len;
+                    func->import_name = import_name;
+                    func->import_name_len = name_len;
+                    module_name = NULL;
+                    import_name = NULL;
+                    break;
+                }
+                case 1: /* table */
+                {
+                    uint8_t elem_type = 0;
+                    if (wasm_stream_read(module, &elem_type, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_functions);
+                        return -1;
+                    }
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    (void)read_uleb128(module, &size_read);
+                    if (flags & 0x1) {
+                        (void)read_uleb128(module, &size_read);
+                    }
+                    break;
+                }
+                case 2: /* memory */
+                {
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    const bool memory64 = (flags & 0x4) != 0;
+                    if (memory64) {
+                        (void)read_uleb128_64(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128_64(module, &size_read);
+                        }
+                    } else {
+                        (void)read_uleb128(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128(module, &size_read);
+                        }
+                    }
+                    break;
+                }
+                case 3: /* global */
+                {
+                    uint8_t valtype = 0;
+                    uint8_t mutability = 0;
+                    if (wasm_stream_read(module, &valtype, 1) != 1 ||
+                        wasm_stream_read(module, &mutability, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_functions);
+                        return -1;
+                    }
+                    break;
+                }
+                default:
+                    free(module_name);
+                    free(import_name);
+                    free(imported_functions);
+                    return -1;
+            }
+            free(module_name);
+            free(import_name);
+        }
+        break;
+    }
+
+    bool found_function_section = false;
+    uint32_t defined_count = 0;
+    off_t functions_offset = 0;
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_FUNCTION) {
             if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                free(imported_functions);
                 return -1;
             }
-            
+
             uint32_t size_read;
-            uint32_t count = read_uleb128(module, &size_read);
-            
-            module->num_functions = count;
-            module->functions = (WasmFunction*)malloc(count * sizeof(WasmFunction));
-            if (!module->functions) {
-                return -1;
+            defined_count = read_uleb128(module, &size_read);
+            functions_offset = module->sections[i].offset + size_read;
+            found_function_section = true;
+
+            const uint32_t total_functions = imported_count + defined_count;
+            if (total_functions > 0) {
+                module->functions = (WasmFunction*)calloc(total_functions, sizeof(WasmFunction));
+                if (!module->functions) {
+                    free(imported_functions);
+                    return -1;
+                }
             }
-            memset(module->functions, 0, count * sizeof(WasmFunction));
-            
-            module->functions_offset = module->sections[i].offset + size_read;
-            
-            for (uint32_t j = 0; j < count; j++) {
-                module->functions[j].type_index = read_uleb128(module, &size_read);
+            module->num_functions = total_functions;
+            module->num_imported_functions = imported_count;
+            module->functions_offset = functions_offset;
+
+            for (uint32_t j = 0; j < imported_count; ++j) {
+                module->functions[j] = imported_functions[j];
             }
-            
+            free(imported_functions);
+            imported_functions = NULL;
+
+            for (uint32_t j = 0; j < defined_count; j++) {
+                module->functions[imported_count + j].type_index = read_uleb128(module, &size_read);
+                module->functions[imported_count + j].is_imported = false;
+            }
+
             // Ora carica gli offset dei corpi delle funzioni dalla sezione Code
             for (uint32_t j = 0; j < module->num_sections; j++) {
                 if (module->sections[j].type == SECTION_CODE) {
                     if (wasm_stream_seek(module, module->sections[j].offset, SEEK_SET) < 0) {
                         return -1;
                     }
-                    
+
                     uint32_t code_count = read_uleb128(module, &size_read);
                     off_t current_offset = module->sections[j].offset + size_read;
-                    
-                    if (code_count != count) {
+
+                    if (code_count != defined_count) {
                         return -1;  // Il numero di corpi di funzioni deve corrispondere al numero di funzioni
                     }
-                    
+
                     for (uint32_t k = 0; k < code_count; k++) {
                         uint32_t body_size = read_uleb128(module, &size_read);
                         current_offset += size_read;
-                        
-                        module->functions[k].body_offset = current_offset;
-                        module->functions[k].body_size = body_size;
-                        
+
+                        WasmFunction* func = &module->functions[imported_count + k];
+                        func->body_offset = current_offset;
+                        func->body_size = body_size;
+
                         // Salta il corpo della funzione
                         if (wasm_stream_seek(module, body_size, SEEK_CUR) < 0) {
                             return -1;
                         }
                         current_offset += body_size;
                     }
-                    
+
                     break;
                 }
             }
-            
+
             return 0;
         }
     }
-    
+
+    if (!found_function_section) {
+        if (imported_count > 0) {
+            module->functions = imported_functions;
+            module->num_functions = imported_count;
+            module->num_imported_functions = imported_count;
+        } else {
+            free(imported_functions);
+            module->num_functions = 0;
+            module->num_imported_functions = 0;
+        }
+        module->functions_offset = 0;
+        return 0;
+    }
+
+    free(imported_functions);
     return -1;  // Sezione Function non trovata
 }
 
@@ -1155,6 +1317,9 @@ uint8_t* wasm_load_function_body(WasmModule* module, uint32_t func_idx) {
     }
     
     WasmFunction* func = &module->functions[func_idx];
+    if (func->is_imported || func->body_size == 0) {
+        return NULL;
+    }
     uint8_t* body = (uint8_t*)malloc(func->body_size);
     if (!body) {
         return NULL;
@@ -1255,8 +1420,15 @@ void wasm_print_info(WasmModule* module) {
     if (module->num_functions > 0) {
         printf("\n=== Functions (%u) ===\n", module->num_functions);
         for (uint32_t i = 0; i < module->num_functions; i++) {
-            printf("Function %u: Type=%u, Body Offset=0x%" PRIxMAX ", Body Size=%u\n", 
-                   i, module->functions[i].type_index, (uintmax_t)module->functions[i].body_offset, module->functions[i].body_size);
+            if (module->functions[i].is_imported) {
+                const char* module_name = module->functions[i].import_module ? module->functions[i].import_module : "<null>";
+                const char* import_name = module->functions[i].import_name ? module->functions[i].import_name : "<null>";
+                printf("Function %u: Import=%s.%s, Type=%u\n",
+                       i, module_name, import_name, module->functions[i].type_index);
+            } else {
+                printf("Function %u: Type=%u, Body Offset=0x%" PRIxMAX ", Body Size=%u\n",
+                       i, module->functions[i].type_index, (uintmax_t)module->functions[i].body_offset, module->functions[i].body_size);
+            }
         }
     }
     

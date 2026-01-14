@@ -7,6 +7,12 @@
 #include <limits.h>
 #include <stdint.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__) || defined(__unix__) || defined(__linux__) || defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
+
 typedef struct {
     uint32_t func_index;
     uint8_t* body;
@@ -55,6 +61,14 @@ typedef struct fa_JitProgramCacheEntry {
     bool spilled;
 } fa_JitProgramCacheEntry;
 
+typedef struct fa_RuntimeHostBinding {
+    char* module;
+    char* name;
+    fa_RuntimeHostFunction function;
+    void* user_data;
+    void* library_handle;
+} fa_RuntimeHostBinding;
+
 #define FA_JIT_CACHE_OPS_INITIAL 64U
 #define FA_JIT_UPDATE_INTERVAL 64U
 
@@ -64,6 +78,167 @@ static ptr fa_default_malloc(int size) {
 
 static void fa_default_free(ptr region) {
     free(region);
+}
+
+static char* runtime_strdup(const char* value) {
+    if (!value) {
+        return NULL;
+    }
+    const size_t len = strlen(value);
+    char* copy = (char*)malloc(len + 1U);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, value, len);
+    copy[len] = '\0';
+    return copy;
+}
+
+static void runtime_close_library(void* handle) {
+#if defined(_WIN32)
+    if (handle) {
+        FreeLibrary((HMODULE)handle);
+    }
+#else
+    if (handle) {
+        dlclose(handle);
+    }
+#endif
+}
+
+static void* runtime_open_library(const char* path) {
+#if defined(_WIN32)
+    if (!path) {
+        return NULL;
+    }
+    return (void*)LoadLibraryA(path);
+#else
+    if (!path) {
+        return NULL;
+    }
+    return dlopen(path, RTLD_NOW);
+#endif
+}
+
+static void* runtime_lookup_symbol(void* handle, const char* symbol) {
+#if defined(_WIN32)
+    if (!handle || !symbol) {
+        return NULL;
+    }
+    return (void*)GetProcAddress((HMODULE)handle, symbol);
+#else
+    if (!handle || !symbol) {
+        return NULL;
+    }
+    return dlsym(handle, symbol);
+#endif
+}
+
+static void runtime_host_binding_release(fa_RuntimeHostBinding* binding) {
+    if (!binding) {
+        return;
+    }
+    runtime_close_library(binding->library_handle);
+    free(binding->module);
+    free(binding->name);
+    memset(binding, 0, sizeof(*binding));
+}
+
+static void runtime_host_bindings_clear(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->host_bindings) {
+        for (uint32_t i = 0; i < runtime->host_binding_count; ++i) {
+            runtime_host_binding_release(&runtime->host_bindings[i]);
+        }
+        free(runtime->host_bindings);
+    }
+    runtime->host_bindings = NULL;
+    runtime->host_binding_count = 0;
+    runtime->host_binding_capacity = 0;
+}
+
+static int runtime_host_bindings_reserve(fa_Runtime* runtime, uint32_t count) {
+    if (!runtime) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (count <= runtime->host_binding_capacity) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t next_capacity = runtime->host_binding_capacity ? runtime->host_binding_capacity * 2U : 4U;
+    while (next_capacity < count) {
+        next_capacity *= 2U;
+    }
+    fa_RuntimeHostBinding* next = (fa_RuntimeHostBinding*)realloc(runtime->host_bindings,
+                                                                   next_capacity * sizeof(fa_RuntimeHostBinding));
+    if (!next) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    if (next_capacity > runtime->host_binding_capacity) {
+        memset(next + runtime->host_binding_capacity, 0,
+               (next_capacity - runtime->host_binding_capacity) * sizeof(fa_RuntimeHostBinding));
+    }
+    runtime->host_bindings = next;
+    runtime->host_binding_capacity = next_capacity;
+    return FA_RUNTIME_OK;
+}
+
+static fa_RuntimeHostBinding* runtime_find_host_binding(fa_Runtime* runtime,
+                                                        const char* module_name,
+                                                        const char* import_name) {
+    if (!runtime || !module_name || !import_name) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < runtime->host_binding_count; ++i) {
+        fa_RuntimeHostBinding* binding = &runtime->host_bindings[i];
+        if (!binding->module || !binding->name) {
+            continue;
+        }
+        if (strcmp(binding->module, module_name) == 0 &&
+            strcmp(binding->name, import_name) == 0) {
+            return binding;
+        }
+    }
+    return NULL;
+}
+
+static int runtime_add_host_binding(fa_Runtime* runtime,
+                                    const char* module_name,
+                                    const char* import_name,
+                                    fa_RuntimeHostFunction function,
+                                    void* user_data,
+                                    void* library_handle) {
+    if (!runtime || !module_name || !import_name || !function) {
+        runtime_close_library(library_handle);
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeHostBinding* existing = runtime_find_host_binding(runtime, module_name, import_name);
+    if (existing) {
+        runtime_close_library(existing->library_handle);
+        existing->library_handle = library_handle;
+        existing->function = function;
+        existing->user_data = user_data;
+        return FA_RUNTIME_OK;
+    }
+    int status = runtime_host_bindings_reserve(runtime, runtime->host_binding_count + 1U);
+    if (status != FA_RUNTIME_OK) {
+        runtime_close_library(library_handle);
+        return status;
+    }
+    fa_RuntimeHostBinding* binding = &runtime->host_bindings[runtime->host_binding_count];
+    binding->module = runtime_strdup(module_name);
+    binding->name = runtime_strdup(import_name);
+    if (!binding->module || !binding->name) {
+        runtime_host_binding_release(binding);
+        runtime_close_library(library_handle);
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    binding->function = function;
+    binding->user_data = user_data;
+    binding->library_handle = library_handle;
+    runtime->host_binding_count += 1U;
+    return FA_RUNTIME_OK;
 }
 
 static void runtime_memory_reset(fa_Runtime* runtime) {
@@ -404,10 +579,10 @@ static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) 
                 return FA_RUNTIME_ERR_UNSUPPORTED;
             }
             fa_RuntimeMemory* memory = &runtime->memories[segment->memory_index];
-            if (segment->size > SIZE_MAX) {
+            const size_t length = (size_t)segment->size;
+            if ((uint32_t)length != segment->size) {
                 return FA_RUNTIME_ERR_UNSUPPORTED;
             }
-            const size_t length = (size_t)segment->size;
             if (runtime_memory_bounds_check(memory, segment->offset, length) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
@@ -809,6 +984,9 @@ static void runtime_jit_cache_clear(fa_Runtime* runtime) {
     runtime->jit_cache_bytes = 0;
     runtime->jit_cache_eviction_cursor = 0;
     runtime->jit_cache_prescanned = false;
+    runtime->host_bindings = NULL;
+    runtime->host_binding_count = 0;
+    runtime->host_binding_capacity = 0;
 }
 
 static void runtime_jit_cache_evict_entry(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
@@ -1249,6 +1427,9 @@ static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
     const uint32_t max_chunks = runtime->jit_context.decision.budget.max_chunks;
     uint32_t precompiled = 0;
     for (uint32_t i = 0; i < runtime->module->num_functions; ++i) {
+        if (runtime->module->functions[i].is_imported) {
+            continue;
+        }
         fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry(runtime, i);
         if (!entry) {
             return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -1693,7 +1874,7 @@ static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t 
     }
 }
 
-static int runtime_stack_check_types(const fa_JobStack* stack, const uint32_t* types, uint32_t count) {
+static int runtime_stack_check_types_u32(const fa_JobStack* stack, const uint32_t* types, uint32_t count) {
     if (!stack) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -1711,6 +1892,29 @@ static int runtime_stack_check_types(const fa_JobStack* stack, const uint32_t* t
         const uint32_t type_index = count - 1U - i;
         if (!value || types[type_index] > UINT8_MAX ||
             !runtime_job_value_matches_valtype(value, (uint8_t)types[type_index])) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_stack_check_types_u8(const fa_JobStack* stack, const uint8_t* types, uint32_t count) {
+    if (!stack) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (count == 0) {
+        return FA_RUNTIME_OK;
+    }
+    if (!types) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (stack->size < count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const fa_JobValue* value = fa_JobStack_peek(stack, i);
+        const uint32_t type_index = count - 1U - i;
+        if (!value || !runtime_job_value_matches_valtype(value, types[type_index])) {
             return FA_RUNTIME_ERR_TRAP;
         }
     }
@@ -1902,6 +2106,127 @@ cleanup_decl:
     return status;
 }
 
+static int runtime_check_function_trap(fa_Runtime* runtime, uint32_t function_index) {
+    if (!runtime) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (runtime->function_traps && function_index < runtime->function_trap_count &&
+        runtime->function_traps[function_index]) {
+        if (!runtime->trap_hooks.on_function_trap) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        int trap_status = runtime->trap_hooks.on_function_trap(runtime,
+                                                              function_index,
+                                                              runtime->trap_hooks.user_data);
+        if (trap_status != FA_RUNTIME_OK) {
+            return trap_status;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_call_imported(fa_Runtime* runtime, fa_Job* job, uint32_t function_index) {
+    if (!runtime || !job || !runtime->module) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (function_index >= runtime->module->num_functions) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    const WasmFunction* func = &runtime->module->functions[function_index];
+    if (!func->is_imported) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!func->import_module || !func->import_name) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (func->type_index >= runtime->module->num_types) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeHostBinding* binding = runtime_find_host_binding(runtime,
+                                                               func->import_module,
+                                                               func->import_name);
+    if (!binding || !binding->function) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const WasmFunctionType* sig = &runtime->module->types[func->type_index];
+    const uint32_t param_count = sig->num_params;
+    const uint32_t result_count = sig->num_results;
+    if ((param_count > 0 && !sig->param_types) ||
+        (result_count > 0 && !sig->result_types)) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (job->stack.size < param_count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    fa_JobValue* args = NULL;
+    fa_JobValue* results = NULL;
+    if (param_count > 0) {
+        args = (fa_JobValue*)calloc(param_count, sizeof(fa_JobValue));
+        if (!args) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+    }
+    if (result_count > 0) {
+        results = (fa_JobValue*)calloc(result_count, sizeof(fa_JobValue));
+        if (!results) {
+            free(args);
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+    }
+
+    for (uint32_t i = 0; i < param_count; ++i) {
+        const uint32_t type_index = param_count - 1U - i;
+        if (!fa_JobStack_pop(&job->stack, &args[type_index])) {
+            free(args);
+            free(results);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (sig->param_types[type_index] > UINT8_MAX ||
+            !runtime_job_value_matches_valtype(&args[type_index], (uint8_t)sig->param_types[type_index])) {
+            free(args);
+            free(results);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+
+    fa_RuntimeHostCall call;
+    memset(&call, 0, sizeof(call));
+    call.signature = sig;
+    call.args = args;
+    call.arg_count = param_count;
+    call.results = results;
+    call.result_count = result_count;
+    call.function_index = function_index;
+    call.import_module = func->import_module;
+    call.import_name = func->import_name;
+
+    int status = binding->function(runtime, &call, binding->user_data);
+    if (status != FA_RUNTIME_OK) {
+        free(args);
+        free(results);
+        return status;
+    }
+
+    for (uint32_t i = 0; i < result_count; ++i) {
+        if (sig->result_types[i] > UINT8_MAX ||
+            !runtime_job_value_matches_valtype(&results[i], (uint8_t)sig->result_types[i])) {
+            free(args);
+            free(results);
+            return FA_RUNTIME_ERR_TRAP;
+        }
+        if (!fa_JobStack_push(&job->stack, &results[i])) {
+            free(args);
+            free(results);
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+    }
+
+    free(args);
+    free(results);
+    return FA_RUNTIME_OK;
+}
+
 static int runtime_push_frame(fa_Runtime* runtime,
                               fa_RuntimeCallFrame* frames,
                               uint32_t* depth,
@@ -1918,19 +2243,6 @@ static int runtime_push_frame(fa_Runtime* runtime,
     const uint32_t capacity = runtime->max_call_depth ? runtime->max_call_depth : 64U;
     if (*depth >= capacity) {
         return FA_RUNTIME_ERR_CALL_DEPTH_EXCEEDED;
-    }
-
-    if (runtime->function_traps && function_index < runtime->function_trap_count &&
-        runtime->function_traps[function_index]) {
-        if (!runtime->trap_hooks.on_function_trap) {
-            return FA_RUNTIME_ERR_TRAP;
-        }
-        int trap_status = runtime->trap_hooks.on_function_trap(runtime,
-                                                              function_index,
-                                                              runtime->trap_hooks.user_data);
-        if (trap_status != FA_RUNTIME_OK) {
-            return trap_status;
-        }
     }
 
     uint8_t* body = wasm_load_function_body(runtime->module, function_index);
@@ -1985,6 +2297,30 @@ static int runtime_push_frame(fa_Runtime* runtime,
 
     *depth += 1;
     return FA_RUNTIME_OK;
+}
+
+static int runtime_call_function(fa_Runtime* runtime,
+                                 fa_RuntimeCallFrame* frames,
+                                 uint32_t* depth,
+                                 fa_Job* job,
+                                 uint32_t function_index) {
+    if (!runtime || !frames || !depth || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->module) {
+        return FA_RUNTIME_ERR_NO_MODULE;
+    }
+    if (function_index >= runtime->module->num_functions) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    int status = runtime_check_function_trap(runtime, function_index);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    if (runtime->module->functions[function_index].is_imported) {
+        return runtime_call_imported(runtime, job, function_index);
+    }
+    return runtime_push_frame(runtime, frames, depth, function_index);
 }
 
 static void runtime_pop_frame(fa_RuntimeCallFrame* frames, uint32_t* depth) {
@@ -2062,6 +2398,7 @@ void fa_Runtime_free(fa_Runtime* runtime) {
         runtime->jobs = NULL;
     }
     fa_Runtime_detach_module(runtime);
+    runtime_host_bindings_clear(runtime);
     free(runtime);
 }
 
@@ -2200,6 +2537,36 @@ int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, c
     }
     runtime->globals[global_index] = *value;
     return runtime_init_globals(runtime, runtime->module);
+}
+
+int fa_Runtime_bind_host_function(fa_Runtime* runtime,
+                                  const char* module_name,
+                                  const char* import_name,
+                                  fa_RuntimeHostFunction function,
+                                  void* user_data) {
+    return runtime_add_host_binding(runtime, module_name, import_name, function, user_data, NULL);
+}
+
+int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
+                                               const char* module_name,
+                                               const char* import_name,
+                                               const char* library_path,
+                                               const char* symbol_name) {
+    if (!runtime || !module_name || !import_name || !library_path) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    const char* symbol = symbol_name ? symbol_name : import_name;
+    void* handle = runtime_open_library(library_path);
+    if (!handle) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    void* raw_symbol = runtime_lookup_symbol(handle, symbol);
+    if (!raw_symbol) {
+        runtime_close_library(handle);
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    fa_RuntimeHostFunction function = (fa_RuntimeHostFunction)raw_symbol;
+    return runtime_add_host_binding(runtime, module_name, import_name, function, NULL, handle);
 }
 
 void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks) {
@@ -2424,7 +2791,7 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            status = runtime_stack_check_types(&job->stack, sig.param_types, sig.param_count);
+            status = runtime_stack_check_types_u32(&job->stack, sig.param_types, sig.param_count);
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
@@ -3063,7 +3430,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
             }
             entry->stack_height = job->stack.size;
             if (entry->param_count > 0) {
-                int status = runtime_stack_check_types(&job->stack, entry->param_types, entry->param_count);
+                int status = runtime_stack_check_types_u8(&job->stack, entry->param_types, entry->param_count);
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }
@@ -3173,7 +3540,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
     }
 
     uint32_t depth = 0;
-    int status = runtime_push_frame(runtime, frames, &depth, function_index);
+    int status = runtime_call_function(runtime, frames, &depth, job, function_index);
     if (status != FA_RUNTIME_OK) {
         runtime_free_frames(runtime, frames);
         return status;
@@ -3239,7 +3606,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
 
         if (ctx.has_call) {
             job->instructionPointer = 0;
-            status = runtime_push_frame(runtime, frames, &depth, ctx.call_target);
+            status = runtime_call_function(runtime, frames, &depth, job, ctx.call_target);
             runtime_instruction_context_free(&ctx);
             if (status != FA_RUNTIME_OK) {
                 break;

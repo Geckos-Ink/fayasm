@@ -59,6 +59,11 @@ typedef struct {
     uint32_t type_index;
     off_t body_offset;
     uint32_t body_size;
+    bool is_imported;
+    char* import_module;
+    uint32_t import_module_len;
+    char* import_name;
+    uint32_t import_name_len;
 } WasmFunction;
 typedef enum {
     WASM_GLOBAL_INIT_NONE = 0,
@@ -109,6 +114,7 @@ typedef struct {
     uint32_t num_functions;
     WasmFunction* functions;
     off_t functions_offset;
+    uint32_t num_imported_functions;
     // Export
     uint32_t num_exports;
     WasmExport* exports;

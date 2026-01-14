@@ -7,6 +7,7 @@
 #include "fa_jit.h"
 
 struct fa_JitProgramCacheEntry;
+struct fa_RuntimeHostBinding;
 
 #define FA_WASM_PAGE_SIZE 65536U
 
@@ -75,6 +76,21 @@ typedef struct {
     void* user_data;
 } fa_RuntimeSpillHooks;
 
+typedef struct {
+    const WasmFunctionType* signature;
+    const fa_JobValue* args;
+    uint32_t arg_count;
+    fa_JobValue* results;
+    uint32_t result_count;
+    uint32_t function_index;
+    const char* import_module;
+    const char* import_name;
+} fa_RuntimeHostCall;
+
+typedef int (*fa_RuntimeHostFunction)(struct fa_Runtime* runtime,
+                                      const fa_RuntimeHostCall* call,
+                                      void* user_data);
+
 typedef struct fa_Runtime {
     fa_Malloc malloc;
     fa_Free free;
@@ -104,6 +120,9 @@ typedef struct fa_Runtime {
     size_t jit_cache_bytes;
     uint32_t jit_cache_eviction_cursor;
     bool jit_cache_prescanned;
+    struct fa_RuntimeHostBinding* host_bindings;
+    uint32_t host_binding_count;
+    uint32_t host_binding_capacity;
     uint8_t* function_traps;
     uint32_t function_trap_count;
     fa_RuntimeTrapHooks trap_hooks;
@@ -122,6 +141,17 @@ int fa_Runtime_destroy_job(fa_Runtime* runtime, fa_Job* job);
 int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_index);
 
 int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value);
+
+int fa_Runtime_bind_host_function(fa_Runtime* runtime,
+                                  const char* module_name,
+                                  const char* import_name,
+                                  fa_RuntimeHostFunction function,
+                                  void* user_data);
+int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
+                                               const char* module_name,
+                                               const char* import_name,
+                                               const char* library_path,
+                                               const char* symbol_name);
 
 void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks);
 int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, bool enabled);

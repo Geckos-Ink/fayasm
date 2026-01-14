@@ -44,6 +44,24 @@ static int trap_handler(fa_Runtime* runtime, uint32_t function_index, void* user
     return FA_RUNTIME_ERR_TRAP;
 }
 
+static int host_add(fa_Runtime* runtime, const fa_RuntimeHostCall* call, void* user_data) {
+    (void)runtime;
+    (void)user_data;
+    if (!call || call->arg_count != 2 || call->result_count != 1) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (call->args[0].kind != fa_job_value_i32 || call->args[1].kind != fa_job_value_i32) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_JobValue result = {0};
+    result.kind = fa_job_value_i32;
+    result.is_signed = true;
+    result.bit_width = 32U;
+    result.payload.i32_value = call->args[0].payload.i32_value + call->args[1].payload.i32_value;
+    call->results[0] = result;
+    return FA_RUNTIME_OK;
+}
+
 static const uint8_t kResultI32[] = { VALTYPE_I32 };
 static const uint8_t kResultI64[] = { VALTYPE_I64 };
 static const uint8_t kResultF32[] = { VALTYPE_F32 };
@@ -887,6 +905,110 @@ static int test_microcode_float_select(void) {
     if (!fa_ops_get_microcode_steps(0x1B, &steps, &count) || !steps || count == 0) {
         return 1;
     }
+    return 0;
+}
+
+static int test_host_import_call(void) {
+    ByteBuffer imports = {0};
+    if (!bb_write_uleb(&imports, 1)) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_string(&imports, "env") || !bb_write_string(&imports, "host_add")) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_byte(&imports, 0) || !bb_write_uleb(&imports, 0)) {
+        bb_free(&imports);
+        return 1;
+    }
+
+    ByteBuffer instructions = {0};
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 7)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 5)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x10) || !bb_write_uleb(&instructions, 0)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x0B)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    const uint8_t param_types[] = { VALTYPE_I32, VALTYPE_I32 };
+    const uint8_t result_types[] = { VALTYPE_I32 };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  &imports,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  result_types,
+                                  1,
+                                  param_types,
+                                  2)) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&imports);
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        cleanup_job(NULL, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_Runtime_bind_host_function(runtime, "env", "host_add", host_add, NULL) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_create_job(runtime);
+    if (!job) {
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_execute_job(runtime, job, 1);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 12) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
 }
 
@@ -3249,6 +3371,7 @@ static int test_local_f32_default(void) {
 static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
+    TEST_CASE("test_host_import_call", "runtime", "src/fa_runtime.c (host imports), src/fa_wasm.c (import parsing)", test_host_import_call),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
