@@ -27,9 +27,9 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, optional per-function trap hooks, spill/load hooks for JIT programs and memory, JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation and dispatch.
+- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, optional per-function trap hooks, spill/load hooks for JIT programs and memory, JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation, precompile passes, and dispatch.
 - `src/fa_job.*` - linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` - opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`); float unary/special/reinterpret handlers now use per-op macro functions to avoid opcode switch-case paths.
+- `src/fa_ops.*` - opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert and float unary/special/reinterpret/select ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
 - `src/fa_jit.*` - JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers, optional prescan configuration (`FAYASM_JIT_PRESCAN`/`FAYASM_JIT_PRESCAN_FORCE`), and `fa_jit_context_apply_env_overrides`.
 - `src/fa_wasm.*` - disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
 - `src/fa_wasm_stream.*` - cursor helpers used in the tests to exercise streaming reads.
@@ -47,6 +47,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD is still partial (v128.const + splats wired).
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat, conversion traps, stack unwinding, and imported-global overrides.
 - JIT spill/load hooks currently persist pointer-based microcode; a stable, versioned format is needed for cross-boot reuse and broader testing.
+- Imported C/native or dynamic-library functions are not yet wired into the runtime import path.
 
 ## Research Archive (studies/)
 
@@ -81,7 +82,7 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Extend microcode coverage to float unary/special ops plus reinterpret/select, and fold in a resource-aware JIT precompile pass for per-function sequences.
+1. Support imported C/native or dynamic-library functions in the runtime import flow (host callbacks or `dlopen`/`dlsym` binding).
 2. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
 3. Expand element/data segment support to ref.func expressions and externref tables.
 4. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.

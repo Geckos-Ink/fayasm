@@ -896,6 +896,9 @@ static int runtime_jit_cache_load_entry(fa_Runtime* runtime, fa_JitProgramCacheE
     return entry->ready ? FA_RUNTIME_OK : FA_RUNTIME_ERR_INVALID_ARGUMENT;
 }
 
+static bool runtime_jit_prepare_program(fa_Runtime* runtime,
+                                        fa_JitProgramCacheEntry* entry,
+                                        size_t opcode_count);
 static int runtime_jit_cache_prescan(fa_Runtime* runtime);
 
 static int runtime_jit_cache_init(fa_Runtime* runtime) {
@@ -1221,10 +1224,30 @@ static int runtime_jit_prescan_function(fa_Runtime* runtime,
     return FA_RUNTIME_OK;
 }
 
+static bool runtime_jit_precompile_allowed(const fa_Runtime* runtime) {
+    if (!runtime) {
+        return false;
+    }
+    const fa_JitProbe* probe = &runtime->jit_context.probe;
+    const fa_JitConfig* config = &runtime->jit_context.config;
+    if (!probe->ok) {
+        return false;
+    }
+    if (probe->ram_bytes < config->min_ram_bytes || probe->cpu_count < config->min_cpu_count) {
+        return false;
+    }
+    return fa_ops_microcode_enabled();
+}
+
 static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
     if (!runtime || !runtime->module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
+    const bool allow_precompile = runtime_jit_precompile_allowed(runtime);
+    const size_t budget_bytes = (size_t)runtime->jit_context.decision.budget.cache_budget_bytes;
+    const uint32_t max_ops_per_chunk = runtime->jit_context.decision.budget.max_ops_per_chunk;
+    const uint32_t max_chunks = runtime->jit_context.decision.budget.max_chunks;
+    uint32_t precompiled = 0;
     for (uint32_t i = 0; i < runtime->module->num_functions; ++i) {
         fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry(runtime, i);
         if (!entry) {
@@ -1238,6 +1261,22 @@ static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
         free(body);
         if (status != FA_RUNTIME_OK) {
             return status;
+        }
+        if (allow_precompile && entry->count > 0) {
+            if (max_chunks == 0 || precompiled < max_chunks) {
+                if (budget_bytes > 0) {
+                    size_t opcode_count = entry->count;
+                    if (max_ops_per_chunk > 0 && opcode_count > max_ops_per_chunk) {
+                        opcode_count = max_ops_per_chunk;
+                    }
+                    const size_t estimate = runtime_jit_program_bytes_for_ops(opcode_count);
+                    if (runtime->jit_cache_bytes + estimate <= budget_bytes) {
+                        if (runtime_jit_prepare_program(runtime, entry, opcode_count)) {
+                            precompiled++;
+                        }
+                    }
+                }
+            }
         }
     }
     runtime->jit_cache_prescanned = true;
@@ -2032,6 +2071,7 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
     }
     fa_Runtime_detach_module(runtime);
     fa_jit_context_apply_env_overrides(&runtime->jit_context);
+    fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
     runtime->module = module;
     runtime->stream = wasm_instruction_stream_init(module);
     if (!runtime->stream) {

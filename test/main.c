@@ -868,6 +868,28 @@ static int test_jit_cache_dispatch(void) {
     return 0;
 }
 
+static int test_microcode_float_select(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    if (!fa_ops_microcode_enabled()) {
+        return 1;
+    }
+    const Operation* steps = NULL;
+    uint8_t count = 0;
+    if (!fa_ops_get_microcode_steps(0x8B, &steps, &count) || !steps || count == 0) {
+        return 1;
+    }
+    if (!fa_ops_get_microcode_steps(0x96, &steps, &count) || !steps || count == 0) {
+        return 1;
+    }
+    if (!fa_ops_get_microcode_steps(0xBC, &steps, &count) || !steps || count == 0) {
+        return 1;
+    }
+    if (!fa_ops_get_microcode_steps(0x1B, &steps, &count) || !steps || count == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 static int test_div_by_zero_trap(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -3226,6 +3248,7 @@ static int test_local_f32_default(void) {
 #define TEST_CASE(name, area, hint, fn) { name, area, hint, fn }
 static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
+    TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),

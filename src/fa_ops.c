@@ -2208,6 +2208,8 @@ DEFINE_REINTERPRET_FLOAT_TO_INT_OP(op_reinterpret_i64_from_f64_mc, fa_job_value_
 DEFINE_REINTERPRET_INT_TO_FLOAT_OP(op_reinterpret_f32_from_i32_mc, u32, f32, false)
 DEFINE_REINTERPRET_INT_TO_FLOAT_OP(op_reinterpret_f64_from_i64_mc, u64, f64, true)
 
+static OP_RETURN_TYPE op_select(OP_ARGUMENTS);
+
 #define DEFINE_MICROCODE(name, ...)                                            \
     static const Operation name##_steps[] = { __VA_ARGS__ };                   \
     static const fa_Microcode name = {                                         \
@@ -2263,6 +2265,31 @@ DEFINE_MICROCODE(mc_convert_i32_extend16_s, op_convert_i32_extend16_s_mc)
 DEFINE_MICROCODE(mc_convert_i64_extend8_s, op_convert_i64_extend8_s_mc)
 DEFINE_MICROCODE(mc_convert_i64_extend16_s, op_convert_i64_extend16_s_mc)
 DEFINE_MICROCODE(mc_convert_i64_extend32_s, op_convert_i64_extend32_s_mc)
+DEFINE_MICROCODE(mc_float_abs_f32, op_float_abs_f32_mc)
+DEFINE_MICROCODE(mc_float_neg_f32, op_float_neg_f32_mc)
+DEFINE_MICROCODE(mc_float_ceil_f32, op_float_ceil_f32_mc)
+DEFINE_MICROCODE(mc_float_floor_f32, op_float_floor_f32_mc)
+DEFINE_MICROCODE(mc_float_trunc_f32, op_float_trunc_f32_mc)
+DEFINE_MICROCODE(mc_float_nearest_f32, op_float_nearest_f32_mc)
+DEFINE_MICROCODE(mc_float_sqrt_f32, op_float_sqrt_f32_mc)
+DEFINE_MICROCODE(mc_float_min_f32, op_float_min_f32_mc)
+DEFINE_MICROCODE(mc_float_max_f32, op_float_max_f32_mc)
+DEFINE_MICROCODE(mc_float_copysign_f32, op_float_copysign_f32_mc)
+DEFINE_MICROCODE(mc_float_abs_f64, op_float_abs_f64_mc)
+DEFINE_MICROCODE(mc_float_neg_f64, op_float_neg_f64_mc)
+DEFINE_MICROCODE(mc_float_ceil_f64, op_float_ceil_f64_mc)
+DEFINE_MICROCODE(mc_float_floor_f64, op_float_floor_f64_mc)
+DEFINE_MICROCODE(mc_float_trunc_f64, op_float_trunc_f64_mc)
+DEFINE_MICROCODE(mc_float_nearest_f64, op_float_nearest_f64_mc)
+DEFINE_MICROCODE(mc_float_sqrt_f64, op_float_sqrt_f64_mc)
+DEFINE_MICROCODE(mc_float_min_f64, op_float_min_f64_mc)
+DEFINE_MICROCODE(mc_float_max_f64, op_float_max_f64_mc)
+DEFINE_MICROCODE(mc_float_copysign_f64, op_float_copysign_f64_mc)
+DEFINE_MICROCODE(mc_reinterpret_i32_from_f32, op_reinterpret_i32_from_f32_mc)
+DEFINE_MICROCODE(mc_reinterpret_i64_from_f64, op_reinterpret_i64_from_f64_mc)
+DEFINE_MICROCODE(mc_reinterpret_f32_from_i32, op_reinterpret_f32_from_i32_mc)
+DEFINE_MICROCODE(mc_reinterpret_f64_from_i64, op_reinterpret_f64_from_i64_mc)
+DEFINE_MICROCODE(mc_select, op_select)
 
 #undef DEFINE_MICROCODE
 #undef DEFINE_BITCOUNT_OP
@@ -3002,7 +3029,7 @@ static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
     }
     u64 prev_pages = 0;
     bool grew = false;
-    const int status = runtime_memory_grow(runtime, mem_index, delta_pages_raw, &prev_pages, &grew);
+    status = runtime_memory_grow(runtime, mem_index, delta_pages_raw, &prev_pages, &grew);
     if (status != FA_RUNTIME_OK) {
         return status;
     }
@@ -3161,6 +3188,7 @@ static void init_microcode_once(void) {
     memset(g_microcode, 0, sizeof(g_microcode));
     g_microcode_enabled = microcode_should_enable();
     if (g_microcode_enabled) {
+        g_microcode[0x1B] = &mc_select;            // select
         g_microcode[0x67] = &mc_bitcount_clz;     // i32.clz
         g_microcode[0x68] = &mc_bitcount_ctz;     // i32.ctz
         g_microcode[0x69] = &mc_bitcount_popcnt;  // i32.popcnt
@@ -3183,6 +3211,13 @@ static void init_microcode_once(void) {
         g_microcode[0x88] = &mc_shift_right_unsigned; // i64.shr_u
         g_microcode[0x89] = &mc_rotate_left;      // i64.rotl
         g_microcode[0x8A] = &mc_rotate_right;     // i64.rotr
+        g_microcode[0x8B] = &mc_float_abs_f32;    // f32.abs
+        g_microcode[0x8C] = &mc_float_neg_f32;    // f32.neg
+        g_microcode[0x8D] = &mc_float_ceil_f32;   // f32.ceil
+        g_microcode[0x8E] = &mc_float_floor_f32;  // f32.floor
+        g_microcode[0x8F] = &mc_float_trunc_f32;  // f32.trunc
+        g_microcode[0x90] = &mc_float_nearest_f32; // f32.nearest
+        g_microcode[0x91] = &mc_float_sqrt_f32;   // f32.sqrt
         g_microcode[0x46] = &mc_compare_eq;       // i32.eq
         g_microcode[0x47] = &mc_compare_ne;       // i32.ne
         g_microcode[0x48] = &mc_compare_lt;       // i32.lt_s
@@ -3233,10 +3268,23 @@ static void init_microcode_once(void) {
         g_microcode[0x93] = &mc_arith_sub;        // f32.sub
         g_microcode[0x94] = &mc_arith_mul;        // f32.mul
         g_microcode[0x95] = &mc_arith_div;        // f32.div
+        g_microcode[0x96] = &mc_float_min_f32;    // f32.min
+        g_microcode[0x97] = &mc_float_max_f32;    // f32.max
+        g_microcode[0x98] = &mc_float_copysign_f32; // f32.copysign
+        g_microcode[0x99] = &mc_float_abs_f64;    // f64.abs
+        g_microcode[0x9A] = &mc_float_neg_f64;    // f64.neg
+        g_microcode[0x9B] = &mc_float_ceil_f64;   // f64.ceil
+        g_microcode[0x9C] = &mc_float_floor_f64;  // f64.floor
+        g_microcode[0x9D] = &mc_float_trunc_f64;  // f64.trunc
+        g_microcode[0x9E] = &mc_float_nearest_f64; // f64.nearest
+        g_microcode[0x9F] = &mc_float_sqrt_f64;   // f64.sqrt
         g_microcode[0xA0] = &mc_arith_add;        // f64.add
         g_microcode[0xA1] = &mc_arith_sub;        // f64.sub
         g_microcode[0xA2] = &mc_arith_mul;        // f64.mul
         g_microcode[0xA3] = &mc_arith_div;        // f64.div
+        g_microcode[0xA4] = &mc_float_min_f64;    // f64.min
+        g_microcode[0xA5] = &mc_float_max_f64;    // f64.max
+        g_microcode[0xA6] = &mc_float_copysign_f64; // f64.copysign
         g_microcode[0xA7] = &mc_convert_i32_wrap_i64;      // i32.wrap_i64
         g_microcode[0xA8] = &mc_convert_i32_trunc_f32_s;   // i32.trunc_f32_s
         g_microcode[0xA9] = &mc_convert_i32_trunc_f32_u;   // i32.trunc_f32_u
@@ -3258,6 +3306,10 @@ static void init_microcode_once(void) {
         g_microcode[0xB9] = &mc_convert_f64_from_i64_s;    // f64.convert_i64_s
         g_microcode[0xBA] = &mc_convert_f64_from_i64_u;    // f64.convert_i64_u
         g_microcode[0xBB] = &mc_convert_f64_promote_f32;   // f64.promote_f32
+        g_microcode[0xBC] = &mc_reinterpret_i32_from_f32;  // i32.reinterpret_f32
+        g_microcode[0xBD] = &mc_reinterpret_i64_from_f64;  // i64.reinterpret_f64
+        g_microcode[0xBE] = &mc_reinterpret_f32_from_i32;  // f32.reinterpret_i32
+        g_microcode[0xBF] = &mc_reinterpret_f64_from_i64;  // f64.reinterpret_i64
         g_microcode[0xC0] = &mc_convert_i32_extend8_s;     // i32.extend8_s
         g_microcode[0xC1] = &mc_convert_i32_extend16_s;    // i32.extend16_s
         g_microcode[0xC2] = &mc_convert_i64_extend8_s;     // i64.extend8_s

@@ -7,16 +7,17 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Harden JIT microcode spill formats with versioning for cross-boot reuse (avoid raw function pointers).
 - Add tests for function traps and spill/load hooks (memory reloads, JIT cache eviction paths).
 - Expand `samples/esp32-trap` to use the hardened spill format and document SD wear/perf considerations.
+- Wire imported C/native or dynamic-library functions into the runtime import flow (host callbacks or `dlopen`/`dlsym`).
 
 ## Medium-Term
 
-- Extend microcode coverage to float unary/special ops plus reinterpret/select, and fold in a resource-aware JIT precompile pass for per-function sequences.
 - Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
 - Expand element/data segment support to ref.func expressions and externref tables.
 - Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
 
 ## Recently Completed
 
+- Extended microcode coverage to float unary/special/reinterpret/select ops and added a resource-aware JIT precompile pass for per-function sequences.
 - Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
 - Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
 - Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).
