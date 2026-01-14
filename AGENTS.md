@@ -4,7 +4,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Collaboration Rules
 
-- After every code edit, refresh both `README.md` and `AI_REFERENCE.md` with any relevant behavioural, architectural, or tooling changes.
+- After every code edit, refresh both `README.md` and `AGENTS.md` with any relevant behavioural, architectural, or tooling changes.
 - Keep `ROADMAP.md` updated when priorities shift or new directives are added.
 - Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
 - Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
