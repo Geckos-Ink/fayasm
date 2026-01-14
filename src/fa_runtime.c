@@ -69,6 +69,18 @@ typedef struct fa_RuntimeHostBinding {
     void* library_handle;
 } fa_RuntimeHostBinding;
 
+typedef struct fa_RuntimeHostMemoryBinding {
+    char* module;
+    char* name;
+    fa_RuntimeHostMemory memory;
+} fa_RuntimeHostMemoryBinding;
+
+typedef struct fa_RuntimeHostTableBinding {
+    char* module;
+    char* name;
+    fa_RuntimeHostTable table;
+} fa_RuntimeHostTableBinding;
+
 #define FA_JIT_CACHE_OPS_INITIAL 64U
 #define FA_JIT_UPDATE_INTERVAL 64U
 
@@ -241,16 +253,221 @@ static int runtime_add_host_binding(fa_Runtime* runtime,
     return FA_RUNTIME_OK;
 }
 
+static void runtime_host_memory_binding_release(fa_RuntimeHostMemoryBinding* binding) {
+    if (!binding) {
+        return;
+    }
+    free(binding->module);
+    free(binding->name);
+    memset(binding, 0, sizeof(*binding));
+}
+
+static void runtime_host_memory_bindings_clear(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->host_memory_bindings) {
+        for (uint32_t i = 0; i < runtime->host_memory_binding_count; ++i) {
+            runtime_host_memory_binding_release(&runtime->host_memory_bindings[i]);
+        }
+        free(runtime->host_memory_bindings);
+    }
+    runtime->host_memory_bindings = NULL;
+    runtime->host_memory_binding_count = 0;
+    runtime->host_memory_binding_capacity = 0;
+}
+
+static int runtime_host_memory_bindings_reserve(fa_Runtime* runtime, uint32_t count) {
+    if (!runtime) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (count <= runtime->host_memory_binding_capacity) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t next_capacity = runtime->host_memory_binding_capacity ? runtime->host_memory_binding_capacity * 2U : 4U;
+    while (next_capacity < count) {
+        next_capacity *= 2U;
+    }
+    fa_RuntimeHostMemoryBinding* next = (fa_RuntimeHostMemoryBinding*)realloc(runtime->host_memory_bindings,
+                                                                              next_capacity * sizeof(fa_RuntimeHostMemoryBinding));
+    if (!next) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    if (next_capacity > runtime->host_memory_binding_capacity) {
+        memset(next + runtime->host_memory_binding_capacity, 0,
+               (next_capacity - runtime->host_memory_binding_capacity) * sizeof(fa_RuntimeHostMemoryBinding));
+    }
+    runtime->host_memory_bindings = next;
+    runtime->host_memory_binding_capacity = next_capacity;
+    return FA_RUNTIME_OK;
+}
+
+static fa_RuntimeHostMemoryBinding* runtime_find_host_memory_binding(fa_Runtime* runtime,
+                                                                     const char* module_name,
+                                                                     const char* import_name) {
+    if (!runtime || !module_name || !import_name) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < runtime->host_memory_binding_count; ++i) {
+        fa_RuntimeHostMemoryBinding* binding = &runtime->host_memory_bindings[i];
+        if (!binding->module || !binding->name) {
+            continue;
+        }
+        if (strcmp(binding->module, module_name) == 0 &&
+            strcmp(binding->name, import_name) == 0) {
+            return binding;
+        }
+    }
+    return NULL;
+}
+
+static int runtime_add_host_memory_binding(fa_Runtime* runtime,
+                                           const char* module_name,
+                                           const char* import_name,
+                                           const fa_RuntimeHostMemory* memory) {
+    if (!runtime || !module_name || !import_name || !memory) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!memory->data && memory->size_bytes > 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeHostMemoryBinding* existing = runtime_find_host_memory_binding(runtime, module_name, import_name);
+    if (existing) {
+        existing->memory = *memory;
+        return FA_RUNTIME_OK;
+    }
+    int status = runtime_host_memory_bindings_reserve(runtime, runtime->host_memory_binding_count + 1U);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    fa_RuntimeHostMemoryBinding* binding = &runtime->host_memory_bindings[runtime->host_memory_binding_count];
+    binding->module = runtime_strdup(module_name);
+    binding->name = runtime_strdup(import_name);
+    if (!binding->module || !binding->name) {
+        runtime_host_memory_binding_release(binding);
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    binding->memory = *memory;
+    runtime->host_memory_binding_count += 1U;
+    return FA_RUNTIME_OK;
+}
+
+static void runtime_host_table_binding_release(fa_RuntimeHostTableBinding* binding) {
+    if (!binding) {
+        return;
+    }
+    free(binding->module);
+    free(binding->name);
+    memset(binding, 0, sizeof(*binding));
+}
+
+static void runtime_host_table_bindings_clear(fa_Runtime* runtime) {
+    if (!runtime) {
+        return;
+    }
+    if (runtime->host_table_bindings) {
+        for (uint32_t i = 0; i < runtime->host_table_binding_count; ++i) {
+            runtime_host_table_binding_release(&runtime->host_table_bindings[i]);
+        }
+        free(runtime->host_table_bindings);
+    }
+    runtime->host_table_bindings = NULL;
+    runtime->host_table_binding_count = 0;
+    runtime->host_table_binding_capacity = 0;
+}
+
+static int runtime_host_table_bindings_reserve(fa_Runtime* runtime, uint32_t count) {
+    if (!runtime) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (count <= runtime->host_table_binding_capacity) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t next_capacity = runtime->host_table_binding_capacity ? runtime->host_table_binding_capacity * 2U : 4U;
+    while (next_capacity < count) {
+        next_capacity *= 2U;
+    }
+    fa_RuntimeHostTableBinding* next = (fa_RuntimeHostTableBinding*)realloc(runtime->host_table_bindings,
+                                                                            next_capacity * sizeof(fa_RuntimeHostTableBinding));
+    if (!next) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    if (next_capacity > runtime->host_table_binding_capacity) {
+        memset(next + runtime->host_table_binding_capacity, 0,
+               (next_capacity - runtime->host_table_binding_capacity) * sizeof(fa_RuntimeHostTableBinding));
+    }
+    runtime->host_table_bindings = next;
+    runtime->host_table_binding_capacity = next_capacity;
+    return FA_RUNTIME_OK;
+}
+
+static fa_RuntimeHostTableBinding* runtime_find_host_table_binding(fa_Runtime* runtime,
+                                                                   const char* module_name,
+                                                                   const char* import_name) {
+    if (!runtime || !module_name || !import_name) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < runtime->host_table_binding_count; ++i) {
+        fa_RuntimeHostTableBinding* binding = &runtime->host_table_bindings[i];
+        if (!binding->module || !binding->name) {
+            continue;
+        }
+        if (strcmp(binding->module, module_name) == 0 &&
+            strcmp(binding->name, import_name) == 0) {
+            return binding;
+        }
+    }
+    return NULL;
+}
+
+static int runtime_add_host_table_binding(fa_Runtime* runtime,
+                                          const char* module_name,
+                                          const char* import_name,
+                                          const fa_RuntimeHostTable* table) {
+    if (!runtime || !module_name || !import_name || !table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!table->data && table->size > 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    fa_RuntimeHostTableBinding* existing = runtime_find_host_table_binding(runtime, module_name, import_name);
+    if (existing) {
+        existing->table = *table;
+        return FA_RUNTIME_OK;
+    }
+    int status = runtime_host_table_bindings_reserve(runtime, runtime->host_table_binding_count + 1U);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    fa_RuntimeHostTableBinding* binding = &runtime->host_table_bindings[runtime->host_table_binding_count];
+    binding->module = runtime_strdup(module_name);
+    binding->name = runtime_strdup(import_name);
+    if (!binding->module || !binding->name) {
+        runtime_host_table_binding_release(binding);
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    binding->table = *table;
+    runtime->host_table_binding_count += 1U;
+    return FA_RUNTIME_OK;
+}
+
 static void runtime_memory_reset(fa_Runtime* runtime) {
     if (!runtime) {
         return;
     }
     if (runtime->memories) {
         for (uint32_t i = 0; i < runtime->memories_count; ++i) {
-            if (runtime->memories[i].data) {
+            if (runtime->memories[i].data && runtime->memories[i].owns_data) {
                 runtime->free(runtime->memories[i].data);
-                runtime->memories[i].data = NULL;
             }
+            runtime->memories[i].data = NULL;
+            runtime->memories[i].size_bytes = 0;
+            runtime->memories[i].max_size_bytes = 0;
+            runtime->memories[i].has_max = false;
+            runtime->memories[i].is_memory64 = false;
+            runtime->memories[i].is_spilled = false;
+            runtime->memories[i].is_host = false;
+            runtime->memories[i].owns_data = false;
         }
         free(runtime->memories);
         runtime->memories = NULL;
@@ -264,8 +481,16 @@ static void runtime_tables_reset(fa_Runtime* runtime) {
     }
     if (runtime->tables) {
         for (uint32_t i = 0; i < runtime->tables_count; ++i) {
-            free(runtime->tables[i].data);
+            if (runtime->tables[i].data && runtime->tables[i].owns_data) {
+                free(runtime->tables[i].data);
+            }
             runtime->tables[i].data = NULL;
+            runtime->tables[i].size = 0;
+            runtime->tables[i].max_size = 0;
+            runtime->tables[i].has_max = false;
+            runtime->tables[i].elem_type = 0;
+            runtime->tables[i].is_host = false;
+            runtime->tables[i].owns_data = false;
         }
         free(runtime->tables);
         runtime->tables = NULL;
@@ -446,6 +671,8 @@ static int runtime_memory_init(fa_Runtime* runtime, const WasmModule* module) {
         dst->is_memory64 = memory->is_memory64;
         dst->has_max = memory->has_max;
         dst->is_spilled = false;
+        dst->is_host = false;
+        dst->owns_data = false;
 
         if (!memory->is_memory64) {
             if (memory->initial_size > UINT32_MAX) {
@@ -467,6 +694,58 @@ static int runtime_memory_init(fa_Runtime* runtime, const WasmModule* module) {
             dst->max_size_bytes = max_pages * FA_WASM_PAGE_SIZE;
         }
 
+        if (memory->is_imported) {
+            if (!memory->import_module || !memory->import_name) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            fa_RuntimeHostMemoryBinding* binding = runtime_find_host_memory_binding(runtime,
+                                                                                    memory->import_module,
+                                                                                    memory->import_name);
+            if (!binding) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            if (!binding->memory.data && binding->memory.size_bytes > 0) {
+                status = FA_RUNTIME_ERR_INVALID_ARGUMENT;
+                goto cleanup;
+            }
+            if (binding->memory.size_bytes > SIZE_MAX) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+            if (binding->memory.size_bytes % FA_WASM_PAGE_SIZE != 0) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+            if (!memory->is_memory64) {
+                const uint64_t max_pages_32 = (uint64_t)UINT32_MAX;
+                if (binding->memory.size_bytes > max_pages_32 * FA_WASM_PAGE_SIZE) {
+                    status = FA_RUNTIME_ERR_UNSUPPORTED;
+                    goto cleanup;
+                }
+            }
+            if (memory->initial_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+                status = FA_RUNTIME_ERR_UNSUPPORTED;
+                goto cleanup;
+            }
+            const uint64_t min_bytes = memory->initial_size * FA_WASM_PAGE_SIZE;
+            if (binding->memory.size_bytes < min_bytes) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            if (memory->has_max && binding->memory.size_bytes > dst->max_size_bytes) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            dst->data = binding->memory.data;
+            dst->size_bytes = binding->memory.size_bytes;
+            dst->is_host = true;
+            dst->owns_data = false;
+            continue;
+        }
+
+        dst->owns_data = true;
         if (memory->initial_size == 0) {
             dst->size_bytes = 0;
             continue;
@@ -517,6 +796,8 @@ static int runtime_tables_init(fa_Runtime* runtime, const WasmModule* module) {
         dst->elem_type = table->elem_type;
         dst->has_max = table->has_max;
         dst->max_size = table->maximum_size;
+        dst->is_host = false;
+        dst->owns_data = false;
         if (table->initial_size > UINT32_MAX) {
             status = FA_RUNTIME_ERR_UNSUPPORTED;
             goto cleanup;
@@ -525,6 +806,38 @@ static int runtime_tables_init(fa_Runtime* runtime, const WasmModule* module) {
             status = FA_RUNTIME_ERR_UNSUPPORTED;
             goto cleanup;
         }
+        if (table->is_imported) {
+            if (!table->import_module || !table->import_name) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            fa_RuntimeHostTableBinding* binding = runtime_find_host_table_binding(runtime,
+                                                                                  table->import_module,
+                                                                                  table->import_name);
+            if (!binding) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            if (!binding->table.data && binding->table.size > 0) {
+                status = FA_RUNTIME_ERR_INVALID_ARGUMENT;
+                goto cleanup;
+            }
+            if (binding->table.size < table->initial_size) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            if (table->has_max && binding->table.size > table->maximum_size) {
+                status = FA_RUNTIME_ERR_TRAP;
+                goto cleanup;
+            }
+            dst->data = binding->table.data;
+            dst->size = binding->table.size;
+            dst->is_host = true;
+            dst->owns_data = false;
+            continue;
+        }
+
+        dst->owns_data = true;
         dst->size = table->initial_size;
         if (dst->size > 0) {
             dst->data = (fa_ptr*)calloc(dst->size, sizeof(fa_ptr));
@@ -2399,6 +2712,8 @@ void fa_Runtime_free(fa_Runtime* runtime) {
     }
     fa_Runtime_detach_module(runtime);
     runtime_host_bindings_clear(runtime);
+    runtime_host_memory_bindings_clear(runtime);
+    runtime_host_table_bindings_clear(runtime);
     free(runtime);
 }
 
@@ -2569,6 +2884,196 @@ int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
     return runtime_add_host_binding(runtime, module_name, import_name, function, NULL, handle);
 }
 
+int fa_Runtime_bind_imported_memory(fa_Runtime* runtime,
+                                    const char* module_name,
+                                    const char* import_name,
+                                    const fa_RuntimeHostMemory* memory) {
+    return runtime_add_host_memory_binding(runtime, module_name, import_name, memory);
+}
+
+int fa_Runtime_bind_imported_table(fa_Runtime* runtime,
+                                   const char* module_name,
+                                   const char* import_name,
+                                   const fa_RuntimeHostTable* table) {
+    return runtime_add_host_table_binding(runtime, module_name, import_name, table);
+}
+
+bool fa_RuntimeHostCall_expect(const fa_RuntimeHostCall* call, uint32_t arg_count, uint32_t result_count) {
+    if (!call) {
+        return false;
+    }
+    return call->arg_count == arg_count && call->result_count == result_count;
+}
+
+bool fa_RuntimeHostCall_arg_i32(const fa_RuntimeHostCall* call, uint32_t index, i32* out) {
+    if (!call || !out || !call->args || index >= call->arg_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_params &&
+        call->signature->param_types[index] != VALTYPE_I32) {
+        return false;
+    }
+    const fa_JobValue* value = &call->args[index];
+    if (value->kind != fa_job_value_i32) {
+        return false;
+    }
+    *out = value->payload.i32_value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_arg_i64(const fa_RuntimeHostCall* call, uint32_t index, i64* out) {
+    if (!call || !out || !call->args || index >= call->arg_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_params &&
+        call->signature->param_types[index] != VALTYPE_I64) {
+        return false;
+    }
+    const fa_JobValue* value = &call->args[index];
+    if (value->kind != fa_job_value_i64) {
+        return false;
+    }
+    *out = value->payload.i64_value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_arg_f32(const fa_RuntimeHostCall* call, uint32_t index, f32* out) {
+    if (!call || !out || !call->args || index >= call->arg_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_params &&
+        call->signature->param_types[index] != VALTYPE_F32) {
+        return false;
+    }
+    const fa_JobValue* value = &call->args[index];
+    if (value->kind != fa_job_value_f32) {
+        return false;
+    }
+    *out = value->payload.f32_value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_arg_f64(const fa_RuntimeHostCall* call, uint32_t index, f64* out) {
+    if (!call || !out || !call->args || index >= call->arg_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_params &&
+        call->signature->param_types[index] != VALTYPE_F64) {
+        return false;
+    }
+    const fa_JobValue* value = &call->args[index];
+    if (value->kind != fa_job_value_f64) {
+        return false;
+    }
+    *out = value->payload.f64_value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_arg_ref(const fa_RuntimeHostCall* call, uint32_t index, fa_ptr* out) {
+    if (!call || !out || !call->args || index >= call->arg_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_params) {
+        uint32_t type = call->signature->param_types[index];
+        if (type != VALTYPE_FUNCREF && type != VALTYPE_EXTERNREF) {
+            return false;
+        }
+    }
+    const fa_JobValue* value = &call->args[index];
+    if (value->kind != fa_job_value_ref) {
+        return false;
+    }
+    *out = value->payload.ref_value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_set_i32(const fa_RuntimeHostCall* call, uint32_t index, i32 value) {
+    if (!call || !call->results || index >= call->result_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_results &&
+        call->signature->result_types[index] != VALTYPE_I32) {
+        return false;
+    }
+    fa_JobValue* out = &call->results[index];
+    memset(out, 0, sizeof(*out));
+    out->kind = fa_job_value_i32;
+    out->is_signed = true;
+    out->bit_width = 32U;
+    out->payload.i32_value = value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_set_i64(const fa_RuntimeHostCall* call, uint32_t index, i64 value) {
+    if (!call || !call->results || index >= call->result_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_results &&
+        call->signature->result_types[index] != VALTYPE_I64) {
+        return false;
+    }
+    fa_JobValue* out = &call->results[index];
+    memset(out, 0, sizeof(*out));
+    out->kind = fa_job_value_i64;
+    out->is_signed = true;
+    out->bit_width = 64U;
+    out->payload.i64_value = value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_set_f32(const fa_RuntimeHostCall* call, uint32_t index, f32 value) {
+    if (!call || !call->results || index >= call->result_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_results &&
+        call->signature->result_types[index] != VALTYPE_F32) {
+        return false;
+    }
+    fa_JobValue* out = &call->results[index];
+    memset(out, 0, sizeof(*out));
+    out->kind = fa_job_value_f32;
+    out->is_signed = false;
+    out->bit_width = 32U;
+    out->payload.f32_value = value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_set_f64(const fa_RuntimeHostCall* call, uint32_t index, f64 value) {
+    if (!call || !call->results || index >= call->result_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_results &&
+        call->signature->result_types[index] != VALTYPE_F64) {
+        return false;
+    }
+    fa_JobValue* out = &call->results[index];
+    memset(out, 0, sizeof(*out));
+    out->kind = fa_job_value_f64;
+    out->is_signed = false;
+    out->bit_width = 64U;
+    out->payload.f64_value = value;
+    return true;
+}
+
+bool fa_RuntimeHostCall_set_ref(const fa_RuntimeHostCall* call, uint32_t index, fa_ptr value) {
+    if (!call || !call->results || index >= call->result_count) {
+        return false;
+    }
+    if (call->signature && index < call->signature->num_results) {
+        uint32_t type = call->signature->result_types[index];
+        if (type != VALTYPE_FUNCREF && type != VALTYPE_EXTERNREF) {
+            return false;
+        }
+    }
+    fa_JobValue* out = &call->results[index];
+    memset(out, 0, sizeof(*out));
+    out->kind = fa_job_value_ref;
+    out->is_signed = false;
+    out->bit_width = (uint8_t)(sizeof(fa_ptr) * 8U);
+    out->payload.ref_value = value;
+    return true;
+}
+
 void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks) {
     if (!runtime) {
         return;
@@ -2649,6 +3154,9 @@ int fa_Runtime_spill_memory(fa_Runtime* runtime, uint32_t memory_index) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    if (!memory->owns_data) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
     if (memory->size_bytes == 0) {
         memory->is_spilled = false;
         return FA_RUNTIME_OK;
@@ -2678,6 +3186,9 @@ int fa_Runtime_load_memory(fa_Runtime* runtime, uint32_t memory_index) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    if (!memory->owns_data) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
     if (memory->size_bytes == 0) {
         memory->is_spilled = false;
         return FA_RUNTIME_OK;

@@ -8,6 +8,8 @@
 
 struct fa_JitProgramCacheEntry;
 struct fa_RuntimeHostBinding;
+struct fa_RuntimeHostMemoryBinding;
+struct fa_RuntimeHostTableBinding;
 
 #define FA_WASM_PAGE_SIZE 65536U
 
@@ -30,6 +32,8 @@ typedef struct {
     bool has_max;
     bool is_memory64;
     bool is_spilled;
+    bool is_host;
+    bool owns_data;
 } fa_RuntimeMemory;
 
 typedef struct {
@@ -38,6 +42,8 @@ typedef struct {
     uint32_t max_size;
     bool has_max;
     uint8_t elem_type;
+    bool is_host;
+    bool owns_data;
 } fa_RuntimeTable;
 
 typedef int (*fa_RuntimeFunctionTrapHook)(struct fa_Runtime* runtime, uint32_t function_index, void* user_data);
@@ -91,6 +97,16 @@ typedef int (*fa_RuntimeHostFunction)(struct fa_Runtime* runtime,
                                       const fa_RuntimeHostCall* call,
                                       void* user_data);
 
+typedef struct {
+    uint8_t* data;
+    uint64_t size_bytes;
+} fa_RuntimeHostMemory;
+
+typedef struct {
+    fa_ptr* data;
+    uint32_t size;
+} fa_RuntimeHostTable;
+
 typedef struct fa_Runtime {
     fa_Malloc malloc;
     fa_Free free;
@@ -123,6 +139,12 @@ typedef struct fa_Runtime {
     struct fa_RuntimeHostBinding* host_bindings;
     uint32_t host_binding_count;
     uint32_t host_binding_capacity;
+    struct fa_RuntimeHostMemoryBinding* host_memory_bindings;
+    uint32_t host_memory_binding_count;
+    uint32_t host_memory_binding_capacity;
+    struct fa_RuntimeHostTableBinding* host_table_bindings;
+    uint32_t host_table_binding_count;
+    uint32_t host_table_binding_capacity;
     uint8_t* function_traps;
     uint32_t function_trap_count;
     fa_RuntimeTrapHooks trap_hooks;
@@ -152,6 +174,26 @@ int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
                                                const char* import_name,
                                                const char* library_path,
                                                const char* symbol_name);
+int fa_Runtime_bind_imported_memory(fa_Runtime* runtime,
+                                    const char* module_name,
+                                    const char* import_name,
+                                    const fa_RuntimeHostMemory* memory);
+int fa_Runtime_bind_imported_table(fa_Runtime* runtime,
+                                   const char* module_name,
+                                   const char* import_name,
+                                   const fa_RuntimeHostTable* table);
+
+bool fa_RuntimeHostCall_expect(const fa_RuntimeHostCall* call, uint32_t arg_count, uint32_t result_count);
+bool fa_RuntimeHostCall_arg_i32(const fa_RuntimeHostCall* call, uint32_t index, i32* out);
+bool fa_RuntimeHostCall_arg_i64(const fa_RuntimeHostCall* call, uint32_t index, i64* out);
+bool fa_RuntimeHostCall_arg_f32(const fa_RuntimeHostCall* call, uint32_t index, f32* out);
+bool fa_RuntimeHostCall_arg_f64(const fa_RuntimeHostCall* call, uint32_t index, f64* out);
+bool fa_RuntimeHostCall_arg_ref(const fa_RuntimeHostCall* call, uint32_t index, fa_ptr* out);
+bool fa_RuntimeHostCall_set_i32(const fa_RuntimeHostCall* call, uint32_t index, i32 value);
+bool fa_RuntimeHostCall_set_i64(const fa_RuntimeHostCall* call, uint32_t index, i64 value);
+bool fa_RuntimeHostCall_set_f32(const fa_RuntimeHostCall* call, uint32_t index, f32 value);
+bool fa_RuntimeHostCall_set_f64(const fa_RuntimeHostCall* call, uint32_t index, f64 value);
+bool fa_RuntimeHostCall_set_ref(const fa_RuntimeHostCall* call, uint32_t index, fa_ptr value);
 
 void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks);
 int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, bool enabled);

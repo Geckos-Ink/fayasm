@@ -7,7 +7,6 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Harden JIT microcode spill formats with versioning for cross-boot reuse (avoid raw function pointers).
 - Add tests for function traps and spill/load hooks (memory reloads, JIT cache eviction paths).
 - Expand `samples/esp32-trap` to use the hardened spill format and document SD wear/perf considerations.
-- Extend host import support beyond callbacks (imported tables/memories + ABI helpers for params/results).
 
 ## Medium-Term
 
@@ -19,6 +18,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 - Extended microcode coverage to float unary/special/reinterpret/select ops and added a resource-aware JIT precompile pass for per-function sequences.
 - Wired imported functions to host callbacks or dynamic-library bindings (`dlopen`/`dlsym` scaffolding).
+- Extended host import bindings to imported memories/tables, added `fa_RuntimeHostCall_*` ABI helpers, and shipped a dynamic-library host import sample.
 - Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
 - Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
 - Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).

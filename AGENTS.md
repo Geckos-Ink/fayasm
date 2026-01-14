@@ -27,7 +27,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 ## Core Code Map
 
-- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, host import bindings (callbacks or dynamic libraries), optional per-function trap hooks, spill/load hooks for JIT programs and memory, JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation, precompile passes, and dispatch.
+- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_set_imported_global`, host import bindings for functions + imported memories/tables (callbacks/buffers or dynamic libraries) with `fa_RuntimeHostCall_*` ABI helpers, optional per-function trap hooks, spill/load hooks for JIT programs and memory, JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation, precompile passes, and dispatch.
 - `src/fa_job.*` - linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` - opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert and float unary/special/reinterpret/select ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
 - `src/fa_jit.*` - JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers, optional prescan configuration (`FAYASM_JIT_PRESCAN`/`FAYASM_JIT_PRESCAN_FORCE`), and `fa_jit_context_apply_env_overrides`.
@@ -38,6 +38,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
 - `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps, function trap allow/block). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory.
+- `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bind_host_function_from_library`.
 - `build.sh` - one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
@@ -45,9 +46,9 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
 - Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD is still partial (v128.const + splats wired).
-- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat, conversion traps, stack unwinding, and imported-global overrides.
+- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat, conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
 - JIT spill/load hooks currently persist pointer-based microcode; a stable, versioned format is needed for cross-boot reuse and broader testing.
-- Host import binding via callbacks/`dlopen` is scaffolded; imported tables/memories and fuller host ABI ergonomics remain open.
+- Host import binding covers callbacks/`dlopen` for functions plus imported memory/table buffers and `fa_RuntimeHostCall_*` helpers; rebinding memories/tables after module attach is still manual (re-attach to apply).
 
 ## Research Archive (studies/)
 
@@ -82,10 +83,10 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Extend host import support to cover imported tables/memories and richer ABI helpers for params/results.
-2. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
-3. Expand element/data segment support to ref.func expressions and externref tables.
-4. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
+1. Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
+2. Expand element/data segment support to ref.func expressions and externref tables.
+3. Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
+4. Consider runtime-side rebind helpers for imported memories/tables without reattaching modules.
 
 ### General next steps
 1. Harden JIT spill/load formats to remove raw function pointers and add versioning for persistence across boots.

@@ -355,6 +355,10 @@ void wasm_module_free(WasmModule* module) {
     }
 
     if (module->tables) {
+        for (uint32_t i = 0; i < module->num_tables; i++) {
+            free(module->tables[i].import_module);
+            free(module->tables[i].import_name);
+        }
         free(module->tables);
     }
 
@@ -373,6 +377,10 @@ void wasm_module_free(WasmModule* module) {
     }
     
     if (module->memories) {
+        for (uint32_t i = 0; i < module->num_memories; i++) {
+            free(module->memories[i].import_module);
+            free(module->memories[i].import_name);
+        }
         free(module->memories);
     }
 
@@ -818,25 +826,173 @@ int wasm_load_exports(WasmModule* module) {
 
 // Carica le tabelle dalla sezione Table
 int wasm_load_tables(WasmModule* module) {
+    if (!module) {
+        return -1;
+    }
+
+    WasmTable* imported_tables = NULL;
+    uint32_t imported_count = 0;
+    uint32_t imported_capacity = 0;
+
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type != SECTION_IMPORT) {
+            continue;
+        }
+        if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+            return -1;
+        }
+
+        uint32_t size_read;
+        uint32_t count = read_uleb128(module, &size_read);
+        imported_capacity = count;
+        if (imported_capacity > 0) {
+            imported_tables = (WasmTable*)calloc(imported_capacity, sizeof(WasmTable));
+            if (!imported_tables) {
+                return -1;
+            }
+        }
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t module_len = 0;
+            uint32_t name_len = 0;
+            char* module_name = read_string(module, &module_len);
+            char* import_name = read_string(module, &name_len);
+            if (!module_name && module_len == 0) {
+                module_name = (char*)calloc(1, 1);
+            }
+            if (!import_name && name_len == 0) {
+                import_name = (char*)calloc(1, 1);
+            }
+            if (!module_name || !import_name) {
+                free(module_name);
+                free(import_name);
+                free(imported_tables);
+                return -1;
+            }
+
+            uint8_t kind = 0;
+            if (wasm_stream_read(module, &kind, 1) != 1) {
+                free(module_name);
+                free(import_name);
+                free(imported_tables);
+                return -1;
+            }
+            switch (kind) {
+                case 0: /* func */
+                    (void)read_uleb128(module, &size_read);
+                    break;
+                case 1: /* table */
+                {
+                    uint8_t elem_type = 0;
+                    if (wasm_stream_read(module, &elem_type, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_tables);
+                        return -1;
+                    }
+                    if (elem_type != VALTYPE_FUNCREF && elem_type != VALTYPE_EXTERNREF) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_tables);
+                        return -1;
+                    }
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    uint32_t initial = read_uleb128(module, &size_read);
+                    uint32_t maximum = 0;
+                    const bool has_max = (flags & 0x1) != 0;
+                    if (has_max) {
+                        maximum = read_uleb128(module, &size_read);
+                    }
+                    WasmTable* table = &imported_tables[imported_count++];
+                    table->elem_type = elem_type;
+                    table->has_max = has_max;
+                    table->initial_size = initial;
+                    table->maximum_size = maximum;
+                    table->is_imported = true;
+                    table->import_module = module_name;
+                    table->import_module_len = module_len;
+                    table->import_name = import_name;
+                    table->import_name_len = name_len;
+                    module_name = NULL;
+                    import_name = NULL;
+                    break;
+                }
+                case 2: /* memory */
+                {
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    const bool memory64 = (flags & 0x4) != 0;
+                    if (memory64) {
+                        (void)read_uleb128_64(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128_64(module, &size_read);
+                        }
+                    } else {
+                        (void)read_uleb128(module, &size_read);
+                        if (flags & 0x1) {
+                            (void)read_uleb128(module, &size_read);
+                        }
+                    }
+                    break;
+                }
+                case 3: /* global */
+                {
+                    uint8_t valtype = 0;
+                    uint8_t mutability = 0;
+                    if (wasm_stream_read(module, &valtype, 1) != 1 ||
+                        wasm_stream_read(module, &mutability, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_tables);
+                        return -1;
+                    }
+                    break;
+                }
+                default:
+                    free(module_name);
+                    free(import_name);
+                    free(imported_tables);
+                    return -1;
+            }
+            free(module_name);
+            free(import_name);
+        }
+        break;
+    }
+
+    bool found_table_section = false;
+    uint32_t defined_count = 0;
+    uint32_t tables_offset = 0;
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_TABLE) {
             if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                free(imported_tables);
                 return -1;
             }
 
             uint32_t size_read;
-            uint32_t count = read_uleb128(module, &size_read);
+            defined_count = read_uleb128(module, &size_read);
+            tables_offset = module->sections[i].offset + size_read;
+            found_table_section = true;
 
-            module->num_tables = count;
-            module->tables = (WasmTable*)malloc(count * sizeof(WasmTable));
-            if (!module->tables) {
-                return -1;
+            const uint32_t total_tables = imported_count + defined_count;
+            if (total_tables > 0) {
+                module->tables = (WasmTable*)calloc(total_tables, sizeof(WasmTable));
+                if (!module->tables) {
+                    free(imported_tables);
+                    return -1;
+                }
             }
-            memset(module->tables, 0, count * sizeof(WasmTable));
+            module->num_tables = total_tables;
+            module->num_imported_tables = imported_count;
+            module->tables_offset = tables_offset;
 
-            module->tables_offset = module->sections[i].offset + size_read;
+            for (uint32_t j = 0; j < imported_count; ++j) {
+                module->tables[j] = imported_tables[j];
+            }
+            free(imported_tables);
+            imported_tables = NULL;
 
-            for (uint32_t j = 0; j < count; j++) {
+            for (uint32_t j = 0; j < defined_count; j++) {
                 uint8_t elem_type = 0;
                 if (wasm_stream_read(module, &elem_type, 1) != 1) {
                     return -1;
@@ -845,12 +1001,13 @@ int wasm_load_tables(WasmModule* module) {
                     return -1;
                 }
                 uint32_t flags = read_uleb128(module, &size_read);
-                module->tables[j].elem_type = elem_type;
-                module->tables[j].has_max = (flags & 0x1) != 0;
-                module->tables[j].is_imported = false;
-                module->tables[j].initial_size = read_uleb128(module, &size_read);
-                if (module->tables[j].has_max) {
-                    module->tables[j].maximum_size = read_uleb128(module, &size_read);
+                WasmTable* table = &module->tables[imported_count + j];
+                table->elem_type = elem_type;
+                table->has_max = (flags & 0x1) != 0;
+                table->is_imported = false;
+                table->initial_size = read_uleb128(module, &size_read);
+                if (table->has_max) {
+                    table->maximum_size = read_uleb128(module, &size_read);
                 }
             }
 
@@ -858,67 +1015,229 @@ int wasm_load_tables(WasmModule* module) {
         }
     }
 
-    module->num_tables = 0;
-    return 0;
+    if (!found_table_section) {
+        if (imported_count > 0) {
+            module->tables = imported_tables;
+            module->num_tables = imported_count;
+            module->num_imported_tables = imported_count;
+        } else {
+            free(imported_tables);
+            module->num_tables = 0;
+            module->num_imported_tables = 0;
+        }
+        module->tables_offset = 0;
+        return 0;
+    }
+
+    free(imported_tables);
+    return -1;
 }
 
 // Carica le memory dalla sezione Memory
 int wasm_load_memories(WasmModule* module) {
+    if (!module) {
+        return -1;
+    }
+
+    WasmMemory* imported_memories = NULL;
+    uint32_t imported_count = 0;
+    uint32_t imported_capacity = 0;
+
+    for (uint32_t i = 0; i < module->num_sections; i++) {
+        if (module->sections[i].type != SECTION_IMPORT) {
+            continue;
+        }
+        if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+            return -1;
+        }
+
+        uint32_t size_read;
+        uint32_t count = read_uleb128(module, &size_read);
+        imported_capacity = count;
+        if (imported_capacity > 0) {
+            imported_memories = (WasmMemory*)calloc(imported_capacity, sizeof(WasmMemory));
+            if (!imported_memories) {
+                return -1;
+            }
+        }
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t module_len = 0;
+            uint32_t name_len = 0;
+            char* module_name = read_string(module, &module_len);
+            char* import_name = read_string(module, &name_len);
+            if (!module_name && module_len == 0) {
+                module_name = (char*)calloc(1, 1);
+            }
+            if (!import_name && name_len == 0) {
+                import_name = (char*)calloc(1, 1);
+            }
+            if (!module_name || !import_name) {
+                free(module_name);
+                free(import_name);
+                free(imported_memories);
+                return -1;
+            }
+
+            uint8_t kind = 0;
+            if (wasm_stream_read(module, &kind, 1) != 1) {
+                free(module_name);
+                free(import_name);
+                free(imported_memories);
+                return -1;
+            }
+            switch (kind) {
+                case 0: /* func */
+                    (void)read_uleb128(module, &size_read);
+                    break;
+                case 1: /* table */
+                {
+                    uint8_t elem_type = 0;
+                    if (wasm_stream_read(module, &elem_type, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_memories);
+                        return -1;
+                    }
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    (void)read_uleb128(module, &size_read);
+                    if (flags & 0x1) {
+                        (void)read_uleb128(module, &size_read);
+                    }
+                    break;
+                }
+                case 2: /* memory */
+                {
+                    uint32_t flags = read_uleb128(module, &size_read);
+                    const bool memory64 = (flags & 0x4) != 0;
+                    uint64_t initial = 0;
+                    uint64_t maximum = 0;
+                    if (memory64) {
+                        initial = read_uleb128_64(module, &size_read);
+                        if (flags & 0x1) {
+                            maximum = read_uleb128_64(module, &size_read);
+                        }
+                    } else {
+                        initial = read_uleb128(module, &size_read);
+                        if (flags & 0x1) {
+                            maximum = read_uleb128(module, &size_read);
+                        }
+                    }
+                    WasmMemory* memory = &imported_memories[imported_count++];
+                    memory->is_memory64 = memory64;
+                    memory->has_max = (flags & 0x1) != 0;
+                    memory->initial_size = initial;
+                    memory->maximum_size = maximum;
+                    memory->is_imported = true;
+                    memory->import_module = module_name;
+                    memory->import_module_len = module_len;
+                    memory->import_name = import_name;
+                    memory->import_name_len = name_len;
+                    module_name = NULL;
+                    import_name = NULL;
+                    break;
+                }
+                case 3: /* global */
+                {
+                    uint8_t valtype = 0;
+                    uint8_t mutability = 0;
+                    if (wasm_stream_read(module, &valtype, 1) != 1 ||
+                        wasm_stream_read(module, &mutability, 1) != 1) {
+                        free(module_name);
+                        free(import_name);
+                        free(imported_memories);
+                        return -1;
+                    }
+                    break;
+                }
+                default:
+                    free(module_name);
+                    free(import_name);
+                    free(imported_memories);
+                    return -1;
+            }
+            free(module_name);
+            free(import_name);
+        }
+        break;
+    }
+
+    bool found_memory_section = false;
+    uint32_t defined_count = 0;
+    uint32_t memories_offset = 0;
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_MEMORY) {
             if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
+                free(imported_memories);
                 return -1;
             }
-            
+
             uint32_t size_read;
-            uint32_t count = read_uleb128(module, &size_read);
-            
-            module->num_memories = count;
-            module->memories = (WasmMemory*)malloc(count * sizeof(WasmMemory));
-            if (!module->memories) {
-                return -1;
+            defined_count = read_uleb128(module, &size_read);
+            memories_offset = module->sections[i].offset + size_read;
+            found_memory_section = true;
+
+            const uint32_t total_memories = imported_count + defined_count;
+            if (total_memories > 0) {
+                module->memories = (WasmMemory*)calloc(total_memories, sizeof(WasmMemory));
+                if (!module->memories) {
+                    free(imported_memories);
+                    return -1;
+                }
             }
-            memset(module->memories, 0, count * sizeof(WasmMemory));
-            
-            module->memories_offset = module->sections[i].offset + size_read;
-            
-            for (uint32_t j = 0; j < count; j++) {
-                // Leggi i limiti
-                uint8_t flags;
+            module->num_memories = total_memories;
+            module->num_imported_memories = imported_count;
+            module->memories_offset = memories_offset;
+
+            for (uint32_t j = 0; j < imported_count; ++j) {
+                module->memories[j] = imported_memories[j];
+            }
+            free(imported_memories);
+            imported_memories = NULL;
+
+            for (uint32_t j = 0; j < defined_count; j++) {
+                uint8_t flags = 0;
                 if (wasm_stream_read(module, &flags, 1) != 1) {
                     return -1;
                 }
-                
-                // Verifica se è memory64 (bit 0x4)
-                module->memories[j].is_memory64 = (flags & 0x4) != 0;
-                
-                // Verifica se ha un valore massimo (bit 0x1)
-                module->memories[j].has_max = (flags & 0x1) != 0;
-                
-                // Leggi la dimensione iniziale
-                if (module->memories[j].is_memory64) {
-                    module->memories[j].initial_size = read_uleb128_64(module, &size_read);
+                WasmMemory* memory = &module->memories[imported_count + j];
+                memory->is_memory64 = (flags & 0x4) != 0;
+                memory->has_max = (flags & 0x1) != 0;
+                memory->is_imported = false;
+                if (memory->is_memory64) {
+                    memory->initial_size = read_uleb128_64(module, &size_read);
                 } else {
-                    module->memories[j].initial_size = read_uleb128(module, &size_read);
+                    memory->initial_size = read_uleb128(module, &size_read);
                 }
-                
-                // Leggi la dimensione massima se presente
-                if (module->memories[j].has_max) {
-                    if (module->memories[j].is_memory64) {
-                        module->memories[j].maximum_size = read_uleb128_64(module, &size_read);
+                if (memory->has_max) {
+                    if (memory->is_memory64) {
+                        memory->maximum_size = read_uleb128_64(module, &size_read);
                     } else {
-                        module->memories[j].maximum_size = read_uleb128(module, &size_read);
+                        memory->maximum_size = read_uleb128(module, &size_read);
                     }
                 }
             }
-            
+
             return 0;
         }
     }
-    
-    // È possibile che non ci sia una sezione memory
-    module->num_memories = 0;
-    return 0;
+
+    if (!found_memory_section) {
+        if (imported_count > 0) {
+            module->memories = imported_memories;
+            module->num_memories = imported_count;
+            module->num_imported_memories = imported_count;
+        } else {
+            free(imported_memories);
+            module->num_memories = 0;
+            module->num_imported_memories = 0;
+        }
+        module->memories_offset = 0;
+        return 0;
+    }
+
+    free(imported_memories);
+    return -1;
 }
 
 // Carica i globali dalla sezione Global
@@ -1374,13 +1693,51 @@ void wasm_print_info(WasmModule* module) {
     if (module->num_memories > 0) {
         printf("\n=== Memories (%u) ===\n", module->num_memories);
         for (uint32_t i = 0; i < module->num_memories; i++) {
-            printf("Memory %u: Type=%s, Initial=%" PRIu64 " pages", 
-                   i, 
-                   module->memories[i].is_memory64 ? "Memory64" : "Memory32",
-                   module->memories[i].initial_size);
+            if (module->memories[i].is_imported) {
+                const char* module_name = module->memories[i].import_module ? module->memories[i].import_module : "<null>";
+                const char* import_name = module->memories[i].import_name ? module->memories[i].import_name : "<null>";
+                printf("Memory %u: Import=%s.%s, Type=%s, Initial=%" PRIu64 " pages",
+                       i,
+                       module_name,
+                       import_name,
+                       module->memories[i].is_memory64 ? "Memory64" : "Memory32",
+                       module->memories[i].initial_size);
+            } else {
+                printf("Memory %u: Type=%s, Initial=%" PRIu64 " pages",
+                       i,
+                       module->memories[i].is_memory64 ? "Memory64" : "Memory32",
+                       module->memories[i].initial_size);
+            }
             
             if (module->memories[i].has_max) {
                 printf(", Maximum=%" PRIu64 " pages", module->memories[i].maximum_size);
+            } else {
+                printf(", No maximum");
+            }
+            printf("\n");
+        }
+    }
+
+    if (module->num_tables > 0) {
+        printf("\n=== Tables (%u) ===\n", module->num_tables);
+        for (uint32_t i = 0; i < module->num_tables; i++) {
+            if (module->tables[i].is_imported) {
+                const char* module_name = module->tables[i].import_module ? module->tables[i].import_module : "<null>";
+                const char* import_name = module->tables[i].import_name ? module->tables[i].import_name : "<null>";
+                printf("Table %u: Import=%s.%s, ElemType=0x%02X, Initial=%u",
+                       i,
+                       module_name,
+                       import_name,
+                       module->tables[i].elem_type,
+                       module->tables[i].initial_size);
+            } else {
+                printf("Table %u: ElemType=0x%02X, Initial=%u",
+                       i,
+                       module->tables[i].elem_type,
+                       module->tables[i].initial_size);
+            }
+            if (module->tables[i].has_max) {
+                printf(", Maximum=%u", module->tables[i].maximum_size);
             } else {
                 printf(", No maximum");
             }

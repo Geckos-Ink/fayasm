@@ -41,6 +41,11 @@ typedef struct {
     uint64_t initial_size; // Dimensione iniziale (in pagine)
     uint64_t maximum_size; // Dimensione massima (in pagine, opzionale)
     bool has_max;          // Indica se è specificata una dimensione massima
+    bool is_imported;
+    char* import_module;
+    uint32_t import_module_len;
+    char* import_name;
+    uint32_t import_name_len;
 } WasmMemory;
 typedef struct {
     uint8_t elem_type;
@@ -48,6 +53,10 @@ typedef struct {
     uint32_t maximum_size;
     bool has_max;
     bool is_imported;
+    char* import_module;
+    uint32_t import_module_len;
+    char* import_name;
+    uint32_t import_name_len;
 } WasmTable;
 typedef struct {
     uint32_t num_params;
@@ -123,10 +132,12 @@ typedef struct {
     uint32_t num_tables;
     WasmTable* tables;
     off_t tables_offset;
+    uint32_t num_imported_tables;
     // Memoria
     uint32_t num_memories;
     WasmMemory* memories;
     off_t memories_offset;
+    uint32_t num_imported_memories;
     // Element segments
     uint32_t num_elements;
     WasmElementSegment* elements;

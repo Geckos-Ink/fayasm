@@ -2886,6 +2886,9 @@ static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, f
         *grew_out = true;
         return FA_RUNTIME_OK;
     }
+    if (!table->owns_data) {
+        return FA_RUNTIME_OK;
+    }
     if (delta > UINT32_MAX - table->size) {
         return FA_RUNTIME_OK;
     }
@@ -2932,6 +2935,9 @@ static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pag
     *grew_out = false;
     if (delta_pages == 0) {
         *grew_out = true;
+        return FA_RUNTIME_OK;
+    }
+    if (!memory->owns_data) {
         return FA_RUNTIME_OK;
     }
     const uint64_t new_pages = prev_pages + delta_pages;
