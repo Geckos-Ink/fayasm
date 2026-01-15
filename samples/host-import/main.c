@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         fprintf(stderr, "Failed to attach module.\n");
         fa_Runtime_free(runtime);
         wasm_module_free(module);
@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         fprintf(stderr, "Failed to create job.\n");
         fa_Runtime_free(runtime);
@@ -84,16 +84,16 @@ int main(int argc, char** argv) {
     uint32_t function_index = 0;
     if (!find_exported_function(module, "run", &function_index)) {
         fprintf(stderr, "Failed to locate export 'run'.\n");
-        (void)fa_Runtime_destroy_job(runtime, job);
+        (void)fa_Runtime_destroyJob(runtime, job);
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, function_index);
+    int status = fa_Runtime_executeJob(runtime, job, function_index);
     if (status != FA_RUNTIME_OK) {
         fprintf(stderr, "Execution failed with status %d.\n", status);
-        (void)fa_Runtime_destroy_job(runtime, job);
+        (void)fa_Runtime_destroyJob(runtime, job);
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 1;
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
     const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
     if (!value || value->kind != fa_job_value_i32) {
         fprintf(stderr, "Unexpected result on stack.\n");
-        (void)fa_Runtime_destroy_job(runtime, job);
+        (void)fa_Runtime_destroyJob(runtime, job);
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 1;
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
 
     printf("Result: %d\n", value->payload.i32_value);
 
-    (void)fa_Runtime_destroy_job(runtime, job);
+    (void)fa_Runtime_destroyJob(runtime, job);
     fa_Runtime_free(runtime);
     wasm_module_free(module);
     return 0;

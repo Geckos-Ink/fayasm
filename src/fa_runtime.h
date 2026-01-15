@@ -154,17 +154,17 @@ typedef struct fa_Runtime {
 fa_Runtime* fa_Runtime_init(void);
 void fa_Runtime_free(fa_Runtime* runtime);
 
-int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module);
-void fa_Runtime_detach_module(fa_Runtime* runtime);
+int fa_Runtime_attachModule(fa_Runtime* runtime, WasmModule* module);
+void fa_Runtime_detachModule(fa_Runtime* runtime);
 
-fa_Job* fa_Runtime_create_job(fa_Runtime* runtime);
-int fa_Runtime_destroy_job(fa_Runtime* runtime, fa_Job* job);
+fa_Job* fa_Runtime_createJob(fa_Runtime* runtime);
+int fa_Runtime_destroyJob(fa_Runtime* runtime, fa_Job* job);
 
-int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_index);
+int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_index);
 
-int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value);
+int fa_Runtime_setImportedGlobal(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value);
 
-int fa_Runtime_bind_host_function(fa_Runtime* runtime,
+int fa_Runtime_bindHostFunction(fa_Runtime* runtime,
                                   const char* module_name,
                                   const char* import_name,
                                   fa_RuntimeHostFunction function,
@@ -174,11 +174,11 @@ int fa_Runtime_bindHostFunctionFromLibrary(fa_Runtime* runtime,
                                            const char* import_name,
                                            const char* library_path,
                                            const char* symbol_name);
-int fa_Runtime_bind_imported_memory(fa_Runtime* runtime,
+int fa_Runtime_bindImportedMemory(fa_Runtime* runtime,
                                     const char* module_name,
                                     const char* import_name,
                                     const fa_RuntimeHostMemory* memory);
-int fa_Runtime_bind_imported_table(fa_Runtime* runtime,
+int fa_Runtime_bindImportedTable(fa_Runtime* runtime,
                                    const char* module_name,
                                    const char* import_name,
                                    const fa_RuntimeHostTable* table);
@@ -195,13 +195,13 @@ bool fa_RuntimeHostCall_set_f32(const fa_RuntimeHostCall* call, uint32_t index, 
 bool fa_RuntimeHostCall_set_f64(const fa_RuntimeHostCall* call, uint32_t index, f64 value);
 bool fa_RuntimeHostCall_set_ref(const fa_RuntimeHostCall* call, uint32_t index, fa_ptr value);
 
-void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks);
-int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, bool enabled);
-void fa_Runtime_clear_function_traps(fa_Runtime* runtime);
+void fa_Runtime_setTrapHooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks);
+int fa_Runtime_setFunctionTrap(fa_Runtime* runtime, uint32_t function_index, bool enabled);
+void fa_Runtime_clearFunctionTraps(fa_Runtime* runtime);
 
-void fa_Runtime_set_spill_hooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks* hooks);
-int fa_Runtime_jit_spill_program(fa_Runtime* runtime, uint32_t function_index);
-int fa_Runtime_jit_load_program(fa_Runtime* runtime, uint32_t function_index);
-int fa_Runtime_spill_memory(fa_Runtime* runtime, uint32_t memory_index);
-int fa_Runtime_load_memory(fa_Runtime* runtime, uint32_t memory_index);
-int fa_Runtime_ensure_memory_loaded(fa_Runtime* runtime, uint32_t memory_index);
+void fa_Runtime_setSpillHooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks* hooks);
+int fa_Runtime_jitSpillProgram(fa_Runtime* runtime, uint32_t function_index);
+int fa_Runtime_jitLoadProgram(fa_Runtime* runtime, uint32_t function_index);
+int fa_Runtime_spillMemory(fa_Runtime* runtime, uint32_t memory_index);
+int fa_Runtime_loadMemory(fa_Runtime* runtime, uint32_t memory_index);
+int fa_Runtime_ensureMemoryLoaded(fa_Runtime* runtime, uint32_t memory_index);

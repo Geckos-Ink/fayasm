@@ -1199,7 +1199,7 @@ static int runtime_decode_block_signature(const fa_Runtime* runtime,
     }
 }
 
-static void fa_Runtime_reset_job_state(fa_Job* job) {
+static void fa_Runtime_resetJobState(fa_Job* job) {
     if (!job) {
         return;
     }
@@ -2710,18 +2710,18 @@ void fa_Runtime_free(fa_Runtime* runtime) {
         list_destroy(runtime->jobs);
         runtime->jobs = NULL;
     }
-    fa_Runtime_detach_module(runtime);
+    fa_Runtime_detachModule(runtime);
     runtime_host_bindings_clear(runtime);
     runtime_host_memory_bindings_clear(runtime);
     runtime_host_table_bindings_clear(runtime);
     free(runtime);
 }
 
-int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
+int fa_Runtime_attachModule(fa_Runtime* runtime, WasmModule* module) {
     if (!runtime || !module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    fa_Runtime_detach_module(runtime);
+    fa_Runtime_detachModule(runtime);
     fa_jit_context_apply_env_overrides(&runtime->jit_context);
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
     runtime->module = module;
@@ -2770,20 +2770,20 @@ int fa_Runtime_attach_module(fa_Runtime* runtime, WasmModule* module) {
     if (module->num_functions > 0) {
         runtime->function_traps = (uint8_t*)calloc(module->num_functions, sizeof(uint8_t));
         if (!runtime->function_traps) {
-            fa_Runtime_detach_module(runtime);
+            fa_Runtime_detachModule(runtime);
             return FA_RUNTIME_ERR_OUT_OF_MEMORY;
         }
         runtime->function_trap_count = module->num_functions;
     }
     status = runtime_jit_cache_init(runtime);
     if (status != FA_RUNTIME_OK) {
-        fa_Runtime_detach_module(runtime);
+        fa_Runtime_detachModule(runtime);
         return status;
     }
     return FA_RUNTIME_OK;
 }
 
-void fa_Runtime_detach_module(fa_Runtime* runtime) {
+void fa_Runtime_detachModule(fa_Runtime* runtime) {
     if (!runtime) {
         return;
     }
@@ -2802,7 +2802,7 @@ void fa_Runtime_detach_module(fa_Runtime* runtime) {
     runtime->active_locals_count = 0;
 }
 
-fa_Job* fa_Runtime_create_job(fa_Runtime* runtime) {
+fa_Job* fa_Runtime_createJob(fa_Runtime* runtime) {
     if (!runtime || !runtime->jobs) {
         return NULL;
     }
@@ -2820,7 +2820,7 @@ fa_Job* fa_Runtime_create_job(fa_Runtime* runtime) {
     return job;
 }
 
-int fa_Runtime_destroy_job(fa_Runtime* runtime, fa_Job* job) {
+int fa_Runtime_destroyJob(fa_Runtime* runtime, fa_Job* job) {
     if (!runtime || !runtime->jobs || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -2836,7 +2836,7 @@ int fa_Runtime_destroy_job(fa_Runtime* runtime, fa_Job* job) {
     return FA_RUNTIME_ERR_INVALID_ARGUMENT;
 }
 
-int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value) {
+int fa_Runtime_setImportedGlobal(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value) {
     if (!runtime || !value || !runtime->module || !runtime->globals) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -2854,7 +2854,7 @@ int fa_Runtime_set_imported_global(fa_Runtime* runtime, uint32_t global_index, c
     return runtime_init_globals(runtime, runtime->module);
 }
 
-int fa_Runtime_bind_host_function(fa_Runtime* runtime,
+int fa_Runtime_bindHostFunction(fa_Runtime* runtime,
                                   const char* module_name,
                                   const char* import_name,
                                   fa_RuntimeHostFunction function,
@@ -2884,14 +2884,14 @@ int fa_Runtime_bindHostFunctionFromLibrary(fa_Runtime* runtime,
     return runtime_add_host_binding(runtime, module_name, import_name, function, NULL, handle);
 }
 
-int fa_Runtime_bind_imported_memory(fa_Runtime* runtime,
+int fa_Runtime_bindImportedMemory(fa_Runtime* runtime,
                                     const char* module_name,
                                     const char* import_name,
                                     const fa_RuntimeHostMemory* memory) {
     return runtime_add_host_memory_binding(runtime, module_name, import_name, memory);
 }
 
-int fa_Runtime_bind_imported_table(fa_Runtime* runtime,
+int fa_Runtime_bindImportedTable(fa_Runtime* runtime,
                                    const char* module_name,
                                    const char* import_name,
                                    const fa_RuntimeHostTable* table) {
@@ -3074,7 +3074,7 @@ bool fa_RuntimeHostCall_set_ref(const fa_RuntimeHostCall* call, uint32_t index, 
     return true;
 }
 
-void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks) {
+void fa_Runtime_setTrapHooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* hooks) {
     if (!runtime) {
         return;
     }
@@ -3085,7 +3085,7 @@ void fa_Runtime_set_trap_hooks(fa_Runtime* runtime, const fa_RuntimeTrapHooks* h
     }
 }
 
-int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, bool enabled) {
+int fa_Runtime_setFunctionTrap(fa_Runtime* runtime, uint32_t function_index, bool enabled) {
     if (!runtime) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -3099,14 +3099,14 @@ int fa_Runtime_set_function_trap(fa_Runtime* runtime, uint32_t function_index, b
     return FA_RUNTIME_OK;
 }
 
-void fa_Runtime_clear_function_traps(fa_Runtime* runtime) {
+void fa_Runtime_clearFunctionTraps(fa_Runtime* runtime) {
     if (!runtime || !runtime->function_traps || runtime->function_trap_count == 0) {
         return;
     }
     memset(runtime->function_traps, 0, runtime->function_trap_count * sizeof(uint8_t));
 }
 
-void fa_Runtime_set_spill_hooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks* hooks) {
+void fa_Runtime_setSpillHooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks* hooks) {
     if (!runtime) {
         return;
     }
@@ -3117,7 +3117,7 @@ void fa_Runtime_set_spill_hooks(fa_Runtime* runtime, const fa_RuntimeSpillHooks*
     }
 }
 
-int fa_Runtime_jit_spill_program(fa_Runtime* runtime, uint32_t function_index) {
+int fa_Runtime_jitSpillProgram(fa_Runtime* runtime, uint32_t function_index) {
     if (!runtime || !runtime->jit_cache) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -3132,7 +3132,7 @@ int fa_Runtime_jit_spill_program(fa_Runtime* runtime, uint32_t function_index) {
     return FA_RUNTIME_OK;
 }
 
-int fa_Runtime_jit_load_program(fa_Runtime* runtime, uint32_t function_index) {
+int fa_Runtime_jitLoadProgram(fa_Runtime* runtime, uint32_t function_index) {
     if (!runtime || !runtime->jit_cache) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -3146,7 +3146,7 @@ int fa_Runtime_jit_load_program(fa_Runtime* runtime, uint32_t function_index) {
     return runtime_jit_cache_load_entry(runtime, entry);
 }
 
-int fa_Runtime_spill_memory(fa_Runtime* runtime, uint32_t memory_index) {
+int fa_Runtime_spillMemory(fa_Runtime* runtime, uint32_t memory_index) {
     if (!runtime || !runtime->memories) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -3178,7 +3178,7 @@ int fa_Runtime_spill_memory(fa_Runtime* runtime, uint32_t memory_index) {
     return FA_RUNTIME_OK;
 }
 
-int fa_Runtime_load_memory(fa_Runtime* runtime, uint32_t memory_index) {
+int fa_Runtime_loadMemory(fa_Runtime* runtime, uint32_t memory_index) {
     if (!runtime || !runtime->memories) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -3211,7 +3211,7 @@ int fa_Runtime_load_memory(fa_Runtime* runtime, uint32_t memory_index) {
     return FA_RUNTIME_OK;
 }
 
-int fa_Runtime_ensure_memory_loaded(fa_Runtime* runtime, uint32_t memory_index) {
+int fa_Runtime_ensureMemoryLoaded(fa_Runtime* runtime, uint32_t memory_index) {
     if (!runtime || !runtime->memories) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -4023,7 +4023,7 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
     }
 }
 
-int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_index) {
+int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_index) {
     if (!runtime || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -4034,7 +4034,7 @@ int fa_Runtime_execute_job(fa_Runtime* runtime, fa_Job* job, uint32_t function_i
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
 
-    fa_Runtime_reset_job_state(job);
+    fa_Runtime_resetJobState(job);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);

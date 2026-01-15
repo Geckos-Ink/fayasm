@@ -178,9 +178,9 @@ static int function_trap(fa_Runtime* runtime, uint32_t function_index, void* use
     if (!state || function_index != state->target_function) {
         return FA_RUNTIME_OK;
     }
-    int status = fa_Runtime_jit_load_program(runtime, function_index);
+    int status = fa_Runtime_jitLoadProgram(runtime, function_index);
     if (status == FA_RUNTIME_OK) {
-        (void)fa_Runtime_set_function_trap(runtime, function_index, false);
+        (void)fa_Runtime_setFunctionTrap(runtime, function_index, false);
     }
     return FA_RUNTIME_OK;
 }
@@ -218,38 +218,38 @@ int main(void) {
     runtime->jit_context.config.min_advantage_score = 0.0f;
     runtime->jit_context.config.prescan_functions = true;
 
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 1;
     }
 
     fa_RuntimeSpillHooks spill_hooks = { jit_spill, jit_load, memory_spill, memory_load, NULL };
-    fa_Runtime_set_spill_hooks(runtime, &spill_hooks);
+    fa_Runtime_setSpillHooks(runtime, &spill_hooks);
 
     TrapState trap_state = {0};
     trap_state.target_function = 0;
     fa_RuntimeTrapHooks trap_hooks = { function_trap, &trap_state };
-    fa_Runtime_set_trap_hooks(runtime, &trap_hooks);
-    (void)fa_Runtime_set_function_trap(runtime, trap_state.target_function, true);
+    fa_Runtime_setTrapHooks(runtime, &trap_hooks);
+    (void)fa_Runtime_setFunctionTrap(runtime, trap_state.target_function, true);
 
     if (runtime->memories_count > 0) {
-        (void)fa_Runtime_spill_memory(runtime, 0);
+        (void)fa_Runtime_spillMemory(runtime, 0);
     }
 
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         printf("Execution error: %d\n", status);
     }
 
-    (void)fa_Runtime_destroy_job(runtime, job);
+    (void)fa_Runtime_destroyJob(runtime, job);
     fa_Runtime_free(runtime);
     wasm_module_free(module);
     return status == FA_RUNTIME_OK ? 0 : 1;

@@ -637,7 +637,7 @@ static int runtime_require_memory(fa_Runtime* runtime, u64 index, fa_RuntimeMemo
     if (!memory) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    int status = fa_Runtime_ensure_memory_loaded(runtime, (uint32_t)index);
+    int status = fa_Runtime_ensureMemoryLoaded(runtime, (uint32_t)index);
     if (status != FA_RUNTIME_OK) {
         return status;
     }
@@ -2923,7 +2923,7 @@ static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pag
     if (!memory) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    int status = fa_Runtime_ensure_memory_loaded(runtime, (uint32_t)mem_index);
+    int status = fa_Runtime_ensureMemoryLoaded(runtime, (uint32_t)mem_index);
     if (status != FA_RUNTIME_OK) {
         return status;
     }

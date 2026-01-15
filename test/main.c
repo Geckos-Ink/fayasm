@@ -727,12 +727,12 @@ static int run_job(ByteBuffer* module_bytes, fa_Runtime** runtime_out, fa_Job** 
         wasm_module_free(module);
         return 0;
     }
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         return 0;
     }
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         fa_Runtime_free(runtime);
         wasm_module_free(module);
@@ -746,7 +746,7 @@ static int run_job(ByteBuffer* module_bytes, fa_Runtime** runtime_out, fa_Job** 
 
 static void cleanup_job(fa_Runtime* runtime, fa_Job* job, WasmModule* module, ByteBuffer* module_bytes, ByteBuffer* instructions) {
     if (runtime && job) {
-        (void)fa_Runtime_destroy_job(runtime, job);
+        (void)fa_Runtime_destroyJob(runtime, job);
     }
     if (runtime) {
         fa_Runtime_free(runtime);
@@ -793,7 +793,7 @@ static int test_stack_arithmetic(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -854,20 +854,20 @@ static int test_jit_cache_dispatch(void) {
     runtime->jit_context.config.min_advantage_score = 0.0f;
     runtime->jit_context.config.prescan_functions = true;
 
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         fa_Runtime_free(runtime);
         wasm_module_free(module);
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
 
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -983,21 +983,21 @@ static int test_host_import_call(void) {
         cleanup_job(NULL, NULL, module, &module_bytes, &instructions);
         return 1;
     }
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
-    if (fa_Runtime_bind_host_function(runtime, "env", "host_add", host_add, NULL) != FA_RUNTIME_OK) {
+    if (fa_Runtime_bindHostFunction(runtime, "env", "host_add", host_add, NULL) != FA_RUNTIME_OK) {
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 1);
+    int status = fa_Runtime_executeJob(runtime, job, 1);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1095,20 +1095,20 @@ static int test_imported_memory_binding(void) {
     fa_RuntimeHostMemory host_memory = {0};
     host_memory.data = memory_data;
     host_memory.size_bytes = FA_WASM_PAGE_SIZE;
-    if (fa_Runtime_bind_imported_memory(runtime, "env", "mem0", &host_memory) != FA_RUNTIME_OK) {
+    if (fa_Runtime_bindImportedMemory(runtime, "env", "mem0", &host_memory) != FA_RUNTIME_OK) {
         free(memory_data);
         bb_free(&imports);
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         free(memory_data);
         bb_free(&imports);
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
 
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         free(memory_data);
         bb_free(&imports);
@@ -1116,7 +1116,7 @@ static int test_imported_memory_binding(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         free(memory_data);
         bb_free(&imports);
@@ -1214,20 +1214,20 @@ static int test_imported_table_binding(void) {
     fa_RuntimeHostTable host_table = {0};
     host_table.data = table_data;
     host_table.size = table_size;
-    if (fa_Runtime_bind_imported_table(runtime, "env", "tbl0", &host_table) != FA_RUNTIME_OK) {
+    if (fa_Runtime_bindImportedTable(runtime, "env", "tbl0", &host_table) != FA_RUNTIME_OK) {
         free(table_data);
         bb_free(&imports);
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
-    if (fa_Runtime_attach_module(runtime, module) != FA_RUNTIME_OK) {
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
         free(table_data);
         bb_free(&imports);
         cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
         return 1;
     }
 
-    fa_Job* job = fa_Runtime_create_job(runtime);
+    fa_Job* job = fa_Runtime_createJob(runtime);
     if (!job) {
         free(table_data);
         bb_free(&imports);
@@ -1235,7 +1235,7 @@ static int test_imported_table_binding(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         free(table_data);
         bb_free(&imports);
@@ -1281,7 +1281,7 @@ static int test_div_by_zero_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -1311,7 +1311,7 @@ static int test_multi_value_return(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1359,7 +1359,7 @@ static int test_call_depth_trap(void) {
     }
     runtime->max_call_depth = 4;
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_CALL_DEPTH_EXCEEDED ? 0 : 1;
 }
@@ -1389,13 +1389,13 @@ static int test_function_trap_allow(void) {
     TrapState state = {0};
     state.status = FA_RUNTIME_OK;
     fa_RuntimeTrapHooks hooks = { trap_handler, &state };
-    fa_Runtime_set_trap_hooks(runtime, &hooks);
-    if (fa_Runtime_set_function_trap(runtime, 0, true) != FA_RUNTIME_OK) {
+    fa_Runtime_setTrapHooks(runtime, &hooks);
+    if (fa_Runtime_setFunctionTrap(runtime, 0, true) != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK || state.calls != 1) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1435,13 +1435,13 @@ static int test_function_trap_block(void) {
     TrapState state = {0};
     state.status = FA_RUNTIME_ERR_TRAP;
     fa_RuntimeTrapHooks hooks = { trap_handler, &state };
-    fa_Runtime_set_trap_hooks(runtime, &hooks);
-    if (fa_Runtime_set_function_trap(runtime, 0, true) != FA_RUNTIME_OK) {
+    fa_Runtime_setTrapHooks(runtime, &hooks);
+    if (fa_Runtime_setFunctionTrap(runtime, 0, true) != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_ERR_TRAP || state.calls != 1) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1476,7 +1476,7 @@ static int test_memory_oob_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -1546,7 +1546,7 @@ static int test_memory_grow_failure(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1601,7 +1601,7 @@ static int test_memory64_grow_size(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1669,7 +1669,7 @@ static int test_multi_memory_memarg(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1733,7 +1733,7 @@ static int test_bulk_memory_copy_fill(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1817,7 +1817,7 @@ static int test_data_segment_init(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1894,7 +1894,7 @@ static int test_data_segment_active(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -1983,7 +1983,7 @@ static int test_data_drop_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -2066,7 +2066,7 @@ static int test_table_init_copy(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2160,7 +2160,7 @@ static int test_table_fill_size(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2261,7 +2261,7 @@ static int test_elem_drop_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -2314,7 +2314,7 @@ static int test_table_grow(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2360,7 +2360,7 @@ static int test_simd_v128_const(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2407,7 +2407,7 @@ static int test_simd_i32x4_splat(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2452,7 +2452,7 @@ static int test_i32_clz(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2491,7 +2491,7 @@ static int test_f32_abs(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2557,7 +2557,7 @@ static int test_local_get_set(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2624,7 +2624,7 @@ static int test_local_tee(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2669,7 +2669,7 @@ static int test_br_if_stack_effect(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2714,7 +2714,7 @@ static int test_i64_add(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2755,7 +2755,7 @@ static int test_f64_mul(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2794,7 +2794,7 @@ static int test_trunc_f32_nan_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -2822,7 +2822,7 @@ static int test_trunc_f32_overflow_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -2850,7 +2850,7 @@ static int test_trunc_f64_overflow_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -2885,7 +2885,7 @@ static int test_if_else_false(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -2934,7 +2934,7 @@ static int test_block_result_br(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3006,7 +3006,7 @@ static int test_global_get_initializer(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3084,12 +3084,12 @@ static int test_global_import_initializer(void) {
     import_value.is_signed = true;
     import_value.bit_width = 32U;
     import_value.payload.i32_value = 11;
-    if (fa_Runtime_set_imported_global(runtime, 0, &import_value) != FA_RUNTIME_OK) {
+    if (fa_Runtime_setImportedGlobal(runtime, 0, &import_value) != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3131,7 +3131,7 @@ static int test_block_result_arity_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -3165,7 +3165,7 @@ static int test_br_to_end(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3218,7 +3218,7 @@ static int test_br_table_branch(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3306,7 +3306,7 @@ static int test_loop_label_result(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3366,7 +3366,7 @@ static int test_loop_label_type_mismatch_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -3425,7 +3425,7 @@ static int test_global_get_set(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
@@ -3490,7 +3490,7 @@ static int test_global_set_immutable_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -3544,7 +3544,7 @@ static int test_global_set_type_mismatch_trap(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
 }
@@ -3595,7 +3595,7 @@ static int test_local_f32_default(void) {
         return 1;
     }
 
-    int status = fa_Runtime_execute_job(runtime, job, 0);
+    int status = fa_Runtime_executeJob(runtime, job, 0);
     if (status != FA_RUNTIME_OK) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
