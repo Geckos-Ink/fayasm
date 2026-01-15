@@ -9,6 +9,10 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
 - Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
 
+## Naming Convention
+
+- Public helpers follow scoped camelCase (e.g., prefer `fa_Runtime_bindHostFunctionFromLibrary` over `fa_Runtime_bind_host_function_from_library`). Keep docs/samples aligned whenever new API helpers land so future agents inherit the pattern.
+
 ## High Priority Directive
 
 - Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
@@ -38,7 +42,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
 - `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat, conversion traps, block unwinding, global type mismatch traps, function trap allow/block). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory.
-- `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bind_host_function_from_library`.
+- `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
 - `build.sh` - one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching

@@ -2862,11 +2862,11 @@ int fa_Runtime_bind_host_function(fa_Runtime* runtime,
     return runtime_add_host_binding(runtime, module_name, import_name, function, user_data, NULL);
 }
 
-int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
-                                               const char* module_name,
-                                               const char* import_name,
-                                               const char* library_path,
-                                               const char* symbol_name) {
+int fa_Runtime_bindHostFunctionFromLibrary(fa_Runtime* runtime,
+                                          const char* module_name,
+                                          const char* import_name,
+                                          const char* library_path,
+                                          const char* symbol_name) {
     if (!runtime || !module_name || !import_name || !library_path) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }

@@ -54,7 +54,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
 - `ROADMAP.md` – near-term and medium-term priorities for runtime, JIT, and microcode work.
 - `test/` – CMake-driven harness (`fayasm_test_main`) with stream navigation and parser coverage; supports `--list` and substring filters to focus on a specific area.
 - `samples/esp32-trap` - ESP32 trap/offload sample with SD-backed microcode and memory spill hooks.
-- `samples/host-import` - host import demo using `fa_Runtime_bind_host_function_from_library` with a shared library.
+- `samples/host-import` - host import demo using `fa_Runtime_bindHostFunctionFromLibrary` with a shared library.
 - `studies/` – research archive covering JIT experiments, WASM decoding notes, and runtime prototypes; cross-reference entries when reusing ideas.
 - `build.sh` – clean rebuild + test runner script; keep its CMake flags in sync with the docs.
 

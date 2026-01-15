@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (fa_Runtime_bind_host_function_from_library(runtime,
+    if (fa_Runtime_bindHostFunctionFromLibrary(runtime,
                                                     "env",
                                                     "host_add",
                                                     library_path,

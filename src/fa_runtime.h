@@ -169,11 +169,11 @@ int fa_Runtime_bind_host_function(fa_Runtime* runtime,
                                   const char* import_name,
                                   fa_RuntimeHostFunction function,
                                   void* user_data);
-int fa_Runtime_bind_host_function_from_library(fa_Runtime* runtime,
-                                               const char* module_name,
-                                               const char* import_name,
-                                               const char* library_path,
-                                               const char* symbol_name);
+int fa_Runtime_bindHostFunctionFromLibrary(fa_Runtime* runtime,
+                                           const char* module_name,
+                                           const char* import_name,
+                                           const char* library_path,
+                                           const char* symbol_name);
 int fa_Runtime_bind_imported_memory(fa_Runtime* runtime,
                                     const char* module_name,
                                     const char* import_name,
