@@ -2429,6 +2429,229 @@ static int test_simd_i32x4_splat(void) {
     return 0;
 }
 
+static int test_simd_v128_load_store(void) {
+    ByteBuffer instructions = {0};
+    const uint8_t payload[16] = {
+        0x10, 0x11, 0x12, 0x13,
+        0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1A, 0x1B,
+        0x1C, 0x1D, 0x1E, 0x1F
+    };
+
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, payload, sizeof(payload));
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x0b);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x00);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t result_types[] = { VALTYPE_V128 };
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, result_types, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_v128 ||
+        memcmp(&value->payload.v128_value, payload, sizeof(payload)) != 0) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_simd_i8x16_add(void) {
+    ByteBuffer instructions = {0};
+    uint8_t left[16] = {0};
+    uint8_t right[16] = {0};
+    uint8_t expected[16] = {0};
+    memset(left, 1, sizeof(left));
+    memset(right, 2, sizeof(right));
+    memset(expected, 3, sizeof(expected));
+
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, left, sizeof(left));
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, right, sizeof(right));
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x6a);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t result_types[] = { VALTYPE_V128 };
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, result_types, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_v128 ||
+        memcmp(&value->payload.v128_value, expected, sizeof(expected)) != 0) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_simd_i8x16_replace_extract(void) {
+    ByteBuffer instructions = {0};
+    uint8_t zeros[16] = {0};
+
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, zeros, sizeof(zeros));
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 127);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x17);
+    bb_write_byte(&instructions, 3);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x16);
+    bb_write_byte(&instructions, 3);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 127) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_simd_trunc_sat_f32x4(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x43);
+    bb_write_f32(&instructions, 3.75f);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x13);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0xdc);
+    bb_write_byte(&instructions, 0xFD);
+    bb_write_uleb(&instructions, 0x1b);
+    bb_write_byte(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 3) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_i32_clz(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -3638,6 +3861,10 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_table_grow", "table", "src/fa_ops.c (table.grow)", test_table_grow),
     TEST_CASE("test_simd_v128_const", "simd", "src/fa_runtime.c (simd decode), src/fa_ops.c (op_simd)", test_simd_v128_const),
     TEST_CASE("test_simd_i32x4_splat", "simd", "src/fa_ops.c (op_simd splat)", test_simd_i32x4_splat),
+    TEST_CASE("test_simd_v128_load_store", "simd", "src/fa_runtime.c (simd memarg), src/fa_ops.c (op_simd)", test_simd_v128_load_store),
+    TEST_CASE("test_simd_i8x16_add", "simd", "src/fa_ops.c (i8x16.add)", test_simd_i8x16_add),
+    TEST_CASE("test_simd_i8x16_replace_extract", "simd", "src/fa_ops.c (lane ops)", test_simd_i8x16_replace_extract),
+    TEST_CASE("test_simd_trunc_sat_f32x4", "simd", "src/fa_ops.c (trunc sat)", test_simd_trunc_sat_f32x4),
     TEST_CASE("test_i32_clz", "arith", "src/fa_ops.c (i32 clz)", test_i32_clz),
     TEST_CASE("test_f32_abs", "arith", "src/fa_ops.c (f32 abs)", test_f32_abs),
     TEST_CASE("test_local_get_set", "locals", "src/fa_ops.c (local.get/set)", test_local_get_set),

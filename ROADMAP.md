@@ -10,12 +10,12 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Medium-Term
 
-- Implement remaining SIMD opcodes (loads/stores, shuffles, lane ops, comparisons, arithmetic).
 - Expand element/data segment support to ref.func expressions and externref tables.
-- Add lane-focused SIMD tests plus coverage for additional table bounds scenarios.
+- Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN handling) plus coverage for additional table bounds scenarios.
 
 ## Recently Completed
 
+- Implemented core SIMD opcodes (v128 load/store, shuffle/swizzle, lane ops, comparisons, arithmetic, conversions).
 - Extended microcode coverage to float unary/special/reinterpret/select ops and added a resource-aware JIT precompile pass for per-function sequences.
 - Wired imported functions to host callbacks or dynamic-library bindings (`dlopen`/`dlsym` scaffolding).
 - Extended host import bindings to imported memories/tables, added `fa_RuntimeHostCall_*` ABI helpers, and shipped a dynamic-library host import sample.

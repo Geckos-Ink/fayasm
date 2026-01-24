@@ -1672,11 +1672,65 @@ static int runtime_prescan_skip_immediates(const fa_Runtime* runtime,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            if (subopcode == 12) {
+            bool needs_memarg = false;
+            bool needs_lane = false;
+            bool needs_bytes = false;
+            switch (subopcode) {
+                case 0x0c: /* v128.const */
+                case 0x0d: /* i8x16.shuffle */
+                    needs_bytes = true;
+                    break;
+                case 0x00: /* v128.load */
+                case 0x01: /* v128.load8x8_s */
+                case 0x02: /* v128.load8x8_u */
+                case 0x03: /* v128.load16x4_s */
+                case 0x04: /* v128.load16x4_u */
+                case 0x05: /* v128.load32x2_s */
+                case 0x06: /* v128.load32x2_u */
+                case 0x07: /* v128.load8_splat */
+                case 0x08: /* v128.load16_splat */
+                case 0x09: /* v128.load32_splat */
+                case 0x0a: /* v128.load64_splat */
+                case 0x0b: /* v128.store */
+                case 0x54: /* v128.load8_lane */
+                case 0x55: /* v128.load16_lane */
+                case 0x56: /* v128.load32_lane */
+                case 0x57: /* v128.load64_lane */
+                case 0x58: /* v128.store8_lane */
+                case 0x59: /* v128.store16_lane */
+                case 0x5a: /* v128.store32_lane */
+                case 0x5b: /* v128.store64_lane */
+                case 0x5c: /* v128.load32_zero */
+                case 0x5d: /* v128.load64_zero */
+                    needs_memarg = true;
+                    break;
+                default:
+                    break;
+            }
+            if (subopcode >= 0x15 && subopcode <= 0x22) {
+                needs_lane = true;
+            }
+            if (subopcode >= 0x54 && subopcode <= 0x5b) {
+                needs_lane = true;
+            }
+            if (needs_bytes) {
                 if (*cursor + 16U > body_size) {
                     return FA_RUNTIME_ERR_STREAM;
                 }
                 *cursor += 16U;
+                return FA_RUNTIME_OK;
+            }
+            if (needs_memarg) {
+                status = runtime_prescan_skip_memarg(runtime, body, body_size, cursor);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
+            if (needs_lane) {
+                if (*cursor + 1U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                *cursor += 1U;
             }
             return FA_RUNTIME_OK;
         }
@@ -2073,16 +2127,77 @@ static int runtime_skip_immediates(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
+            bool needs_memarg = false;
+            bool needs_lane = false;
+            bool needs_bytes = false;
             switch (uleb) {
-                case 12: /* v128.const */
-                    if (*cursor + 16U > body_size) {
-                        return FA_RUNTIME_ERR_STREAM;
-                    }
-                    *cursor += 16U;
-                    return FA_RUNTIME_OK;
+                case 0x0c: /* v128.const */
+                case 0x0d: /* i8x16.shuffle */
+                    needs_bytes = true;
+                    break;
+                case 0x00: /* v128.load */
+                case 0x01: /* v128.load8x8_s */
+                case 0x02: /* v128.load8x8_u */
+                case 0x03: /* v128.load16x4_s */
+                case 0x04: /* v128.load16x4_u */
+                case 0x05: /* v128.load32x2_s */
+                case 0x06: /* v128.load32x2_u */
+                case 0x07: /* v128.load8_splat */
+                case 0x08: /* v128.load16_splat */
+                case 0x09: /* v128.load32_splat */
+                case 0x0a: /* v128.load64_splat */
+                case 0x0b: /* v128.store */
+                case 0x54: /* v128.load8_lane */
+                case 0x55: /* v128.load16_lane */
+                case 0x56: /* v128.load32_lane */
+                case 0x57: /* v128.load64_lane */
+                case 0x58: /* v128.store8_lane */
+                case 0x59: /* v128.store16_lane */
+                case 0x5a: /* v128.store32_lane */
+                case 0x5b: /* v128.store64_lane */
+                case 0x5c: /* v128.load32_zero */
+                case 0x5d: /* v128.load64_zero */
+                    needs_memarg = true;
+                    break;
                 default:
-                    return FA_RUNTIME_OK;
+                    break;
             }
+            if (uleb >= 0x15 && uleb <= 0x22) {
+                needs_lane = true;
+            }
+            if (uleb >= 0x54 && uleb <= 0x5b) {
+                needs_lane = true;
+            }
+            if (needs_bytes) {
+                if (*cursor + 16U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                *cursor += 16U;
+                return FA_RUNTIME_OK;
+            }
+            if (needs_memarg) {
+                if (runtime && runtime->module && runtime->module->num_memories > 1) {
+                    status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                }
+                status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                status = runtime_read_uleb128(body, body_size, cursor, &uleb);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
+            if (needs_lane) {
+                if (*cursor + 1U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                *cursor += 1U;
+            }
+            return FA_RUNTIME_OK;
         }
         default:
             return FA_RUNTIME_OK;
@@ -3762,7 +3877,8 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
-            if (subopcode == 12) { // v128.const
+            uint32_t sub = (uint32_t)subopcode;
+            if (subopcode == 0x0c || subopcode == 0x0d) {
                 if (frame->pc + 16U > body_size) {
                     return FA_RUNTIME_ERR_STREAM;
                 }
@@ -3771,23 +3887,99 @@ static int runtime_decode_instruction(const uint8_t* body,
                     return status;
                 }
                 frame->pc += 16U;
-                uint32_t sub = (uint32_t)subopcode;
                 return runtime_push_reg_value(job, &sub, sizeof(sub));
             }
+            bool needs_memarg = false;
+            bool needs_lane = false;
             switch (subopcode) {
-                case 15: // i8x16.splat
-                case 16: // i16x8.splat
-                case 17: // i32x4.splat
-                case 18: // i64x2.splat
-                case 19: // f32x4.splat
-                case 20: // f64x2.splat
-                {
-                    uint32_t sub = (uint32_t)subopcode;
-                    return runtime_push_reg_value(job, &sub, sizeof(sub));
-                }
+                case 0x00: /* v128.load */
+                case 0x01: /* v128.load8x8_s */
+                case 0x02: /* v128.load8x8_u */
+                case 0x03: /* v128.load16x4_s */
+                case 0x04: /* v128.load16x4_u */
+                case 0x05: /* v128.load32x2_s */
+                case 0x06: /* v128.load32x2_u */
+                case 0x07: /* v128.load8_splat */
+                case 0x08: /* v128.load16_splat */
+                case 0x09: /* v128.load32_splat */
+                case 0x0a: /* v128.load64_splat */
+                case 0x0b: /* v128.store */
+                case 0x54: /* v128.load8_lane */
+                case 0x55: /* v128.load16_lane */
+                case 0x56: /* v128.load32_lane */
+                case 0x57: /* v128.load64_lane */
+                case 0x58: /* v128.store8_lane */
+                case 0x59: /* v128.store16_lane */
+                case 0x5a: /* v128.store32_lane */
+                case 0x5b: /* v128.store64_lane */
+                case 0x5c: /* v128.load32_zero */
+                case 0x5d: /* v128.load64_zero */
+                    needs_memarg = true;
+                    break;
                 default:
-                    return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+                    break;
             }
+            if (subopcode >= 0x15 && subopcode <= 0x22) {
+                needs_lane = true;
+            }
+            if (subopcode >= 0x54 && subopcode <= 0x5b) {
+                needs_lane = true;
+            }
+            if (needs_memarg) {
+                uint64_t mem_index = 0;
+                bool memory64 = false;
+                if (runtime->module && runtime->module->num_memories > 1) {
+                    status = runtime_read_uleb128(body, body_size, &frame->pc, &mem_index);
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    uint32_t mem_index_u32 = (uint32_t)mem_index;
+                    status = runtime_push_reg_value(job, &mem_index_u32, sizeof(mem_index_u32));
+                    if (status != FA_RUNTIME_OK) {
+                        return status;
+                    }
+                    if (mem_index_u32 < runtime->module->num_memories) {
+                        memory64 = runtime->module->memories[mem_index_u32].is_memory64;
+                    }
+                } else if (runtime->module && runtime->module->num_memories == 1) {
+                    memory64 = runtime->module->memories[0].is_memory64;
+                }
+                uint64_t align = 0;
+                status = runtime_read_uleb128(body, body_size, &frame->pc, &align);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                uint32_t align32 = (uint32_t)align;
+                status = runtime_push_reg_value(job, &align32, sizeof(align32));
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                uint64_t offset = 0;
+                status = runtime_read_uleb128(body, body_size, &frame->pc, &offset);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                if (memory64) {
+                    status = runtime_push_reg_value(job, &offset, sizeof(offset));
+                } else {
+                    uint32_t offset32 = (uint32_t)offset;
+                    status = runtime_push_reg_value(job, &offset32, sizeof(offset32));
+                }
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
+            if (needs_lane) {
+                if (frame->pc + 1U > body_size) {
+                    return FA_RUNTIME_ERR_STREAM;
+                }
+                uint8_t lane = body[frame->pc++];
+                status = runtime_push_reg_value(job, &lane, sizeof(lane));
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+            }
+            return runtime_push_reg_value(job, &sub, sizeof(sub));
         }
         default:
         {

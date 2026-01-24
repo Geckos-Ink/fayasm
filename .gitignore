@@ -60,3 +60,4 @@ dkms.conf
 .DS_Store
 test_output.txt
 tmp_test_write.txt
+/.miniphi
