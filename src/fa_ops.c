@@ -5454,6 +5454,262 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        case 0x100: /* i8x16.relaxed_swizzle */
+        {
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_two_v128_values(job, &lhs, &rhs, &lhs_raw, &rhs_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            for (size_t i = 0; i < 16; ++i) {
+                const uint8_t lane = (uint8_t)(right.u8[i] & 0x0FU);
+                out.u8[i] = left.u8[lane];
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x101: /* i32x4.relaxed_trunc_f32x4_s */
+        case 0x102: /* i32x4.relaxed_trunc_f32x4_u */
+        {
+            fa_V128 value = {0};
+            if (!pop_v128_value(job, &value, NULL)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes lanes = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&value, &lanes);
+            for (size_t i = 0; i < 4; ++i) {
+                if (subopcode == 0x101) {
+                    out.i32[i] = simd_trunc_sat_f32_to_i32(lanes.f32[i]);
+                } else {
+                    out.u32[i] = simd_trunc_sat_f32_to_u32(lanes.f32[i]);
+                }
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x103: /* i32x4.relaxed_trunc_f64x2_s */
+        case 0x104: /* i32x4.relaxed_trunc_f64x2_u */
+        {
+            fa_V128 value = {0};
+            if (!pop_v128_value(job, &value, NULL)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes lanes = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&value, &lanes);
+            if (subopcode == 0x103) {
+                out.i32[0] = simd_trunc_sat_f64_to_i32(lanes.f64[0]);
+                out.i32[1] = simd_trunc_sat_f64_to_i32(lanes.f64[1]);
+            } else {
+                out.u32[0] = simd_trunc_sat_f64_to_u32(lanes.f64[0]);
+                out.u32[1] = simd_trunc_sat_f64_to_u32(lanes.f64[1]);
+            }
+            out.u32[2] = 0U;
+            out.u32[3] = 0U;
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x105: /* f32x4.relaxed_madd */
+        case 0x106: /* f32x4.relaxed_nmadd */
+        {
+            fa_V128 acc = {0};
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue acc_raw = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_v128_value(job, &acc, &acc_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &rhs, &rhs_raw)) {
+                restore_stack_value(job, &acc_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &lhs, &lhs_raw)) {
+                restore_stack_value(job, &rhs_raw);
+                restore_stack_value(job, &acc_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes accum = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            v128_to_lanes(&acc, &accum);
+            for (size_t i = 0; i < 4; ++i) {
+                const f32 prod = left.f32[i] * right.f32[i];
+                out.f32[i] = (subopcode == 0x105) ? (prod + accum.f32[i]) : (-prod + accum.f32[i]);
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x107: /* f64x2.relaxed_madd */
+        case 0x108: /* f64x2.relaxed_nmadd */
+        {
+            fa_V128 acc = {0};
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue acc_raw = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_v128_value(job, &acc, &acc_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &rhs, &rhs_raw)) {
+                restore_stack_value(job, &acc_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &lhs, &lhs_raw)) {
+                restore_stack_value(job, &rhs_raw);
+                restore_stack_value(job, &acc_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes accum = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            v128_to_lanes(&acc, &accum);
+            for (size_t i = 0; i < 2; ++i) {
+                const f64 prod = left.f64[i] * right.f64[i];
+                out.f64[i] = (subopcode == 0x107) ? (prod + accum.f64[i]) : (-prod + accum.f64[i]);
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x109: /* i8x16.relaxed_laneselect */
+        case 0x10a: /* i16x8.relaxed_laneselect */
+        case 0x10b: /* i32x4.relaxed_laneselect */
+        case 0x10c: /* i64x2.relaxed_laneselect */
+        {
+            fa_V128 mask = {0};
+            fa_V128 rhs = {0};
+            fa_V128 lhs = {0};
+            fa_JobValue mask_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            fa_JobValue lhs_raw = {0};
+            if (!pop_v128_value(job, &mask, &mask_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &rhs, &rhs_raw)) {
+                restore_stack_value(job, &mask_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!pop_v128_value(job, &lhs, &lhs_raw)) {
+                restore_stack_value(job, &rhs_raw);
+                restore_stack_value(job, &mask_raw);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes sel = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            v128_to_lanes(&mask, &sel);
+            if (subopcode == 0x109) {
+                for (size_t i = 0; i < 16; ++i) {
+                    const bool choose_left = (sel.u8[i] & 0x80U) != 0U;
+                    out.u8[i] = choose_left ? left.u8[i] : right.u8[i];
+                }
+            } else if (subopcode == 0x10a) {
+                for (size_t i = 0; i < 8; ++i) {
+                    const bool choose_left = (sel.u16[i] & 0x8000U) != 0U;
+                    out.u16[i] = choose_left ? left.u16[i] : right.u16[i];
+                }
+            } else if (subopcode == 0x10b) {
+                for (size_t i = 0; i < 4; ++i) {
+                    const bool choose_left = (sel.u32[i] & 0x80000000U) != 0U;
+                    out.u32[i] = choose_left ? left.u32[i] : right.u32[i];
+                }
+            } else {
+                for (size_t i = 0; i < 2; ++i) {
+                    const bool choose_left = (sel.u64[i] & 0x8000000000000000ULL) != 0ULL;
+                    out.u64[i] = choose_left ? left.u64[i] : right.u64[i];
+                }
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x10d: /* f32x4.relaxed_min */
+        case 0x10e: /* f32x4.relaxed_max */
+        {
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_two_v128_values(job, &lhs, &rhs, &lhs_raw, &rhs_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            for (size_t i = 0; i < 4; ++i) {
+                if (subopcode == 0x10d) {
+                    out.f32[i] = fminf(left.f32[i], right.f32[i]);
+                } else {
+                    out.f32[i] = fmaxf(left.f32[i], right.f32[i]);
+                }
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x10f: /* f64x2.relaxed_min */
+        case 0x110: /* f64x2.relaxed_max */
+        {
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_two_v128_values(job, &lhs, &rhs, &lhs_raw, &rhs_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            for (size_t i = 0; i < 2; ++i) {
+                if (subopcode == 0x10f) {
+                    out.f64[i] = fmin(left.f64[i], right.f64[i]);
+                } else {
+                    out.f64[i] = fmax(left.f64[i], right.f64[i]);
+                }
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
+        case 0x111: /* i16x8.relaxed_q15mulr_s */
+        {
+            fa_V128 lhs = {0};
+            fa_V128 rhs = {0};
+            fa_JobValue lhs_raw = {0};
+            fa_JobValue rhs_raw = {0};
+            if (!pop_two_v128_values(job, &lhs, &rhs, &lhs_raw, &rhs_raw)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            fa_V128Lanes left = {0};
+            fa_V128Lanes right = {0};
+            fa_V128Lanes out = {0};
+            v128_to_lanes(&lhs, &left);
+            v128_to_lanes(&rhs, &right);
+            for (size_t i = 0; i < 8; ++i) {
+                int32_t prod = (int32_t)left.i16[i] * (int32_t)right.i16[i];
+                int32_t rounded = (prod + 0x4000) >> 15;
+                if (rounded > INT16_MAX) {
+                    out.i16[i] = INT16_MAX;
+                } else if (rounded < INT16_MIN) {
+                    out.i16[i] = INT16_MIN;
+                } else {
+                    out.i16[i] = (int16_t)rounded;
+                }
+            }
+            return push_v128_lanes_checked(job, &out);
+        }
         default:
             return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
     }

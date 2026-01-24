@@ -49,7 +49,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
-- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD core opcodes are now wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions). Relaxed/extension SIMD opcodes remain open.
+- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals plus relaxed-edge-case test coverage.
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
 - JIT spill/load hooks currently persist pointer-based microcode; a stable, versioned format is needed for cross-boot reuse and broader testing.
 - Host import binding covers callbacks/`dlopen` for functions plus imported memory/table buffers and `fa_RuntimeHostCall_*` helpers; rebinding memories/tables after module attach is still manual (re-attach to apply).
@@ -87,7 +87,7 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Review relaxed/extension SIMD opcodes and decide which ones to support next.
+1. Add relaxed SIMD coverage tests (relaxed swizzle, laneselect, madd/nmadd, relaxed min/max, relaxed trunc, relaxed q15mulr).
 2. Expand element/data segment support to ref.func expressions and externref tables.
 3. Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN propagation).
 4. Consider runtime-side rebind helpers for imported memories/tables without reattaching modules.

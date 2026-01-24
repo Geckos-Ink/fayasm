@@ -15,7 +15,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Recently Completed
 
-- Implemented core SIMD opcodes (v128 load/store, shuffle/swizzle, lane ops, comparisons, arithmetic, conversions).
+- Implemented core + relaxed SIMD opcodes (v128 load/store, shuffle/swizzle, lane ops, comparisons, arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr).
 - Extended microcode coverage to float unary/special/reinterpret/select ops and added a resource-aware JIT precompile pass for per-function sequences.
 - Wired imported functions to host callbacks or dynamic-library bindings (`dlopen`/`dlsym` scaffolding).
 - Extended host import bindings to imported memories/tables, added `fa_RuntimeHostCall_*` ABI helpers, and shipped a dynamic-library host import sample.
