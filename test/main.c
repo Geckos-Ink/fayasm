@@ -5,6 +5,11 @@
 #include <string.h>
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
 
 typedef struct {
     uint8_t* data;
@@ -33,6 +38,25 @@ typedef struct {
     int status;
 } TrapState;
 
+typedef struct {
+    uint8_t* opcodes;
+    size_t count;
+} TestJitBlob;
+
+#define TEST_JIT_BLOB_SLOTS 16U
+
+typedef struct {
+    uint8_t* memory_blob;
+    size_t memory_blob_size;
+    int memory_spill_calls;
+    int memory_load_calls;
+    TestJitBlob jit_blobs[TEST_JIT_BLOB_SLOTS];
+    int jit_spill_calls;
+    int jit_load_calls;
+    int trap_calls;
+    uint32_t trap_target_function;
+} OffloadState;
+
 static int trap_handler(fa_Runtime* runtime, uint32_t function_index, void* user_data) {
     (void)runtime;
     (void)function_index;
@@ -42,6 +66,137 @@ static int trap_handler(fa_Runtime* runtime, uint32_t function_index, void* user
         return state->status;
     }
     return FA_RUNTIME_ERR_TRAP;
+}
+
+static void offload_state_free(OffloadState* state) {
+    if (!state) {
+        return;
+    }
+    free(state->memory_blob);
+    state->memory_blob = NULL;
+    state->memory_blob_size = 0;
+    for (size_t i = 0; i < TEST_JIT_BLOB_SLOTS; ++i) {
+        free(state->jit_blobs[i].opcodes);
+        state->jit_blobs[i].opcodes = NULL;
+        state->jit_blobs[i].count = 0;
+    }
+}
+
+static int offload_jit_spill_hook(fa_Runtime* runtime,
+                                  uint32_t function_index,
+                                  const fa_JitProgram* program,
+                                  size_t program_bytes,
+                                  void* user_data) {
+    (void)runtime;
+    (void)program_bytes;
+    OffloadState* state = (OffloadState*)user_data;
+    if (!state || !program || !program->ops || program->count == 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (function_index >= TEST_JIT_BLOB_SLOTS) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    TestJitBlob* blob = &state->jit_blobs[function_index];
+    uint8_t* opcodes = (uint8_t*)calloc(program->count, sizeof(uint8_t));
+    if (!opcodes) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    size_t opcode_count = 0;
+    if (!fa_jit_program_export_opcodes(program, opcodes, program->count, &opcode_count) ||
+        opcode_count != program->count) {
+        free(opcodes);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    free(blob->opcodes);
+    blob->opcodes = opcodes;
+    blob->count = opcode_count;
+    state->jit_spill_calls += 1;
+    return FA_RUNTIME_OK;
+}
+
+static int offload_jit_load_hook(fa_Runtime* runtime,
+                                 uint32_t function_index,
+                                 fa_JitProgram* program_out,
+                                 void* user_data) {
+    (void)runtime;
+    OffloadState* state = (OffloadState*)user_data;
+    if (!state || !program_out) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (function_index >= TEST_JIT_BLOB_SLOTS) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    const TestJitBlob* blob = &state->jit_blobs[function_index];
+    if (!blob->opcodes || blob->count == 0) {
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    if (!fa_jit_program_import_opcodes(blob->opcodes, blob->count, program_out)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    state->jit_load_calls += 1;
+    return FA_RUNTIME_OK;
+}
+
+static int offload_memory_spill_hook(fa_Runtime* runtime,
+                                     uint32_t memory_index,
+                                     const fa_RuntimeMemory* memory,
+                                     void* user_data) {
+    (void)runtime;
+    (void)memory_index;
+    OffloadState* state = (OffloadState*)user_data;
+    if (!state || !memory || !memory->data || memory->size_bytes == 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (memory->size_bytes > SIZE_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    size_t size = (size_t)memory->size_bytes;
+    uint8_t* blob = (uint8_t*)realloc(state->memory_blob, size);
+    if (!blob) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    memcpy(blob, memory->data, size);
+    state->memory_blob = blob;
+    state->memory_blob_size = size;
+    state->memory_spill_calls += 1;
+    return FA_RUNTIME_OK;
+}
+
+static int offload_memory_load_hook(fa_Runtime* runtime,
+                                    uint32_t memory_index,
+                                    fa_RuntimeMemory* memory,
+                                    void* user_data) {
+    (void)memory_index;
+    OffloadState* state = (OffloadState*)user_data;
+    if (!runtime || !state || !memory || memory->size_bytes == 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!state->memory_blob || state->memory_blob_size != memory->size_bytes) {
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    if (memory->size_bytes > (uint64_t)INT_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    uint8_t* data = (uint8_t*)runtime->malloc((int)memory->size_bytes);
+    if (!data) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    memcpy(data, state->memory_blob, state->memory_blob_size);
+    memory->data = data;
+    state->memory_load_calls += 1;
+    return FA_RUNTIME_OK;
+}
+
+static int offload_trap_jit_load_handler(fa_Runtime* runtime, uint32_t function_index, void* user_data) {
+    OffloadState* state = (OffloadState*)user_data;
+    if (!state) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    state->trap_calls += 1;
+    if (function_index != state->trap_target_function) {
+        return FA_RUNTIME_OK;
+    }
+    return fa_Runtime_jitLoadProgram(runtime, function_index);
 }
 
 static int host_add(fa_Runtime* runtime, const fa_RuntimeHostCall* call, void* user_data) {
@@ -715,6 +870,106 @@ static WasmModule* load_module_from_bytes(const uint8_t* bytes, size_t size) {
         return NULL;
     }
     return module;
+}
+
+static WasmModule* load_module_from_path(const char* path, int load_exports) {
+    if (!path) {
+        return NULL;
+    }
+    WasmModule* module = wasm_module_init(path);
+    if (!module) {
+        return NULL;
+    }
+    if (wasm_load_header(module) != 0 ||
+        wasm_scan_sections(module) != 0 ||
+        wasm_load_types(module) != 0 ||
+        wasm_load_functions(module) != 0 ||
+        (load_exports && wasm_load_exports(module) != 0) ||
+        wasm_load_tables(module) != 0 ||
+        wasm_load_memories(module) != 0 ||
+        wasm_load_globals(module) != 0 ||
+        wasm_load_elements(module) != 0 ||
+        wasm_load_data(module) != 0) {
+        wasm_module_free(module);
+        return NULL;
+    }
+    return module;
+}
+
+static int file_exists(const char* path) {
+    if (!path) {
+        return 0;
+    }
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    fclose(file);
+    return 1;
+}
+
+static int resolve_wasm_sample_path(const char* sample_name, char* out, size_t out_size) {
+    if (!sample_name || !out || out_size == 0) {
+        return 0;
+    }
+    const char* prefixes[] = {
+        "wasm_samples/build",
+        "../wasm_samples/build"
+    };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        int written = snprintf(out, out_size, "%s/%s", prefixes[i], sample_name);
+        if (written <= 0 || (size_t)written >= out_size) {
+            continue;
+        }
+        if (file_exists(out)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int module_find_exported_function(const WasmModule* module,
+                                         const char* const* candidate_names,
+                                         size_t candidate_count,
+                                         uint32_t* out_function_index) {
+    if (!module || !candidate_names || candidate_count == 0 || !out_function_index) {
+        return 0;
+    }
+    if (!module->exports || module->num_exports == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < module->num_exports; ++i) {
+        const WasmExport* export_desc = &module->exports[i];
+        if (!export_desc->name || export_desc->kind != 0) {
+            continue;
+        }
+        for (size_t j = 0; j < candidate_count; ++j) {
+            const char* candidate = candidate_names[j];
+            if (!candidate) {
+                continue;
+            }
+            if (strcmp(export_desc->name, candidate) == 0) {
+                *out_function_index = export_desc->index;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int execute_expect_i32(fa_Runtime* runtime, fa_Job* job, uint32_t function_index, i32 expected) {
+    if (!runtime || !job) {
+        return 0;
+    }
+    int status = fa_Runtime_executeJob(runtime, job, function_index);
+    if (status != FA_RUNTIME_OK) {
+        return 0;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != expected) {
+        return 0;
+    }
+    return 1;
 }
 
 static int run_job(ByteBuffer* module_bytes, fa_Runtime** runtime_out, fa_Job** job_out, WasmModule** module_out) {
@@ -1672,6 +1927,329 @@ static int test_imported_table_rebind_after_attach(void) {
     bb_free(&imports);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
+}
+
+static int test_memory_spill_load_cycles(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x28);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    OffloadState state = {0};
+    fa_RuntimeSpillHooks hooks = {
+        offload_jit_spill_hook,
+        offload_jit_load_hook,
+        offload_memory_spill_hook,
+        offload_memory_load_hook,
+        &state
+    };
+    fa_Runtime_setSpillHooks(runtime, &hooks);
+
+    for (int i = 0; i < 3; ++i) {
+        i32 expected = 100 + i;
+        if (!runtime->memories || runtime->memories_count == 0 || !runtime->memories[0].data) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        memcpy(runtime->memories[0].data, &expected, sizeof(expected));
+
+        if (fa_Runtime_spillMemory(runtime, 0) != FA_RUNTIME_OK) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        if (runtime->memories[0].data != NULL || !runtime->memories[0].is_spilled) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        if (!execute_expect_i32(runtime, job, 0, expected)) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        if (!runtime->memories[0].data || runtime->memories[0].is_spilled) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+    }
+
+    if (state.memory_spill_calls < 3 || state.memory_load_calls < 3) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    offload_state_free(&state);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_jit_eviction_trap_reload_cycles(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    if (!fa_ops_microcode_enabled()) {
+        return 1;
+    }
+
+    const int warmup_pairs = 450;
+    ByteBuffer func0 = {0};
+    for (int i = 0; i < warmup_pairs; ++i) {
+        bb_write_byte(&func0, 0x41);
+        bb_write_sleb32(&func0, 0);
+        bb_write_byte(&func0, 0x1A);
+    }
+    bb_write_byte(&func0, 0x41);
+    bb_write_sleb32(&func0, 12);
+    bb_write_byte(&func0, 0x0B);
+
+    ByteBuffer func1 = {0};
+    for (int i = 0; i < warmup_pairs; ++i) {
+        bb_write_byte(&func1, 0x41);
+        bb_write_sleb32(&func1, 0);
+        bb_write_byte(&func1, 0x1A);
+    }
+    bb_write_byte(&func1, 0x41);
+    bb_write_sleb32(&func1, 13);
+    bb_write_byte(&func1, 0x0B);
+
+    const uint8_t* bodies[] = { func0.data, func1.data };
+    const size_t sizes[] = { func0.size, func1.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 2, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        bb_free(&func0);
+        bb_free(&func1);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        bb_free(&func0);
+        bb_free(&func1);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        bb_free(&func0);
+        bb_free(&func1);
+        bb_free(&module_bytes);
+        return 1;
+    }
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_executed_ops = 1;
+    runtime->jit_context.config.min_advantage_score = 0.0f;
+    runtime->jit_context.config.max_cache_percent = 0;
+    runtime->jit_context.config.max_ops_per_chunk = 0;
+    runtime->jit_context.config.max_chunks = 0;
+
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        bb_free(&func0);
+        bb_free(&func1);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        bb_free(&func0);
+        bb_free(&func1);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    OffloadState state = {0};
+    state.trap_target_function = 0;
+    fa_RuntimeSpillHooks spill_hooks = {
+        offload_jit_spill_hook,
+        offload_jit_load_hook,
+        offload_memory_spill_hook,
+        offload_memory_load_hook,
+        &state
+    };
+    fa_Runtime_setSpillHooks(runtime, &spill_hooks);
+
+    if (!execute_expect_i32(runtime, job, 0, 12)) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+    if (runtime->jit_cache_bytes == 0) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+
+    if (!execute_expect_i32(runtime, job, 1, 13)) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+    if (state.jit_spill_calls == 0 || !state.jit_blobs[0].opcodes || state.jit_blobs[0].count == 0) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+
+    fa_RuntimeTrapHooks trap_hooks = { offload_trap_jit_load_handler, &state };
+    fa_Runtime_setTrapHooks(runtime, &trap_hooks);
+    if (fa_Runtime_setFunctionTrap(runtime, 0, true) != FA_RUNTIME_OK) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+
+    if (!execute_expect_i32(runtime, job, 0, 12)) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+    const int baseline_spills = state.jit_spill_calls;
+    const int baseline_loads = state.jit_load_calls;
+
+    for (int i = 0; i < 3; ++i) {
+        if (fa_Runtime_jitSpillProgram(runtime, 0) != FA_RUNTIME_OK) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &func0);
+            bb_free(&func1);
+            return 1;
+        }
+        if (!execute_expect_i32(runtime, job, 0, 12)) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &func0);
+            bb_free(&func1);
+            return 1;
+        }
+    }
+
+    if (state.trap_calls < 4 ||
+        state.jit_spill_calls < baseline_spills + 3 ||
+        state.jit_load_calls < baseline_loads + 3) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &func0);
+        bb_free(&func1);
+        return 1;
+    }
+
+    offload_state_free(&state);
+    cleanup_job(runtime, job, module, &module_bytes, &func0);
+    bb_free(&func1);
+    return 0;
+}
+
+static int test_wasm_sample_arithmetic(void) {
+    char path[PATH_MAX] = {0};
+    if (!resolve_wasm_sample_path("arithmetic.wasm", path, sizeof(path))) {
+        printf("SKIP: test_wasm_sample_arithmetic (build wasm_samples first)\n");
+        return 0;
+    }
+
+    WasmModule* module = load_module_from_path(path, 1);
+    if (!module) {
+        return 1;
+    }
+    const char* exports[] = { "sample_const42", "_sample_const42" };
+    uint32_t function_index = 0;
+    if (!module_find_exported_function(module, exports, sizeof(exports) / sizeof(exports[0]), &function_index)) {
+        wasm_module_free(module);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        return 1;
+    }
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+
+    int ok = execute_expect_i32(runtime, job, function_index, 42);
+    cleanup_job(runtime, job, module, NULL, NULL);
+    return ok ? 0 : 1;
+}
+
+static int test_wasm_sample_control_flow(void) {
+    char path[PATH_MAX] = {0};
+    if (!resolve_wasm_sample_path("control_flow.wasm", path, sizeof(path))) {
+        printf("SKIP: test_wasm_sample_control_flow (build wasm_samples first)\n");
+        return 0;
+    }
+
+    WasmModule* module = load_module_from_path(path, 1);
+    if (!module) {
+        return 1;
+    }
+    const char* exports[] = { "sample_loop_sum", "_sample_loop_sum" };
+    uint32_t function_index = 0;
+    if (!module_find_exported_function(module, exports, sizeof(exports) / sizeof(exports[0]), &function_index)) {
+        wasm_module_free(module);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        return 1;
+    }
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+
+    int ok = execute_expect_i32(runtime, job, function_index, 55);
+    cleanup_job(runtime, job, module, NULL, NULL);
+    return ok ? 0 : 1;
 }
 
 static int test_div_by_zero_trap(void) {
@@ -4262,6 +4840,10 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_imported_memory_rebind_after_attach", "memory", "src/fa_runtime.c (host memory rebind propagation)", test_imported_memory_rebind_after_attach),
     TEST_CASE("test_imported_table_binding", "table", "src/fa_runtime.c (host table imports), src/fa_ops.c (table.size)", test_imported_table_binding),
     TEST_CASE("test_imported_table_rebind_after_attach", "table", "src/fa_runtime.c (host table rebind propagation)", test_imported_table_rebind_after_attach),
+    TEST_CASE("test_memory_spill_load_cycles", "offload", "src/fa_runtime.c (memory spill/load hooks)", test_memory_spill_load_cycles),
+    TEST_CASE("test_jit_eviction_trap_reload_cycles", "offload", "src/fa_runtime.c (jit eviction/load), trap hooks", test_jit_eviction_trap_reload_cycles),
+    TEST_CASE("test_wasm_sample_arithmetic", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic),
+    TEST_CASE("test_wasm_sample_control_flow", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),

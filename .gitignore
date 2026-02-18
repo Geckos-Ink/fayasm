@@ -61,3 +61,4 @@ dkms.conf
 test_output.txt
 tmp_test_write.txt
 /.miniphi
+wasm_samples/build/

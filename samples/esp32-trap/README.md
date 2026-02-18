@@ -11,6 +11,29 @@ Notes:
 - The JIT spill/load in `main.c` writes a versioned opcode stream (`JIT_MAGIC` + version + opcodes), then rebuilds microcode on load. This avoids persisting raw function pointers across boots.
 - The sample uses `/sdcard` paths. Mount your SD card there before running.
 
+## SD Wear / Performance / Retention Guidance
+
+Use this sample as a baseline, then tune for your board and SD profile:
+
+1. Spill less often:
+   - Prefer spilling only cold functions or memory pages after idle windows.
+   - Avoid spilling on every call/loop; debounce with a minimum interval or hit counter.
+2. Reduce write amplification:
+   - Keep a small in-RAM dirty map and spill only changed ranges where possible.
+   - Batch writes (single larger write is usually better than many tiny writes).
+3. Validate persistence:
+   - Add a payload checksum (CRC32 or stronger) and reject corrupted blobs on load.
+   - Keep a version field (already present for JIT blobs) and migrate or invalidate old records safely.
+4. Plan retention behavior:
+   - Decide upfront if offload is a cache (rebuild on miss) or durable state (must survive reboot).
+   - For durable state, use atomic file replacement (write temp + fsync + rename).
+5. Avoid SD hot spots:
+   - Rotate file names or use a ring of slots for high-frequency updates.
+   - Prefer wear-leveled FS options when available in ESP-IDF.
+6. Measure before locking policy:
+   - Track average spill/load latency, p95 latency, and bytes written per minute.
+   - Add load-failure counters and fallback paths (re-prepare JIT / zero-fill memory).
+
 Build/Run (ESP-IDF style):
 1. Enable the ESP32 compile-time target in CMake: `-DFAYASM_TARGET_ESP32=ON`
 2. Ensure your SD card is mounted at `/sdcard`.

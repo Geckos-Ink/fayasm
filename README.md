@@ -11,7 +11,7 @@ Faya pseudo-WASM runtime — an experimental, lightweight WebAssembly executor d
 - `fa_jit.*` introduces scaffolding for microcode JIT planning: system probes, budget/advantage scoring, runtime-fed decoded opcode streams, optional function prescans (`FAYASM_JIT_PRESCAN` / `FAYASM_JIT_PRESCAN_FORCE`), a resource-aware precompile pass that prepares per-function microcode programs within the JIT budget, and opcode export/import helpers for stable spill formats.
 - `fa_job.*` provides the doubly-linked operand stack plus a fixed-size “register window” (recent values slide through `fa_JobDataFlow`). The runtime resets and reuses jobs to amortize allocations.
 - A deterministic instruction stream helper (`fa_wasm_stream.*`) sits between the module parser and the tests, making it easy to assert cursor positions and encoded immediates.
-- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, globals, branching semantics (including loop labels), multi-value returns, i64/f64 arithmetic, memory64/multi-memory usage, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat plus v128 load/store, lane ops, basic arithmetic, trunc_sat conversions, host import bindings (functions/memories/tables), live rebind propagation for imported memories/tables, JIT opcode serialization roundtrips, and trap paths (division by zero, memory bounds, conversion overflow/NaN, global type mismatches). Relaxed SIMD opcodes are implemented but not yet covered by the test suite.
+- Tests under `test/` exercise the streaming helpers, branch traversal, and module scaffolding; the harness now also covers interpreter stack effects, call-depth limits, locals, globals, branching semantics (including loop labels), multi-value returns, i64/f64 arithmetic, memory64/multi-memory usage, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat plus v128 load/store, lane ops, basic arithmetic, trunc_sat conversions, host import bindings (functions/memories/tables), live rebind propagation for imported memories/tables, JIT opcode serialization roundtrips, repeated memory/JIT offload cycles (including trap-driven JIT reload + eviction), and trap paths (division by zero, memory bounds, conversion overflow/NaN, global type mismatches). Optional smoke tests can also load Emscripten-built fixture modules from `wasm_samples/build`.
 
 The interpreter deliberately stops short of executing a full program: many opcodes have placeholders, traps are surfaced as error codes, and host integration is minimal. Even so, the scaffolding for job management, frame unwinding, and constant decoding is in place and stable for further opcode work.
 
@@ -35,10 +35,11 @@ The interpreter deliberately stops short of executing a full program: many opcod
   cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON
   cmake --build .
   ```
-- `./build.sh` automates the rebuild: it nukes `build/`, configures with the same flags, builds shared + static libraries, compiles `fayasm_test_main`, and executes it.
+- `./build.sh` automates the rebuild: it optionally builds `wasm_samples/` fixtures when `emcc` is available, nukes `build/`, configures with the same flags, builds shared + static libraries, compiles `fayasm_test_main`, and executes it.
 - `build.sh` skips terminal clear when `TERM` is unset/dumb, so it can run in non-interactive shells.
 - Tests live under `test/` and cover cursor behaviour in `fa_wasm_stream`, branch navigation scenarios, plus interpreter regressions (stack arithmetic, call depth, traps, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions). Run them with `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside `build/`; pass `--list` or a substring filter to focus on a specific area and see source hints.
 - `fayasm_test_main` also accepts `--jit-prescan` and `--jit-prescan-force` to toggle JIT prescan without code changes.
+- Optional real-module fixtures can be generated with Emscripten via `./wasm_samples/build.sh` (`emcc` required). Missing fixture files are reported as `SKIP` in sample-specific tests.
 
 ## Repository Layout
 
@@ -55,6 +56,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
 - `test/` – CMake-driven harness (`fayasm_test_main`) with stream navigation and parser coverage; supports `--list` and substring filters to focus on a specific area.
 - `samples/esp32-trap` - ESP32 trap/offload sample with SD-backed microcode and memory spill hooks.
 - `samples/host-import` - host import demo using `fa_Runtime_bindHostFunctionFromLibrary` with a shared library.
+- `wasm_samples/` - Emscripten fixture sources + build script for standalone `.wasm` samples consumed by runtime smoke tests.
 - `studies/` – research archive covering JIT experiments, WASM decoding notes, and runtime prototypes; cross-reference entries when reusing ideas.
 - `build.sh` – clean rebuild + test runner script; keep its CMake flags in sync with the docs.
 
@@ -63,10 +65,10 @@ The interpreter deliberately stops short of executing a full program: many opcod
 - SIMD core + relaxed opcodes are now wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals and relaxed-edge-case test coverage.
 - Memory64 and multi-memory are supported; `memory.size`/`memory.grow` and loads/stores honor memory indices and 64-bit addressing, and table/data/element segment operations now execute for active/passive segments (ref.func element expressions remain missing).
 - Trap semantics cover divide-by-zero, linear-memory bounds, and float-to-int conversion traps; global initializers accept const and `global.get` expressions, and imported globals can be overridden via `fa_Runtime_setImportedGlobal` (defaults remain zero if unset).
-- Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, multi-value returns, i64/f64 arithmetic, memory64/multi-memory behavior, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, and conversion traps; they now specify function result types and exercise imported-global overrides.
+- Runtime tests now cover stack effects, call depth, locals, globals, branching semantics, multi-value returns, i64/f64 arithmetic, memory64/multi-memory behavior, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, function traps, repeated spill/load cycles (memory + JIT eviction/reload), and imported-global overrides.
 - Microcode compilation now spans bit/compare/arithmetic/convert plus float unary/special/reinterpret/select ops; the runtime caches per-function decoded opcodes, can precompile sequences within the JIT budget, and dispatches prepared microcode ops, but control flow remains interpreter-driven and the engine does not yet execute fully precompiled microcode streams end-to-end.
 - Host import binding now covers callbacks/`dlopen` plus imported memories/tables and `fa_RuntimeHostCall_*` ABI helpers, and memory/table rebinds now update already-attached modules.
-- JIT cache eviction and spill/load hooks are in place for ESP32-class offload; opcode import/export helpers and the ESP32 sample now use a versioned opcode spill format, while broader runtime-level format standardization and wear/perf guidance remain open.
+- JIT cache eviction and spill/load hooks are in place for ESP32-class offload; opcode import/export helpers and the ESP32 sample now use a versioned opcode spill format, and the sample docs now include SD wear/perf + retention guidance. Broader runtime-level persistence standardization remains open.
 - ESP32 targeting is compile-time via `FAYASM_TARGET_ESP32`; tune embedded probes with `FAYASM_TARGET_RAM_BYTES` and `FAYASM_TARGET_CPU_COUNT` as needed.
 
 Contributions, experiments, and curious questions are welcome. The ambition is for fayasm to remain an approachable deep dive into WebAssembly execution internals while leaving room for JIT experiments or host integration research.

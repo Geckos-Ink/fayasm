@@ -25,6 +25,19 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}        FAYASM BUILD SCRIPT            ${NC}"
 echo -e "${BLUE}========================================${NC}"
 
+# Build optional wasm sample fixtures when Emscripten is available
+if command -v emcc >/dev/null 2>&1; then
+    echo -e "${YELLOW}Compilazione fixture WASM (wasm_samples/) con emcc...${NC}"
+    if ./wasm_samples/build.sh; then
+        debug_print "Fixture WASM compilate in wasm_samples/build/"
+    else
+        echo -e "${RED}Errore durante la compilazione delle fixture WASM.${NC}"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}emcc non trovato: salto la compilazione di wasm_samples (i test fixture verranno segnati come SKIP).${NC}"
+fi
+
 # Directory di build
 BUILD_DIR="$(pwd)/build"
 

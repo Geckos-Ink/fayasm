@@ -23,7 +23,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Build & Test Checklist
 
 - Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
-- Invoke the provided helper: `./build.sh` (cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
+- Invoke the provided helper: `./build.sh` (optionally builds `wasm_samples/` fixtures when `emcc` is available, cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
 - Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory.
 - Test filtering: `build/bin/fayasm_test_main --list` shows areas + hints; pass a substring filter to run a subset.
 - JIT prescan toggles: `build/bin/fayasm_test_main --jit-prescan` or `--jit-prescan-force` (mirrors `FAYASM_JIT_PRESCAN_FORCE`).
@@ -40,9 +40,10 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/helpers/dynamic_list.h` - pointer vector used by ancillary tools.
 - `src/fa_arch.h` - architecture macros with override hooks (pointer width, endianness, CPU family), plus `FAYASM_TARGET_*` selection and embedded resource hints (`FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`).
 - `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
-- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
+- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory, with a versioned opcode spill format for JIT persistence.
 - `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
+- `wasm_samples/` - Emscripten fixture sources (`src/`) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests.
 - `build.sh` - one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
@@ -52,7 +53,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals plus relaxed-edge-case test coverage.
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
 - Runtime now propagates imported memory/table rebinds on already-attached modules; keep coverage for mismatched sizes/limits as import validation evolves.
-- JIT spill/load hooks now have opcode import/export helpers and the ESP32 sample persists versioned opcode streams; broader runtime-wide persistence conventions and long-run wear/perf validation are still open.
+- JIT spill/load hooks now have opcode import/export helpers; tests now cover eviction + trap-driven reload and repeated offload cycles, while broader runtime-wide persistence conventions and long-run wear/perf validation are still open.
 
 ## Research Archive (studies/)
 
@@ -88,14 +89,14 @@ Keep this index synchronized when new material lands in `studies/`.
 
 ## Next steps
 1. Expand element/data segment support to ref.func expressions and externref tables.
-2. Add tests for function traps and spill/load hooks (memory reloads, JIT cache eviction paths).
-3. Add relaxed SIMD coverage tests (relaxed swizzle, laneselect, madd/nmadd, relaxed min/max, relaxed trunc, relaxed q15mulr).
-4. Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN propagation).
+2. Add relaxed SIMD coverage tests (relaxed swizzle, laneselect, madd/nmadd, relaxed min/max, relaxed trunc, relaxed q15mulr).
+3. Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN propagation).
+4. Expand runtime smoke coverage using `wasm_samples/` modules and include fixture-build guidance in CI/docs.
 
 ### General next steps
 1. Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.
-2. Expand the ESP32 trap/offload sample docs with SD wear/perf tradeoffs and retention guidance.
-3. Validate offload behavior under repeated spill/load cycles on low-RAM targets.
+2. Validate offload behavior under repeated spill/load cycles on low-RAM targets.
+3. Add integrity checks (e.g., CRC) and atomic replacement strategy examples to spill/load sample code.
 
 ## Contact & Credits
 
