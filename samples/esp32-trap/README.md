@@ -8,7 +8,7 @@ What it shows:
 - Linear memory spill/load hooks that move WASM memory to SD on demand.
 
 Notes:
-- The JIT spill/load in `main.c` writes raw `fa_JitPreparedOp` data. That is only valid for the same firmware image and runtime session (function pointer addresses must match).
+- The JIT spill/load in `main.c` writes a versioned opcode stream (`JIT_MAGIC` + version + opcodes), then rebuilds microcode on load. This avoids persisting raw function pointers across boots.
 - The sample uses `/sdcard` paths. Mount your SD card there before running.
 
 Build/Run (ESP-IDF style):

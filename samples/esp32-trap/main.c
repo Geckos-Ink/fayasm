@@ -11,10 +11,13 @@
 #endif
 
 #define JIT_MAGIC 0x54494A46u
+#define JIT_VERSION 1u
 #define MEM_MAGIC 0x4D454D46u
 
 typedef struct {
     uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
     uint32_t count;
 } JitFileHeader;
 
@@ -37,22 +40,36 @@ static int jit_spill(fa_Runtime* runtime,
                      size_t program_bytes,
                      void* user_data) {
     (void)runtime;
+    (void)program_bytes;
     (void)user_data;
-    if (!program || !program->ops || program->count == 0 || program_bytes == 0) {
+    if (!program || !program->ops || program->count == 0 || program->count > UINT32_MAX) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    uint8_t* opcodes = (uint8_t*)calloc(program->count, sizeof(uint8_t));
+    if (!opcodes) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    size_t opcode_count = 0;
+    if (!fa_jit_program_export_opcodes(program, opcodes, program->count, &opcode_count) ||
+        opcode_count != program->count) {
+        free(opcodes);
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     char path[64];
     make_jit_path(path, sizeof(path), function_index);
     FILE* file = fopen(path, "wb");
     if (!file) {
+        free(opcodes);
         return FA_RUNTIME_ERR_STREAM;
     }
-    JitFileHeader header = { JIT_MAGIC, (uint32_t)program->count };
+    JitFileHeader header = { JIT_MAGIC, JIT_VERSION, 0, (uint32_t)opcode_count };
     if (fwrite(&header, sizeof(header), 1, file) != 1 ||
-        fwrite(program->ops, sizeof(fa_JitPreparedOp), program->count, file) != program->count) {
+        fwrite(opcodes, sizeof(uint8_t), opcode_count, file) != opcode_count) {
+        free(opcodes);
         fclose(file);
         return FA_RUNTIME_ERR_STREAM;
     }
+    free(opcodes);
     fclose(file);
     return FA_RUNTIME_OK;
 }
@@ -73,7 +90,9 @@ static int jit_load(fa_Runtime* runtime,
         return FA_RUNTIME_ERR_STREAM;
     }
     JitFileHeader header = {0};
-    if (fread(&header, sizeof(header), 1, file) != 1 || header.magic != JIT_MAGIC) {
+    if (fread(&header, sizeof(header), 1, file) != 1 ||
+        header.magic != JIT_MAGIC ||
+        header.version != JIT_VERSION) {
         fclose(file);
         return FA_RUNTIME_ERR_STREAM;
     }
@@ -81,19 +100,22 @@ static int jit_load(fa_Runtime* runtime,
         fclose(file);
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    fa_jit_program_init(program_out);
-    program_out->ops = (fa_JitPreparedOp*)calloc(header.count, sizeof(fa_JitPreparedOp));
-    if (!program_out->ops) {
+    uint8_t* opcodes = (uint8_t*)calloc(header.count, sizeof(uint8_t));
+    if (!opcodes) {
         fclose(file);
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
-    program_out->capacity = header.count;
-    program_out->count = header.count;
-    if (fread(program_out->ops, sizeof(fa_JitPreparedOp), header.count, file) != header.count) {
-        fa_jit_program_free(program_out);
+    if (fread(opcodes, sizeof(uint8_t), header.count, file) != header.count) {
+        free(opcodes);
         fclose(file);
         return FA_RUNTIME_ERR_STREAM;
     }
+    if (!fa_jit_program_import_opcodes(opcodes, header.count, program_out)) {
+        free(opcodes);
+        fclose(file);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    free(opcodes);
     fclose(file);
     return FA_RUNTIME_OK;
 }

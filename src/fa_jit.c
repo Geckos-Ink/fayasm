@@ -285,6 +285,39 @@ bool fa_jit_prepare_program_from_opcodes(const uint8_t* opcodes, size_t opcode_c
     return true;
 }
 
+bool fa_jit_program_export_opcodes(const fa_JitProgram* program,
+                                   uint8_t* opcodes_out,
+                                   size_t opcodes_capacity,
+                                   size_t* opcode_count_out) {
+    if (opcode_count_out) {
+        *opcode_count_out = 0;
+    }
+    if (!program || !program->ops) {
+        return false;
+    }
+    if (program->count == 0) {
+        return false;
+    }
+    if (program->count > opcodes_capacity || !opcodes_out) {
+        return false;
+    }
+    for (size_t i = 0; i < program->count; ++i) {
+        const fa_JitPreparedOp* prepared = &program->ops[i];
+        if (!prepared->descriptor) {
+            return false;
+        }
+        opcodes_out[i] = prepared->descriptor->id;
+    }
+    if (opcode_count_out) {
+        *opcode_count_out = program->count;
+    }
+    return true;
+}
+
+bool fa_jit_program_import_opcodes(const uint8_t* opcodes, size_t opcode_count, fa_JitProgram* program_out) {
+    return fa_jit_prepare_program_from_opcodes(opcodes, opcode_count, program_out);
+}
+
 OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job) {
     if (!prepared || !prepared->descriptor) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;

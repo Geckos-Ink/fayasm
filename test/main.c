@@ -908,6 +908,49 @@ static int test_microcode_float_select(void) {
     return 0;
 }
 
+static int test_jit_program_opcode_roundtrip(void) {
+    const uint8_t opcodes[] = { 0x6A, 0x8B, 0x1B };
+    fa_JitProgram prepared = {0};
+    fa_jit_program_init(&prepared);
+    if (!fa_jit_prepare_program_from_opcodes(opcodes, sizeof(opcodes), &prepared)) {
+        return 1;
+    }
+
+    uint8_t serialized[sizeof(opcodes)] = {0};
+    size_t serialized_count = 0;
+    if (!fa_jit_program_export_opcodes(&prepared, serialized, sizeof(serialized), &serialized_count) ||
+        serialized_count != sizeof(opcodes) ||
+        memcmp(serialized, opcodes, sizeof(opcodes)) != 0) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    fa_JitProgram restored = {0};
+    fa_jit_program_init(&restored);
+    if (!fa_jit_program_import_opcodes(serialized, serialized_count, &restored)) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+    if (restored.count != prepared.count) {
+        fa_jit_program_free(&restored);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+    for (size_t i = 0; i < restored.count; ++i) {
+        if (!restored.ops[i].descriptor ||
+            restored.ops[i].descriptor->id != opcodes[i] ||
+            restored.ops[i].step_count == 0) {
+            fa_jit_program_free(&restored);
+            fa_jit_program_free(&prepared);
+            return 1;
+        }
+    }
+
+    fa_jit_program_free(&restored);
+    fa_jit_program_free(&prepared);
+    return 0;
+}
+
 static int test_host_import_call(void) {
     ByteBuffer imports = {0};
     if (!bb_write_uleb(&imports, 1)) {
@@ -1251,6 +1294,381 @@ static int test_imported_table_binding(void) {
     }
 
     free(table_data);
+    bb_free(&imports);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_imported_memory_rebind_after_attach(void) {
+    ByteBuffer imports = {0};
+    if (!bb_write_uleb(&imports, 1)) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_string(&imports, "env") || !bb_write_string(&imports, "mem0")) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_byte(&imports, 0x02) || !bb_write_uleb(&imports, 0x00) ||
+        !bb_write_uleb(&imports, 1)) {
+        bb_free(&imports);
+        return 1;
+    }
+
+    ByteBuffer instructions = {0};
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 0)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x28) || !bb_write_uleb(&instructions, 0) ||
+        !bb_write_uleb(&instructions, 0)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x0B)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  &imports,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1,
+                                  NULL,
+                                  0)) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    uint8_t* memory_data_a = (uint8_t*)calloc(FA_WASM_PAGE_SIZE, 1);
+    uint8_t* memory_data_b = (uint8_t*)calloc(FA_WASM_PAGE_SIZE, 1);
+    if (!memory_data_a || !memory_data_b) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    i32 expected_a = 42;
+    i32 expected_b = 99;
+    memcpy(memory_data_a, &expected_a, sizeof(expected_a));
+    memcpy(memory_data_b, &expected_b, sizeof(expected_b));
+
+    fa_RuntimeHostMemory host_memory = {0};
+    host_memory.data = memory_data_a;
+    host_memory.size_bytes = FA_WASM_PAGE_SIZE;
+    if (fa_Runtime_bindImportedMemory(runtime, "env", "mem0", &host_memory) != FA_RUNTIME_OK) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != expected_a) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_RuntimeHostMemory invalid_memory = {0};
+    invalid_memory.data = memory_data_b;
+    invalid_memory.size_bytes = 0;
+    if (fa_Runtime_bindImportedMemory(runtime, "env", "mem0", &invalid_memory) != FA_RUNTIME_ERR_TRAP) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!runtime->memories || runtime->memories_count == 0 || runtime->memories[0].data != memory_data_a) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    host_memory.data = memory_data_b;
+    host_memory.size_bytes = FA_WASM_PAGE_SIZE;
+    if (fa_Runtime_bindImportedMemory(runtime, "env", "mem0", &host_memory) != FA_RUNTIME_OK) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!runtime->memories || runtime->memories_count == 0 ||
+        runtime->memories[0].data != memory_data_b ||
+        runtime->memories[0].size_bytes != FA_WASM_PAGE_SIZE) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != expected_b) {
+        free(memory_data_a);
+        free(memory_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    free(memory_data_a);
+    free(memory_data_b);
+    bb_free(&imports);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_imported_table_rebind_after_attach(void) {
+    ByteBuffer imports = {0};
+    if (!bb_write_uleb(&imports, 1)) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_string(&imports, "env") || !bb_write_string(&imports, "tbl0")) {
+        bb_free(&imports);
+        return 1;
+    }
+    if (!bb_write_byte(&imports, 0x01) || !bb_write_byte(&imports, VALTYPE_FUNCREF) ||
+        !bb_write_uleb(&imports, 0x00) || !bb_write_uleb(&imports, 3)) {
+        bb_free(&imports);
+        return 1;
+    }
+
+    ByteBuffer instructions = {0};
+    if (!bb_write_byte(&instructions, 0xFC) || !bb_write_uleb(&instructions, 16) ||
+        !bb_write_uleb(&instructions, 0)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+    if (!bb_write_byte(&instructions, 0x0B)) {
+        bb_free(&imports);
+        bb_free(&instructions);
+        return 1;
+    }
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  &imports,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  kResultI32,
+                                  1,
+                                  NULL,
+                                  0)) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        bb_free(&imports);
+        cleanup_job(NULL, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const uint32_t table_size_a = 3;
+    const uint32_t table_size_b = 5;
+    fa_ptr* table_data_a = (fa_ptr*)calloc(table_size_a, sizeof(fa_ptr));
+    fa_ptr* table_data_b = (fa_ptr*)calloc(table_size_b, sizeof(fa_ptr));
+    if (!table_data_a || !table_data_b) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_RuntimeHostTable host_table = {0};
+    host_table.data = table_data_a;
+    host_table.size = table_size_a;
+    if (fa_Runtime_bindImportedTable(runtime, "env", "tbl0", &host_table) != FA_RUNTIME_OK) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != (i32)table_size_a) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_RuntimeHostTable invalid_table = {0};
+    invalid_table.data = table_data_b;
+    invalid_table.size = 2;
+    if (fa_Runtime_bindImportedTable(runtime, "env", "tbl0", &invalid_table) != FA_RUNTIME_ERR_TRAP) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!runtime->tables || runtime->tables_count == 0 || runtime->tables[0].data != table_data_a) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    host_table.data = table_data_b;
+    host_table.size = table_size_b;
+    if (fa_Runtime_bindImportedTable(runtime, "env", "tbl0", &host_table) != FA_RUNTIME_OK) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!runtime->tables || runtime->tables_count == 0 ||
+        runtime->tables[0].data != table_data_b ||
+        runtime->tables[0].size != table_size_b) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != (i32)table_size_b) {
+        free(table_data_a);
+        free(table_data_b);
+        bb_free(&imports);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    free(table_data_a);
+    free(table_data_b);
     bb_free(&imports);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
@@ -3838,9 +4256,12 @@ static int test_local_f32_default(void) {
 static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
+    TEST_CASE("test_jit_program_opcode_roundtrip", "jit", "src/fa_jit.c (opcode serialization)", test_jit_program_opcode_roundtrip),
     TEST_CASE("test_host_import_call", "runtime", "src/fa_runtime.c (host imports), src/fa_wasm.c (import parsing)", test_host_import_call),
     TEST_CASE("test_imported_memory_binding", "memory", "src/fa_runtime.c (host memory imports), src/fa_ops.c (load)", test_imported_memory_binding),
+    TEST_CASE("test_imported_memory_rebind_after_attach", "memory", "src/fa_runtime.c (host memory rebind propagation)", test_imported_memory_rebind_after_attach),
     TEST_CASE("test_imported_table_binding", "table", "src/fa_runtime.c (host table imports), src/fa_ops.c (table.size)", test_imported_table_binding),
+    TEST_CASE("test_imported_table_rebind_after_attach", "table", "src/fa_runtime.c (host table rebind propagation)", test_imported_table_rebind_after_attach),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),

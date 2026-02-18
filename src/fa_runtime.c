@@ -321,6 +321,110 @@ static fa_RuntimeHostMemoryBinding* runtime_find_host_memory_binding(fa_Runtime*
     return NULL;
 }
 
+static bool runtime_import_matches(const char* module_name,
+                                   const char* import_name,
+                                   const char* candidate_module,
+                                   const char* candidate_name) {
+    if (!module_name || !import_name || !candidate_module || !candidate_name) {
+        return false;
+    }
+    return strcmp(module_name, candidate_module) == 0 &&
+           strcmp(import_name, candidate_name) == 0;
+}
+
+static int runtime_validate_imported_memory_binding(const WasmMemory* memory,
+                                                    const fa_RuntimeHostMemory* binding_memory) {
+    if (!memory || !binding_memory) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!binding_memory->data && binding_memory->size_bytes > 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (binding_memory->size_bytes > SIZE_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (binding_memory->size_bytes % FA_WASM_PAGE_SIZE != 0) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (!memory->is_memory64) {
+        const uint64_t max_pages_32 = (uint64_t)UINT32_MAX;
+        if (binding_memory->size_bytes > max_pages_32 * FA_WASM_PAGE_SIZE) {
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+    }
+    if (memory->initial_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    const uint64_t min_bytes = memory->initial_size * FA_WASM_PAGE_SIZE;
+    if (binding_memory->size_bytes < min_bytes) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (memory->has_max) {
+        if (memory->maximum_size > (UINT64_MAX / FA_WASM_PAGE_SIZE)) {
+            return FA_RUNTIME_ERR_UNSUPPORTED;
+        }
+        const uint64_t max_bytes = memory->maximum_size * FA_WASM_PAGE_SIZE;
+        if (binding_memory->size_bytes > max_bytes) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_apply_attached_memory_rebind(fa_Runtime* runtime,
+                                                const char* module_name,
+                                                const char* import_name,
+                                                const fa_RuntimeHostMemory* memory) {
+    if (!runtime || !module_name || !import_name || !memory) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->module || !runtime->module->memories || !runtime->memories) {
+        return FA_RUNTIME_OK;
+    }
+
+    const uint32_t limit = (runtime->memories_count < runtime->module->num_memories)
+        ? runtime->memories_count
+        : runtime->module->num_memories;
+    bool matched = false;
+
+    for (uint32_t i = 0; i < limit; ++i) {
+        const WasmMemory* imported = &runtime->module->memories[i];
+        if (!imported->is_imported) {
+            continue;
+        }
+        if (!runtime_import_matches(module_name, import_name, imported->import_module, imported->import_name)) {
+            continue;
+        }
+        int status = runtime_validate_imported_memory_binding(imported, memory);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+        matched = true;
+    }
+
+    if (!matched) {
+        return FA_RUNTIME_OK;
+    }
+
+    for (uint32_t i = 0; i < limit; ++i) {
+        const WasmMemory* imported = &runtime->module->memories[i];
+        if (!imported->is_imported) {
+            continue;
+        }
+        if (!runtime_import_matches(module_name, import_name, imported->import_module, imported->import_name)) {
+            continue;
+        }
+        fa_RuntimeMemory* dst = &runtime->memories[i];
+        dst->data = memory->data;
+        dst->size_bytes = memory->size_bytes;
+        dst->is_host = true;
+        dst->owns_data = false;
+        dst->is_spilled = false;
+    }
+
+    return FA_RUNTIME_OK;
+}
+
 static int runtime_add_host_memory_binding(fa_Runtime* runtime,
                                            const char* module_name,
                                            const char* import_name,
@@ -333,6 +437,10 @@ static int runtime_add_host_memory_binding(fa_Runtime* runtime,
     }
     fa_RuntimeHostMemoryBinding* existing = runtime_find_host_memory_binding(runtime, module_name, import_name);
     if (existing) {
+        int status = runtime_apply_attached_memory_rebind(runtime, module_name, import_name, memory);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
         existing->memory = *memory;
         return FA_RUNTIME_OK;
     }
@@ -348,6 +456,11 @@ static int runtime_add_host_memory_binding(fa_Runtime* runtime,
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
     binding->memory = *memory;
+    status = runtime_apply_attached_memory_rebind(runtime, module_name, import_name, memory);
+    if (status != FA_RUNTIME_OK) {
+        runtime_host_memory_binding_release(binding);
+        return status;
+    }
     runtime->host_memory_binding_count += 1U;
     return FA_RUNTIME_OK;
 }
@@ -420,6 +533,82 @@ static fa_RuntimeHostTableBinding* runtime_find_host_table_binding(fa_Runtime* r
     return NULL;
 }
 
+static int runtime_validate_imported_table_binding(const WasmTable* table,
+                                                   const fa_RuntimeHostTable* binding_table) {
+    if (!table || !binding_table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!binding_table->data && binding_table->size > 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (table->initial_size > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (table->has_max && table->maximum_size > UINT32_MAX) {
+        return FA_RUNTIME_ERR_UNSUPPORTED;
+    }
+    if (binding_table->size < table->initial_size) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (table->has_max && binding_table->size > table->maximum_size) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_apply_attached_table_rebind(fa_Runtime* runtime,
+                                               const char* module_name,
+                                               const char* import_name,
+                                               const fa_RuntimeHostTable* table) {
+    if (!runtime || !module_name || !import_name || !table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!runtime->module || !runtime->module->tables || !runtime->tables) {
+        return FA_RUNTIME_OK;
+    }
+
+    const uint32_t limit = (runtime->tables_count < runtime->module->num_tables)
+        ? runtime->tables_count
+        : runtime->module->num_tables;
+    bool matched = false;
+
+    for (uint32_t i = 0; i < limit; ++i) {
+        const WasmTable* imported = &runtime->module->tables[i];
+        if (!imported->is_imported) {
+            continue;
+        }
+        if (!runtime_import_matches(module_name, import_name, imported->import_module, imported->import_name)) {
+            continue;
+        }
+        int status = runtime_validate_imported_table_binding(imported, table);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
+        matched = true;
+    }
+
+    if (!matched) {
+        return FA_RUNTIME_OK;
+    }
+
+    for (uint32_t i = 0; i < limit; ++i) {
+        const WasmTable* imported = &runtime->module->tables[i];
+        if (!imported->is_imported) {
+            continue;
+        }
+        if (!runtime_import_matches(module_name, import_name, imported->import_module, imported->import_name)) {
+            continue;
+        }
+        fa_RuntimeTable* dst = &runtime->tables[i];
+        dst->data = table->data;
+        dst->size = table->size;
+        dst->is_host = true;
+        dst->owns_data = false;
+    }
+
+    return FA_RUNTIME_OK;
+}
+
 static int runtime_add_host_table_binding(fa_Runtime* runtime,
                                           const char* module_name,
                                           const char* import_name,
@@ -432,6 +621,10 @@ static int runtime_add_host_table_binding(fa_Runtime* runtime,
     }
     fa_RuntimeHostTableBinding* existing = runtime_find_host_table_binding(runtime, module_name, import_name);
     if (existing) {
+        int status = runtime_apply_attached_table_rebind(runtime, module_name, import_name, table);
+        if (status != FA_RUNTIME_OK) {
+            return status;
+        }
         existing->table = *table;
         return FA_RUNTIME_OK;
     }
@@ -447,6 +640,11 @@ static int runtime_add_host_table_binding(fa_Runtime* runtime,
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
     binding->table = *table;
+    status = runtime_apply_attached_table_rebind(runtime, module_name, import_name, table);
+    if (status != FA_RUNTIME_OK) {
+        runtime_host_table_binding_release(binding);
+        return status;
+    }
     runtime->host_table_binding_count += 1U;
     return FA_RUNTIME_OK;
 }
