@@ -40,7 +40,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/helpers/dynamic_list.h` - pointer vector used by ancillary tools.
 - `src/fa_arch.h` - architecture macros with override hooks (pointer width, endianness, CPU family), plus `FAYASM_TARGET_*` selection and embedded resource hints (`FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`).
 - `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
-- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments including typed expressions for funcref/externref tables, reference ops `ref.null`/`ref.is_null`/`ref.func`, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
+- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, `call_indirect` lookup/signature traps, element/data segments including typed expressions for funcref/externref tables, reference ops `ref.null`/`ref.is_null`/`ref.func`, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory, with a versioned opcode spill format for JIT persistence.
 - `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
 - `wasm_samples/` - Emscripten fixture sources (`src/`) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests.
@@ -52,7 +52,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
 - Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill, and element segments now decode legacy vectors plus typed expressions (`ref.func`/`ref.null`/`global.get`) for funcref/externref tables; reference ops (`ref.null`/`ref.is_null`/`ref.func`) are wired; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals plus relaxed-edge-case test coverage.
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
-- `call_indirect` remains unsupported and is a key compatibility gap for larger real-world WASM modules.
+- `call_indirect` is implemented with table lookup + signature checks + trap paths; a remaining compatibility edge is funcref `null` versus function index `0` representation in tables.
 - Runtime now propagates imported memory/table rebinds on already-attached modules; keep coverage for mismatched sizes/limits as import validation evolves.
 - JIT spill/load hooks now have opcode import/export helpers; tests now cover eviction + trap-driven reload and repeated offload cycles, while broader runtime-wide persistence conventions and long-run wear/perf validation are still open.
 
@@ -89,10 +89,10 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Implement `call_indirect` (table index lookup + signature validation + trap paths) for broader WASM program compatibility.
+1. Resolve funcref table representation so `null` and function index `0` are unambiguous across `table.*`, `ref.*`, and `call_indirect`.
 2. Expand runtime smoke coverage using `wasm_samples/` modules and include fixture-build guidance in CI/docs.
 3. Add low-footprint runtime validation examples for ESP32-class targets (call depth, table/memory bounds, spill/load cycles).
-4. Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN propagation).
+4. Add additional non-SIMD compatibility tests around imports/exports/table bounds and control-flow validation paths.
 
 ### General next steps
 1. Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.

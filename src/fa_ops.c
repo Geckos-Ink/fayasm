@@ -2440,27 +2440,73 @@ static OP_RETURN_TYPE op_call(OP_ARGUMENTS) {
     return FA_RUNTIME_OK;
 }
 
+static bool runtime_function_signature_matches(const WasmModule* module, uint32_t function_index, uint32_t type_index) {
+    if (!module || !module->functions || !module->types ||
+        function_index >= module->num_functions || type_index >= module->num_types) {
+        return false;
+    }
+    const uint32_t function_type_index = module->functions[function_index].type_index;
+    if (function_type_index >= module->num_types) {
+        return false;
+    }
+    if (function_type_index == type_index) {
+        return true;
+    }
+    const WasmFunctionType* expected = &module->types[type_index];
+    const WasmFunctionType* actual = &module->types[function_type_index];
+    if (expected->num_params != actual->num_params || expected->num_results != actual->num_results) {
+        return false;
+    }
+    if (expected->num_params > 0 &&
+        memcmp(expected->param_types, actual->param_types, expected->num_params * sizeof(uint32_t)) != 0) {
+        return false;
+    }
+    if (expected->num_results > 0 &&
+        memcmp(expected->result_types, actual->result_types, expected->num_results * sizeof(uint32_t)) != 0) {
+        return false;
+    }
+    return true;
+}
+
 static OP_RETURN_TYPE op_call_indirect(OP_ARGUMENTS) {
-    (void)runtime;
     (void)descriptor;
-    if (!job) {
+    if (!runtime || !runtime->module || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    fa_JobValue table_index;
-    if (pop_stack_checked(job, &table_index) != FA_RUNTIME_OK) {
+
+    uint32_t callee_slot = 0;
+    if (pop_u32_checked(job, &callee_slot) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    u64 ignored = 0;
-    (void)job_value_to_u64(&table_index, &ignored);
+
+    u64 table_index = 0;
+    if (pop_reg_u64_checked(job, &table_index) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
+    if (!table || table->elem_type != VALTYPE_FUNCREF) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (callee_slot >= table->size) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
     u64 type_index = 0;
-    if (pop_reg_u64_checked(job, &type_index) != FA_RUNTIME_OK) {
+    if (pop_reg_u64_checked(job, &type_index) != FA_RUNTIME_OK || type_index > UINT32_MAX) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    u64 reserved = 0;
-    if (pop_reg_u64_checked(job, &reserved) != FA_RUNTIME_OK) {
+    const uint32_t type_u32 = (uint32_t)type_index;
+
+    const fa_ptr table_ref = table->data[callee_slot];
+    if (table_ref == 0 || table_ref > UINT32_MAX) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    job->instructionPointer = (fa_ptr)type_index;
+    const uint32_t function_index = (uint32_t)table_ref;
+    if (!runtime_function_signature_matches(runtime->module, function_index, type_u32)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+
+    job->instructionPointer = (fa_ptr)function_index;
     return FA_RUNTIME_OK;
 }
 

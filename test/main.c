@@ -3375,6 +3375,259 @@ static int test_table_init_global_get_element_expr(void) {
     return 0;
 }
 
+static int test_call_indirect_basic(void) {
+    ByteBuffer table_payload = {0};
+    bb_write_uleb(&table_payload, 1);
+    bb_write_byte(&table_payload, VALTYPE_FUNCREF);
+    bb_write_uleb(&table_payload, 0);
+    bb_write_uleb(&table_payload, 1);
+
+    ByteBuffer elem_payload = {0};
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_uleb(&elem_payload, 0);
+    bb_write_byte(&elem_payload, 0x41);
+    bb_write_sleb32(&elem_payload, 0);
+    bb_write_byte(&elem_payload, 0x0B);
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_uleb(&elem_payload, 1);
+
+    ByteBuffer caller = {0};
+    bb_write_byte(&caller, 0x41);
+    bb_write_sleb32(&caller, 0);
+    bb_write_byte(&caller, 0x11);
+    bb_write_uleb(&caller, 0);
+    bb_write_uleb(&caller, 0);
+    bb_write_byte(&caller, 0x0B);
+
+    ByteBuffer callee = {0};
+    bb_write_byte(&callee, 0x41);
+    bb_write_sleb32(&callee, 42);
+    bb_write_byte(&callee, 0x0B);
+
+    const uint8_t* bodies[] = { caller.data, callee.data };
+    const size_t sizes[] = { caller.size, callee.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_sections(&module_bytes,
+                                    bodies,
+                                    sizes,
+                                    2,
+                                    &table_payload,
+                                    NULL,
+                                    &elem_payload,
+                                    NULL,
+                                    kResultI32,
+                                    1,
+                                    NULL,
+                                    0)) {
+        bb_free(&table_payload);
+        bb_free(&elem_payload);
+        bb_free(&caller);
+        bb_free(&callee);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, NULL);
+        return 1;
+    }
+    bb_free(&table_payload);
+    bb_free(&elem_payload);
+    bb_free(&caller);
+    bb_free(&callee);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != 42) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, NULL);
+    return 0;
+}
+
+static int test_call_indirect_null_trap(void) {
+    ByteBuffer table_payload = {0};
+    bb_write_uleb(&table_payload, 1);
+    bb_write_byte(&table_payload, VALTYPE_FUNCREF);
+    bb_write_uleb(&table_payload, 0);
+    bb_write_uleb(&table_payload, 1);
+
+    ByteBuffer caller = {0};
+    bb_write_byte(&caller, 0x41);
+    bb_write_sleb32(&caller, 0);
+    bb_write_byte(&caller, 0x11);
+    bb_write_uleb(&caller, 0);
+    bb_write_uleb(&caller, 0);
+    bb_write_byte(&caller, 0x0B);
+
+    ByteBuffer callee = {0};
+    bb_write_byte(&callee, 0x41);
+    bb_write_sleb32(&callee, 7);
+    bb_write_byte(&callee, 0x0B);
+
+    const uint8_t* bodies[] = { caller.data, callee.data };
+    const size_t sizes[] = { caller.size, callee.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_sections(&module_bytes,
+                                    bodies,
+                                    sizes,
+                                    2,
+                                    &table_payload,
+                                    NULL,
+                                    NULL,
+                                    NULL,
+                                    kResultI32,
+                                    1,
+                                    NULL,
+                                    0)) {
+        bb_free(&table_payload);
+        bb_free(&caller);
+        bb_free(&callee);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, NULL);
+        return 1;
+    }
+    bb_free(&table_payload);
+    bb_free(&caller);
+    bb_free(&callee);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, NULL);
+    return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
+}
+
+static int test_call_indirect_type_mismatch_trap(void) {
+    ByteBuffer module_bytes = {0};
+    const uint8_t header[] = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
+    if (!bb_write_bytes(&module_bytes, header, sizeof(header))) {
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    ByteBuffer payload = {0};
+
+    // Type section: type0 () -> i32, type1 () -> i64.
+    bb_write_uleb(&payload, 2);
+    bb_write_byte(&payload, 0x60);
+    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, 1);
+    bb_write_byte(&payload, VALTYPE_I32);
+    bb_write_byte(&payload, 0x60);
+    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, 1);
+    bb_write_byte(&payload, VALTYPE_I64);
+    if (!append_section(&module_bytes, SECTION_TYPE, &payload)) {
+        bb_free(&payload);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    // Function section: caller uses type0, callee uses type1.
+    bb_reset(&payload);
+    bb_write_uleb(&payload, 2);
+    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, 1);
+    if (!append_section(&module_bytes, SECTION_FUNCTION, &payload)) {
+        bb_free(&payload);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    // Table section.
+    bb_reset(&payload);
+    bb_write_uleb(&payload, 1);
+    bb_write_byte(&payload, VALTYPE_FUNCREF);
+    bb_write_uleb(&payload, 0);
+    bb_write_uleb(&payload, 1);
+    if (!append_section(&module_bytes, SECTION_TABLE, &payload)) {
+        bb_free(&payload);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    // Element section: table[0] = function 1 (type1).
+    bb_reset(&payload);
+    bb_write_uleb(&payload, 1);
+    bb_write_uleb(&payload, 0);
+    bb_write_byte(&payload, 0x41);
+    bb_write_sleb32(&payload, 0);
+    bb_write_byte(&payload, 0x0B);
+    bb_write_uleb(&payload, 1);
+    bb_write_uleb(&payload, 1);
+    if (!append_section(&module_bytes, SECTION_ELEMENT, &payload)) {
+        bb_free(&payload);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    // Code section.
+    ByteBuffer caller = {0};
+    bb_write_byte(&caller, 0x41);
+    bb_write_sleb32(&caller, 0);
+    bb_write_byte(&caller, 0x11);
+    bb_write_uleb(&caller, 0);
+    bb_write_uleb(&caller, 0);
+    bb_write_byte(&caller, 0x0B);
+
+    ByteBuffer callee = {0};
+    bb_write_byte(&callee, 0x42);
+    bb_write_sleb32(&callee, 9);
+    bb_write_byte(&callee, 0x0B);
+
+    bb_reset(&payload);
+    bb_write_uleb(&payload, 2);
+    bb_write_uleb(&payload, (uint32_t)(caller.size + 1));
+    bb_write_uleb(&payload, 0);
+    bb_write_bytes(&payload, caller.data, caller.size);
+    bb_write_uleb(&payload, (uint32_t)(callee.size + 1));
+    bb_write_uleb(&payload, 0);
+    bb_write_bytes(&payload, callee.data, callee.size);
+    if (!append_section(&module_bytes, SECTION_CODE, &payload)) {
+        bb_free(&payload);
+        bb_free(&caller);
+        bb_free(&callee);
+        bb_free(&module_bytes);
+        return 1;
+    }
+
+    bb_free(&payload);
+    bb_free(&caller);
+    bb_free(&callee);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, NULL);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    cleanup_job(runtime, job, module, &module_bytes, NULL);
+    return status == FA_RUNTIME_ERR_TRAP ? 0 : 1;
+}
+
 static int test_elem_drop_trap(void) {
     ByteBuffer table_payload = {0};
     bb_write_uleb(&table_payload, 1);
@@ -5124,6 +5377,9 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_table_fill_size", "table", "src/fa_ops.c (table.fill/size)", test_table_fill_size),
     TEST_CASE("test_externref_table_active_null_elem_expr", "table", "src/fa_wasm.c (element expr parsing), src/fa_runtime.c (segment init)", test_externref_table_active_null_elem_expr),
     TEST_CASE("test_table_init_global_get_element_expr", "table", "src/fa_wasm.c (element expr global.get), src/fa_ops.c (table.init)", test_table_init_global_get_element_expr),
+    TEST_CASE("test_call_indirect_basic", "call-indirect", "src/fa_runtime.c (decode+dispatch), src/fa_ops.c (call_indirect)", test_call_indirect_basic),
+    TEST_CASE("test_call_indirect_null_trap", "call-indirect", "src/fa_ops.c (table lookup trap)", test_call_indirect_null_trap),
+    TEST_CASE("test_call_indirect_type_mismatch_trap", "call-indirect", "src/fa_ops.c (signature validation)", test_call_indirect_type_mismatch_trap),
     TEST_CASE("test_elem_drop_trap", "table", "src/fa_ops.c (elem.drop)", test_elem_drop_trap),
     TEST_CASE("test_table_grow", "table", "src/fa_ops.c (table.grow)", test_table_grow),
     TEST_CASE("test_simd_v128_const", "simd", "src/fa_runtime.c (simd decode), src/fa_ops.c (op_simd)", test_simd_v128_const),

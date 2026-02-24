@@ -3820,6 +3820,9 @@ static int runtime_decode_instruction(const uint8_t* body,
             if (status != FA_RUNTIME_OK) {
                 return status;
             }
+            if (func_index > UINT32_MAX) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
             uint32_t u32_value = (uint32_t)func_index;
             status = runtime_push_reg_value(job, &u32_value, sizeof(u32_value));
             if (status != FA_RUNTIME_OK) {
@@ -3830,7 +3833,38 @@ static int runtime_decode_instruction(const uint8_t* body,
             return FA_RUNTIME_OK;
         }
         case 0x11: // call_indirect
-            return FA_RUNTIME_ERR_UNSUPPORTED;
+        {
+            uint64_t type_index = 0;
+            int status = runtime_read_uleb128(body, body_size, &frame->pc, &type_index);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (type_index > UINT32_MAX) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            uint32_t type_u32 = (uint32_t)type_index;
+            status = runtime_push_reg_value(job, &type_u32, sizeof(type_u32));
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+
+            uint64_t table_index = 0;
+            status = runtime_read_uleb128(body, body_size, &frame->pc, &table_index);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (table_index > UINT32_MAX) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            uint32_t table_u32 = (uint32_t)table_index;
+            status = runtime_push_reg_value(job, &table_u32, sizeof(table_u32));
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            ctx->has_call = true;
+            ctx->call_target = 0;
+            return FA_RUNTIME_OK;
+        }
         case 0xD0: // ref.null
         {
             if (frame->pc >= body_size) {
@@ -4582,8 +4616,17 @@ int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_in
         }
 
         if (ctx.has_call) {
+            uint32_t call_target = ctx.call_target;
+            if (opcode == 0x10 || opcode == 0x11) {
+                if (job->instructionPointer > UINT32_MAX) {
+                    runtime_instruction_context_free(&ctx);
+                    status = FA_RUNTIME_ERR_TRAP;
+                    break;
+                }
+                call_target = (uint32_t)job->instructionPointer;
+            }
             job->instructionPointer = 0;
-            status = runtime_call_function(runtime, frames, &depth, job, ctx.call_target);
+            status = runtime_call_function(runtime, frames, &depth, job, call_target);
             runtime_instruction_context_free(&ctx);
             if (status != FA_RUNTIME_OK) {
                 break;
