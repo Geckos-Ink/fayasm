@@ -1068,6 +1068,38 @@ static int runtime_memory_bounds_check(const fa_RuntimeMemory* memory, uint64_t 
     return FA_RUNTIME_OK;
 }
 
+static int runtime_resolve_element_ref(const fa_Runtime* runtime,
+                                       const WasmElementSegment* segment,
+                                       uint32_t element_index,
+                                       fa_ptr* out) {
+    if (!runtime || !segment || !out || !segment->elements || element_index >= segment->element_count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const WasmElementInit* init = &segment->elements[element_index];
+    switch (init->kind) {
+        case WASM_ELEMENT_INIT_REF_VALUE:
+            *out = init->value;
+            return FA_RUNTIME_OK;
+        case WASM_ELEMENT_INIT_GLOBAL_GET:
+        {
+            if (!runtime->module || !runtime->module->globals ||
+                init->global_index >= runtime->module->num_globals ||
+                runtime->module->globals[init->global_index].valtype != segment->elem_type ||
+                init->global_index >= runtime->globals_count || !runtime->globals) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const fa_JobValue* value = &runtime->globals[init->global_index];
+            if (value->kind != fa_job_value_ref) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            *out = value->payload.ref_value;
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
+    }
+}
+
 static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) {
     if (!runtime || !module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -1133,7 +1165,12 @@ static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) 
                 return FA_RUNTIME_ERR_TRAP;
             }
             for (uint32_t j = 0; j < segment->element_count; ++j) {
-                table->data[(size_t)segment->offset + j] = segment->elements[j];
+                fa_ptr ref_value = 0;
+                int status = runtime_resolve_element_ref(runtime, segment, j, &ref_value);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                table->data[(size_t)segment->offset + j] = ref_value;
             }
             runtime->elem_segments_dropped[i] = true;
         }
@@ -1762,6 +1799,7 @@ static int runtime_prescan_skip_immediates(const fa_Runtime* runtime,
         case 0x0C: /* br */
         case 0x0D: /* br_if */
         case 0x10: /* call */
+        case 0xD2: /* ref.func */
         case 0x20: /* local.get */
         case 0x21: /* local.set */
         case 0x22: /* local.tee */
@@ -1795,6 +1833,12 @@ static int runtime_prescan_skip_immediates(const fa_Runtime* runtime,
             }
             return runtime_prescan_read_uleb128(body, body_size, cursor);
         }
+        case 0xD0: /* ref.null */
+            if (*cursor >= body_size) {
+                return FA_RUNTIME_ERR_STREAM;
+            }
+            *cursor += 1U;
+            return FA_RUNTIME_OK;
         case 0x41: /* i32.const */
         case 0x42: /* i64.const */
             return runtime_prescan_read_sleb128(body, body_size, cursor);
@@ -2205,6 +2249,7 @@ static int runtime_skip_immediates(const uint8_t* body,
         case 0x0C: /* br */
         case 0x0D: /* br_if */
         case 0x10: /* call */
+        case 0xD2: /* ref.func */
         case 0x20: /* local.get */
         case 0x21: /* local.set */
         case 0x22: /* local.tee */
@@ -2236,6 +2281,12 @@ static int runtime_skip_immediates(const uint8_t* body,
             }
             return runtime_read_uleb128(body, body_size, cursor, &uleb);
         }
+        case 0xD0: /* ref.null */
+            if (*cursor >= body_size) {
+                return FA_RUNTIME_ERR_STREAM;
+            }
+            *cursor += 1U;
+            return FA_RUNTIME_OK;
         case 0x41: /* i32.const */
             return runtime_read_sleb128(body, body_size, cursor, &sleb);
         case 0x42: /* i64.const */
@@ -3780,6 +3831,31 @@ static int runtime_decode_instruction(const uint8_t* body,
         }
         case 0x11: // call_indirect
             return FA_RUNTIME_ERR_UNSUPPORTED;
+        case 0xD0: // ref.null
+        {
+            if (frame->pc >= body_size) {
+                return FA_RUNTIME_ERR_STREAM;
+            }
+            const uint8_t ref_type = body[frame->pc++];
+            if (ref_type != VALTYPE_FUNCREF && ref_type != VALTYPE_EXTERNREF) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            uint32_t value = ref_type;
+            return runtime_push_reg_value(job, &value, sizeof(value));
+        }
+        case 0xD2: // ref.func
+        {
+            uint64_t index = 0;
+            int status = runtime_read_uleb128(body, body_size, &frame->pc, &index);
+            if (status != FA_RUNTIME_OK) {
+                return status;
+            }
+            if (index > UINT32_MAX) {
+                return FA_RUNTIME_ERR_UNSUPPORTED;
+            }
+            uint32_t value = (uint32_t)index;
+            return runtime_push_reg_value(job, &value, sizeof(value));
+        }
         case 0x20: // local.get
         case 0x21: // local.set
         case 0x22: // local.tee

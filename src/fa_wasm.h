@@ -93,10 +93,19 @@ typedef struct {
     uint32_t kind;         // 0=function, 1=table, 2=memory, 3=global
     uint32_t index;
 } WasmExport;
+typedef enum {
+    WASM_ELEMENT_INIT_REF_VALUE = 0,
+    WASM_ELEMENT_INIT_GLOBAL_GET = 1
+} WasmElementInitKind;
+typedef struct {
+    uint8_t kind;
+    fa_ptr value;
+    uint32_t global_index;
+} WasmElementInit;
 typedef struct {
     uint32_t table_index;
     uint32_t element_count;
-    fa_ptr* elements;
+    WasmElementInit* elements;
     uint64_t offset;
     bool is_passive;
     bool is_declarative;

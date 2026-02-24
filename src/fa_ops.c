@@ -686,6 +686,38 @@ static const WasmElementSegment* runtime_get_element_segment(const fa_Runtime* r
     return &runtime->module->elements[(uint32_t)index];
 }
 
+static int runtime_resolve_element_ref(const fa_Runtime* runtime,
+                                       const WasmElementSegment* segment,
+                                       uint32_t element_index,
+                                       fa_ptr* out) {
+    if (!runtime || !segment || !out || !segment->elements || element_index >= segment->element_count) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    const WasmElementInit* init = &segment->elements[element_index];
+    switch (init->kind) {
+        case WASM_ELEMENT_INIT_REF_VALUE:
+            *out = init->value;
+            return FA_RUNTIME_OK;
+        case WASM_ELEMENT_INIT_GLOBAL_GET:
+        {
+            if (!runtime->module || !runtime->module->globals ||
+                init->global_index >= runtime->module->num_globals ||
+                runtime->module->globals[init->global_index].valtype != segment->elem_type ||
+                init->global_index >= runtime->globals_count || !runtime->globals) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            const fa_JobValue* value = &runtime->globals[init->global_index];
+            if (value->kind != fa_job_value_ref) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            *out = value->payload.ref_value;
+            return FA_RUNTIME_OK;
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
+    }
+}
+
 static int pop_length_checked(fa_Job* job, bool memory64, u64* out) {
     if (!job || !out) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -1209,6 +1241,46 @@ static OP_RETURN_TYPE op_eqz(OP_ARGUMENTS) {
         return FA_RUNTIME_ERR_TRAP;
     }
     return push_bool_checked(job, !job_value_truthy(&value));
+}
+
+static OP_RETURN_TYPE op_ref(OP_ARGUMENTS) {
+    if (!job || !descriptor) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    switch (descriptor->id) {
+        case 0xD0: /* ref.null */
+        {
+            u64 ref_type = 0;
+            if (pop_reg_u64_checked(job, &ref_type) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (ref_type != VALTYPE_FUNCREF && ref_type != VALTYPE_EXTERNREF) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_ref_checked(job, (fa_ptr)0);
+        }
+        case 0xD1: /* ref.is_null */
+        {
+            fa_ptr value = 0;
+            if (pop_ref_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_bool_checked(job, value == 0);
+        }
+        case 0xD2: /* ref.func */
+        {
+            u64 func_index = 0;
+            if (pop_reg_u64_checked(job, &func_index) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (!runtime || !runtime->module || func_index >= runtime->module->num_functions) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_ref_checked(job, (fa_ptr)func_index);
+        }
+        default:
+            return FA_RUNTIME_ERR_TRAP;
+    }
 }
 
 #define DEFINE_BITWISE_OP(name, expr)                                            \
@@ -2597,6 +2669,7 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
         }
         case 12: /* table.init */
         {
+            int status = FA_RUNTIME_OK;
             u64 elem_index = 0;
             u64 table_index = 0;
             if (pop_reg_u64_checked(job, &elem_index) != FA_RUNTIME_OK ||
@@ -2633,7 +2706,12 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             for (uint32_t i = 0; i < length; ++i) {
-                table->data[dst + i] = segment->elements[src + i];
+                fa_ptr ref_value = 0;
+                status = runtime_resolve_element_ref(runtime, segment, src + i, &ref_value);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                table->data[dst + i] = ref_value;
             }
             return FA_RUNTIME_OK;
         }
@@ -6282,6 +6360,9 @@ void fa_ops_defs_populate(fa_WasmOp* ops) {
     define_op(ops, 0x22, &type_void, wopt_unique, 0, 1, 1, 1, op_local); // local.tee
     define_op(ops, 0x23, &type_void, wopt_unique, 0, 0, 1, 1, op_global); // global.get
     define_op(ops, 0x24, &type_void, wopt_unique, 0, 1, 0, 1, op_global); // global.set
+    define_op(ops, 0xD0, &type_void, wopt_unique, 0, 0, 1, 1, op_ref); // ref.null
+    define_op(ops, 0xD1, &type_i32, wopt_unique, 0, 1, 1, 0, op_ref); // ref.is_null
+    define_op(ops, 0xD2, &type_void, wopt_unique, 0, 0, 1, 1, op_ref); // ref.func
     define_op(ops, 0x25, &type_void, wopt_unique, 0, 0, 0, 1, op_table); // table.get
     define_op(ops, 0x26, &type_void, wopt_unique, 0, 1, 0, 1, op_table); // table.set
     define_op(ops, 0x28, &type_i32, wopt_load, 32, 1, 1, 2, op_load); // i32.load

@@ -3261,6 +3261,120 @@ static int test_externref_table_active_null_elem_expr(void) {
     return 0;
 }
 
+static int test_table_init_global_get_element_expr(void) {
+    ByteBuffer imports = {0};
+    if (!bb_write_uleb(&imports, 1) ||
+        !bb_write_string(&imports, "env") ||
+        !bb_write_string(&imports, "g_ref") ||
+        !bb_write_byte(&imports, 0x03) ||
+        !bb_write_byte(&imports, VALTYPE_EXTERNREF) ||
+        !bb_write_byte(&imports, 0x00)) {
+        bb_free(&imports);
+        return 1;
+    }
+
+    ByteBuffer table_payload = {0};
+    bb_write_uleb(&table_payload, 1);
+    bb_write_byte(&table_payload, VALTYPE_EXTERNREF);
+    bb_write_uleb(&table_payload, 0);
+    bb_write_uleb(&table_payload, 1);
+
+    ByteBuffer elem_payload = {0};
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_uleb(&elem_payload, 5);
+    bb_write_byte(&elem_payload, VALTYPE_EXTERNREF);
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_byte(&elem_payload, 0x23);
+    bb_write_uleb(&elem_payload, 0);
+    bb_write_byte(&elem_payload, 0x0B);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0xFC);
+    bb_write_uleb(&instructions, 12);
+    bb_write_uleb(&instructions, 0);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x25);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    const uint8_t result_types[] = { VALTYPE_EXTERNREF };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_locals(&module_bytes,
+                                  bodies,
+                                  sizes,
+                                  NULL,
+                                  NULL,
+                                  1,
+                                  &imports,
+                                  NULL,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  result_types,
+                                  1,
+                                  NULL,
+                                  0) ||
+        !append_section(&module_bytes, SECTION_TABLE, &table_payload) ||
+        !append_section(&module_bytes, SECTION_ELEMENT, &elem_payload)) {
+        bb_free(&imports);
+        bb_free(&table_payload);
+        bb_free(&elem_payload);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&imports);
+    bb_free(&table_payload);
+    bb_free(&elem_payload);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_JobValue import_value = {0};
+    import_value.kind = fa_job_value_ref;
+    import_value.bit_width = (uint8_t)(sizeof(fa_ptr) * 8U);
+    import_value.is_signed = false;
+    import_value.payload.ref_value = (fa_ptr)0x1234U;
+    if (fa_Runtime_setImportedGlobal(runtime, 0, &import_value) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_ref || value->payload.ref_value != (fa_ptr)0x1234U) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_elem_drop_trap(void) {
     ByteBuffer table_payload = {0};
     bb_write_uleb(&table_payload, 1);
@@ -4740,6 +4854,74 @@ static int test_global_get_set(void) {
     return 0;
 }
 
+static int test_ref_ops_basic(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0xD0);
+    bb_write_byte(&instructions, VALTYPE_FUNCREF);
+    bb_write_byte(&instructions, 0xD1);
+    bb_write_byte(&instructions, 0xD2);
+    bb_write_uleb(&instructions, 1);
+    bb_write_byte(&instructions, 0xD1);
+    bb_write_byte(&instructions, 0x0B);
+
+    ByteBuffer dummy = {0};
+    bb_write_byte(&dummy, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data, dummy.data };
+    const size_t sizes[] = { instructions.size, dummy.size };
+    const uint8_t result_types[] = { VALTYPE_I32, VALTYPE_I32 };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes,
+                      bodies,
+                      sizes,
+                      2,
+                      0,
+                      0,
+                      0,
+                      0,
+                      result_types,
+                      2,
+                      NULL,
+                      0)) {
+        bb_free(&dummy);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&dummy);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* second = fa_JobStack_peek(&job->stack, 0);
+    if (!second || second->kind != fa_job_value_i32 || second->payload.i32_value != 0) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* first = fa_JobStack_peek(&job->stack, 1);
+    if (!first || first->kind != fa_job_value_i32 || first->payload.i32_value != 1) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 2) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_global_set_immutable_trap(void) {
     ByteBuffer globals = {0};
     bb_write_uleb(&globals, 1);
@@ -4941,6 +5123,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_table_init_copy", "table", "src/fa_ops.c (table.init/copy), src/fa_runtime.c (tables)", test_table_init_copy),
     TEST_CASE("test_table_fill_size", "table", "src/fa_ops.c (table.fill/size)", test_table_fill_size),
     TEST_CASE("test_externref_table_active_null_elem_expr", "table", "src/fa_wasm.c (element expr parsing), src/fa_runtime.c (segment init)", test_externref_table_active_null_elem_expr),
+    TEST_CASE("test_table_init_global_get_element_expr", "table", "src/fa_wasm.c (element expr global.get), src/fa_ops.c (table.init)", test_table_init_global_get_element_expr),
     TEST_CASE("test_elem_drop_trap", "table", "src/fa_ops.c (elem.drop)", test_elem_drop_trap),
     TEST_CASE("test_table_grow", "table", "src/fa_ops.c (table.grow)", test_table_grow),
     TEST_CASE("test_simd_v128_const", "simd", "src/fa_runtime.c (simd decode), src/fa_ops.c (op_simd)", test_simd_v128_const),
@@ -4966,6 +5149,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_br_table_branch", "control", "src/fa_runtime.c (br_table)", test_br_table_branch),
     TEST_CASE("test_loop_label_result", "control", "src/fa_runtime.c (loop label types)", test_loop_label_result),
     TEST_CASE("test_loop_label_type_mismatch_trap", "control", "src/fa_runtime.c (loop label types)", test_loop_label_type_mismatch_trap),
+    TEST_CASE("test_ref_ops_basic", "refs", "src/fa_runtime.c (decode), src/fa_ops.c (ref ops)", test_ref_ops_basic),
     TEST_CASE("test_global_get_set", "globals", "src/fa_ops.c (global.get/set)", test_global_get_set),
     TEST_CASE("test_global_get_initializer", "globals", "src/fa_runtime.c (global init)", test_global_get_initializer),
     TEST_CASE("test_global_import_initializer", "globals", "src/fa_runtime.c (imported globals)", test_global_import_initializer),

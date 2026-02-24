@@ -218,10 +218,12 @@ static bool wasm_is_ref_type(uint8_t ref_type) {
     return ref_type == VALTYPE_FUNCREF || ref_type == VALTYPE_EXTERNREF;
 }
 
-static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, fa_ptr* out) {
+static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, WasmElementInit* out) {
     if (!module || !out || !wasm_is_ref_type(elem_type)) {
         return -1;
     }
+    memset(out, 0, sizeof(*out));
+    out->kind = WASM_ELEMENT_INIT_REF_VALUE;
 
     uint8_t opcode = 0;
     if (wasm_stream_read(module, &opcode, 1) != 1) {
@@ -239,7 +241,7 @@ static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, fa_
             if (null_type != elem_type) {
                 return -1;
             }
-            *out = (fa_ptr)0;
+            out->value = (fa_ptr)0;
             break;
         }
         case 0xD2: /* ref.func */
@@ -251,7 +253,24 @@ static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, fa_
             if (size_read == 0) {
                 return -1;
             }
-            *out = (fa_ptr)func_index;
+            out->value = (fa_ptr)func_index;
+            break;
+        }
+        case 0x23: /* global.get */
+        {
+            const uint32_t global_index = read_uleb128(module, &size_read);
+            if (size_read == 0) {
+                return -1;
+            }
+            if (!module->globals || global_index >= module->num_globals) {
+                return -1;
+            }
+            const WasmGlobal* global = &module->globals[global_index];
+            if (global->valtype != elem_type || global->is_mutable) {
+                return -1;
+            }
+            out->kind = WASM_ELEMENT_INIT_GLOBAL_GET;
+            out->global_index = global_index;
             break;
         }
         default:
@@ -1652,7 +1671,7 @@ int wasm_load_elements(WasmModule* module) {
                 }
                 segment->element_count = elem_count;
                 if (elem_count > 0) {
-                    segment->elements = (fa_ptr*)calloc(elem_count, sizeof(fa_ptr));
+                    segment->elements = (WasmElementInit*)calloc(elem_count, sizeof(WasmElementInit));
                     if (!segment->elements) {
                         return -1;
                     }
@@ -1667,7 +1686,8 @@ int wasm_load_elements(WasmModule* module) {
                         if (size_read == 0) {
                             return -1;
                         }
-                        segment->elements[k] = (fa_ptr)func_index;
+                        segment->elements[k].kind = WASM_ELEMENT_INIT_REF_VALUE;
+                        segment->elements[k].value = (fa_ptr)func_index;
                     }
                 }
             }

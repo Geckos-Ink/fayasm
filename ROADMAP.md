@@ -10,12 +10,14 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Medium-Term
 
-- Broaden element-segment const-expression coverage beyond `ref.func`/`ref.null` (for example `global.get` reference initializers) and extend externref-table edge-case tests.
-- Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN handling) plus coverage for additional table bounds scenarios.
+- Implement `call_indirect` with table lookup/signature checks/trap paths for broader WASM compatibility.
+- Expand runtime smoke coverage using `wasm_samples/` modules with focus on non-SIMD language/toolchain outputs.
+- Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
 
 ## Recently Completed
 
-- Added typed element-segment expression decoding (`flags 4..7`) with `ref.func`/`ref.null` support, plus runtime/tests for passive `table.init` and active externref-table initialization.
+- Added typed element-segment expression decoding (`flags 4..7`) for `ref.func`/`ref.null`/`global.get` with runtime resolution against globals during active/passive table initialization.
+- Added baseline reference opcode execution (`ref.null`, `ref.is_null`, `ref.func`) plus regression coverage.
 - Implemented core + relaxed SIMD opcodes (v128 load/store, shuffle/swizzle, lane ops, comparisons, arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr).
 - Extended microcode coverage to float unary/special/reinterpret/select ops and added a resource-aware JIT precompile pass for per-function sequences.
 - Wired imported functions to host callbacks or dynamic-library bindings (`dlopen`/`dlsym` scaffolding).
