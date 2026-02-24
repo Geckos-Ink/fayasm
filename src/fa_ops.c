@@ -2633,7 +2633,7 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             for (uint32_t i = 0; i < length; ++i) {
-                table->data[dst + i] = (fa_ptr)segment->elements[src + i];
+                table->data[dst + i] = segment->elements[src + i];
             }
             return FA_RUNTIME_OK;
         }

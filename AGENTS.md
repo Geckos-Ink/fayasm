@@ -35,12 +35,12 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `src/fa_job.*` - linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
 - `src/fa_ops.*` - opcode descriptors plus the delegate table; microcode scaffolding now pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert and float unary/special/reinterpret/select ops, and per-op handlers now use those microcode functions instead of switch-case towers (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`).
 - `src/fa_jit.*` - JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers, opcode import/export helpers for stable spill formats, optional prescan configuration (`FAYASM_JIT_PRESCAN`/`FAYASM_JIT_PRESCAN_FORCE`), and `fa_jit_context_apply_env_overrides`.
-- `src/fa_wasm.*` - disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments).
+- `src/fa_wasm.*` - disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments), including typed element-expression payloads (`ref.func`/`ref.null`) for funcref/externref tables.
 - `src/fa_wasm_stream.*` - cursor helpers used in the tests to exercise streaming reads.
 - `src/helpers/dynamic_list.h` - pointer vector used by ancillary tools.
 - `src/fa_arch.h` - architecture macros with override hooks (pointer width, endianness, CPU family), plus `FAYASM_TARGET_*` selection and embedded resource hints (`FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`).
 - `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
-- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
+- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, element/data segments including typed expressions for funcref/externref tables, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory, with a versioned opcode spill format for JIT persistence.
 - `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
 - `wasm_samples/` - Emscripten fixture sources (`src/`) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests.
@@ -50,8 +50,9 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 
 - Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
 - Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
-- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals plus relaxed-edge-case test coverage.
+- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill, and element segments now decode legacy vectors plus typed expressions (`ref.func`/`ref.null`) for funcref/externref tables; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr). Remaining SIMD gaps are any future extension proposals plus relaxed-edge-case test coverage.
 - Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
+- Element-segment const-expression parsing currently supports `ref.func` and `ref.null`; `global.get` reference initializers are still open.
 - Runtime now propagates imported memory/table rebinds on already-attached modules; keep coverage for mismatched sizes/limits as import validation evolves.
 - JIT spill/load hooks now have opcode import/export helpers; tests now cover eviction + trap-driven reload and repeated offload cycles, while broader runtime-wide persistence conventions and long-run wear/perf validation are still open.
 
@@ -88,7 +89,7 @@ Keep this index synchronized when new material lands in `studies/`.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
 ## Next steps
-1. Expand element/data segment support to ref.func expressions and externref tables.
+1. Extend element-segment const-expression support with `global.get` reference initializers and add coverage for those paths.
 2. Add relaxed SIMD coverage tests (relaxed swizzle, laneselect, madd/nmadd, relaxed min/max, relaxed trunc, relaxed q15mulr).
 3. Add SIMD edge-case tests (saturating arithmetic, lane load/store traps, NaN propagation).
 4. Expand runtime smoke coverage using `wasm_samples/` modules and include fixture-build guidance in CI/docs.

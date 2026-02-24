@@ -96,7 +96,7 @@ typedef struct {
 typedef struct {
     uint32_t table_index;
     uint32_t element_count;
-    uint32_t* elements;
+    fa_ptr* elements;
     uint64_t offset;
     bool is_passive;
     bool is_declarative;

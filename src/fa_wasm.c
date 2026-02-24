@@ -214,6 +214,57 @@ static int wasm_read_init_expr_offset(WasmModule* module, uint64_t* out) {
     return 0;
 }
 
+static bool wasm_is_ref_type(uint8_t ref_type) {
+    return ref_type == VALTYPE_FUNCREF || ref_type == VALTYPE_EXTERNREF;
+}
+
+static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, fa_ptr* out) {
+    if (!module || !out || !wasm_is_ref_type(elem_type)) {
+        return -1;
+    }
+
+    uint8_t opcode = 0;
+    if (wasm_stream_read(module, &opcode, 1) != 1) {
+        return -1;
+    }
+
+    uint32_t size_read = 0;
+    switch (opcode) {
+        case 0xD0: /* ref.null */
+        {
+            uint8_t null_type = 0;
+            if (wasm_stream_read(module, &null_type, 1) != 1) {
+                return -1;
+            }
+            if (null_type != elem_type) {
+                return -1;
+            }
+            *out = (fa_ptr)0;
+            break;
+        }
+        case 0xD2: /* ref.func */
+        {
+            if (elem_type != VALTYPE_FUNCREF) {
+                return -1;
+            }
+            const uint32_t func_index = read_uleb128(module, &size_read);
+            if (size_read == 0) {
+                return -1;
+            }
+            *out = (fa_ptr)func_index;
+            break;
+        }
+        default:
+            return -1;
+    }
+
+    uint8_t end = 0;
+    if (wasm_stream_read(module, &end, 1) != 1 || end != 0x0B) {
+        return -1;
+    }
+    return 0;
+}
+
 // Legge una stringa (lunghezza + dati)
 char* read_string(WasmModule* module, uint32_t* len) {
     uint32_t size_read;
@@ -1475,6 +1526,10 @@ int wasm_load_globals(WasmModule* module) {
 
 // Carica gli element dalla sezione Element
 int wasm_load_elements(WasmModule* module) {
+    if (!module) {
+        return -1;
+    }
+
     for (uint32_t i = 0; i < module->num_sections; i++) {
         if (module->sections[i].type == SECTION_ELEMENT) {
             if (wasm_stream_seek(module, module->sections[i].offset, SEEK_SET) < 0) {
@@ -1498,61 +1553,122 @@ int wasm_load_elements(WasmModule* module) {
                 WasmElementSegment* segment = &module->elements[j];
                 segment->elem_type = VALTYPE_FUNCREF;
                 segment->table_index = 0;
-
-                if (flags & 0x4) {
-                    return -1;
-                }
-
-                uint8_t elem_kind = 0x00;
+                bool uses_expr_list = false;
                 switch (flags) {
-                    case 0:
+                    case 0: /* active, table 0, legacy funcidx vector */
                         if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
                             return -1;
                         }
                         break;
-                    case 1:
+                    case 1: /* passive, legacy funcidx vector */
                         segment->is_passive = true;
-                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
-                            return -1;
+                        {
+                            uint8_t elem_kind = 0x00;
+                            if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                                return -1;
+                            }
+                            if (elem_kind != 0x00 && elem_kind != VALTYPE_FUNCREF) {
+                                return -1;
+                            }
                         }
                         break;
-                    case 2:
+                    case 2: /* active, explicit table, legacy funcidx vector */
                         segment->table_index = read_uleb128(module, &size_read);
+                        if (size_read == 0) {
+                            return -1;
+                        }
                         if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
                             return -1;
                         }
-                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
-                            return -1;
+                        {
+                            uint8_t elem_kind = 0x00;
+                            if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                                return -1;
+                            }
+                            if (elem_kind != 0x00 && elem_kind != VALTYPE_FUNCREF) {
+                                return -1;
+                            }
                         }
                         break;
-                    case 3:
+                    case 3: /* declarative, legacy funcidx vector */
                         segment->is_declarative = true;
-                        if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                        {
+                            uint8_t elem_kind = 0x00;
+                            if (wasm_stream_read(module, &elem_kind, 1) != 1) {
+                                return -1;
+                            }
+                            if (elem_kind != 0x00 && elem_kind != VALTYPE_FUNCREF) {
+                                return -1;
+                            }
+                        }
+                        break;
+                    case 4: /* active, table 0, typed expression vector */
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
                             return -1;
                         }
+                        if (wasm_stream_read(module, &segment->elem_type, 1) != 1 ||
+                            !wasm_is_ref_type(segment->elem_type)) {
+                            return -1;
+                        }
+                        uses_expr_list = true;
+                        break;
+                    case 5: /* passive, typed expression vector */
+                        segment->is_passive = true;
+                        if (wasm_stream_read(module, &segment->elem_type, 1) != 1 ||
+                            !wasm_is_ref_type(segment->elem_type)) {
+                            return -1;
+                        }
+                        uses_expr_list = true;
+                        break;
+                    case 6: /* active, explicit table, typed expression vector */
+                        segment->table_index = read_uleb128(module, &size_read);
+                        if (size_read == 0) {
+                            return -1;
+                        }
+                        if (wasm_read_init_expr_offset(module, &segment->offset) != 0) {
+                            return -1;
+                        }
+                        if (wasm_stream_read(module, &segment->elem_type, 1) != 1 ||
+                            !wasm_is_ref_type(segment->elem_type)) {
+                            return -1;
+                        }
+                        uses_expr_list = true;
+                        break;
+                    case 7: /* declarative, typed expression vector */
+                        segment->is_declarative = true;
+                        if (wasm_stream_read(module, &segment->elem_type, 1) != 1 ||
+                            !wasm_is_ref_type(segment->elem_type)) {
+                            return -1;
+                        }
+                        uses_expr_list = true;
                         break;
                     default:
                         return -1;
                 }
 
-                if (flags != 0) {
-                    if (elem_kind == VALTYPE_FUNCREF) {
-                        segment->elem_type = elem_kind;
-                    } else if (elem_kind != 0x00) {
-                        return -1;
-                    }
-                }
-
                 uint32_t elem_count = read_uleb128(module, &size_read);
+                if (size_read == 0) {
+                    return -1;
+                }
                 segment->element_count = elem_count;
                 if (elem_count > 0) {
-                    segment->elements = (uint32_t*)malloc(elem_count * sizeof(uint32_t));
+                    segment->elements = (fa_ptr*)calloc(elem_count, sizeof(fa_ptr));
                     if (!segment->elements) {
                         return -1;
                     }
                 }
                 for (uint32_t k = 0; k < elem_count; k++) {
-                    segment->elements[k] = read_uleb128(module, &size_read);
+                    if (uses_expr_list) {
+                        if (wasm_read_element_expr_ref(module, segment->elem_type, &segment->elements[k]) != 0) {
+                            return -1;
+                        }
+                    } else {
+                        const uint32_t func_index = read_uleb128(module, &size_read);
+                        if (size_read == 0) {
+                            return -1;
+                        }
+                        segment->elements[k] = (fa_ptr)func_index;
+                    }
                 }
             }
 

@@ -1133,7 +1133,7 @@ static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) 
                 return FA_RUNTIME_ERR_TRAP;
             }
             for (uint32_t j = 0; j < segment->element_count; ++j) {
-                table->data[(size_t)segment->offset + j] = (fa_ptr)segment->elements[j];
+                table->data[(size_t)segment->offset + j] = segment->elements[j];
             }
             runtime->elem_segments_dropped[i] = true;
         }

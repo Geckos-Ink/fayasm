@@ -2993,10 +2993,12 @@ static int test_table_init_copy(void) {
 
     ByteBuffer elem_payload = {0};
     bb_write_uleb(&elem_payload, 1);
+    bb_write_uleb(&elem_payload, 5);
+    bb_write_byte(&elem_payload, VALTYPE_FUNCREF);
     bb_write_uleb(&elem_payload, 1);
-    bb_write_byte(&elem_payload, 0x00);
+    bb_write_byte(&elem_payload, 0xD2);
     bb_write_uleb(&elem_payload, 1);
-    bb_write_uleb(&elem_payload, 1);
+    bb_write_byte(&elem_payload, 0x0B);
 
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -3173,6 +3175,84 @@ static int test_table_fill_size(void) {
         return 1;
     }
     if (fa_JobStack_peek(&job->stack, 2) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+static int test_externref_table_active_null_elem_expr(void) {
+    ByteBuffer table_payload = {0};
+    bb_write_uleb(&table_payload, 1);
+    bb_write_byte(&table_payload, VALTYPE_EXTERNREF);
+    bb_write_uleb(&table_payload, 0);
+    bb_write_uleb(&table_payload, 1);
+
+    ByteBuffer elem_payload = {0};
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_uleb(&elem_payload, 4);
+    bb_write_byte(&elem_payload, 0x41);
+    bb_write_sleb32(&elem_payload, 0);
+    bb_write_byte(&elem_payload, 0x0B);
+    bb_write_byte(&elem_payload, VALTYPE_EXTERNREF);
+    bb_write_uleb(&elem_payload, 1);
+    bb_write_byte(&elem_payload, 0xD0);
+    bb_write_byte(&elem_payload, VALTYPE_EXTERNREF);
+    bb_write_byte(&elem_payload, 0x0B);
+
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x25);
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    const uint8_t result_types[] = { VALTYPE_EXTERNREF };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_sections(&module_bytes,
+                                    bodies,
+                                    sizes,
+                                    1,
+                                    &table_payload,
+                                    NULL,
+                                    &elem_payload,
+                                    NULL,
+                                    result_types,
+                                    1,
+                                    NULL,
+                                    0)) {
+        bb_free(&table_payload);
+        bb_free(&elem_payload);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&table_payload);
+    bb_free(&elem_payload);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_ref || value->payload.ref_value != 0) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
         cleanup_job(runtime, job, module, &module_bytes, &instructions);
         return 1;
     }
@@ -4860,6 +4940,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_data_drop_trap", "bulk-memory", "src/fa_ops.c (data.drop)", test_data_drop_trap),
     TEST_CASE("test_table_init_copy", "table", "src/fa_ops.c (table.init/copy), src/fa_runtime.c (tables)", test_table_init_copy),
     TEST_CASE("test_table_fill_size", "table", "src/fa_ops.c (table.fill/size)", test_table_fill_size),
+    TEST_CASE("test_externref_table_active_null_elem_expr", "table", "src/fa_wasm.c (element expr parsing), src/fa_runtime.c (segment init)", test_externref_table_active_null_elem_expr),
     TEST_CASE("test_elem_drop_trap", "table", "src/fa_ops.c (elem.drop)", test_elem_drop_trap),
     TEST_CASE("test_table_grow", "table", "src/fa_ops.c (table.grow)", test_table_grow),
     TEST_CASE("test_simd_v128_const", "simd", "src/fa_runtime.c (simd decode), src/fa_ops.c (op_simd)", test_simd_v128_const),
