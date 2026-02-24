@@ -666,6 +666,32 @@ static fa_RuntimeTable* runtime_get_table(fa_Runtime* runtime, u64 index) {
     return &runtime->tables[(uint32_t)index];
 }
 
+static int runtime_decode_funcref_index(const fa_Runtime* runtime, fa_ptr encoded_ref, uint32_t* out_function_index) {
+    if (!runtime || !runtime->module || !out_function_index) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!fa_funcref_decode_u32(encoded_ref, out_function_index)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (*out_function_index >= runtime->module->num_functions) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_validate_table_ref_value(const fa_Runtime* runtime,
+                                            const fa_RuntimeTable* table,
+                                            fa_ptr ref_value) {
+    if (!table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (table->elem_type != VALTYPE_FUNCREF || ref_value == 0) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t function_index = 0;
+    return runtime_decode_funcref_index(runtime, ref_value, &function_index);
+}
+
 static const WasmDataSegment* runtime_get_data_segment(const fa_Runtime* runtime, u64 index) {
     if (!runtime || !runtime->module || !runtime->module->data_segments) {
         return NULL;
@@ -697,7 +723,7 @@ static int runtime_resolve_element_ref(const fa_Runtime* runtime,
     switch (init->kind) {
         case WASM_ELEMENT_INIT_REF_VALUE:
             *out = init->value;
-            return FA_RUNTIME_OK;
+            break;
         case WASM_ELEMENT_INIT_GLOBAL_GET:
         {
             if (!runtime->module || !runtime->module->globals ||
@@ -711,11 +737,18 @@ static int runtime_resolve_element_ref(const fa_Runtime* runtime,
                 return FA_RUNTIME_ERR_TRAP;
             }
             *out = value->payload.ref_value;
-            return FA_RUNTIME_OK;
+            break;
         }
         default:
             return FA_RUNTIME_ERR_TRAP;
     }
+    if (segment->elem_type == VALTYPE_FUNCREF && *out != 0) {
+        uint32_t function_index = 0;
+        if (runtime_decode_funcref_index(runtime, *out, &function_index) != FA_RUNTIME_OK) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    return FA_RUNTIME_OK;
 }
 
 static int pop_length_checked(fa_Job* job, bool memory64, u64* out) {
@@ -1273,10 +1306,15 @@ static OP_RETURN_TYPE op_ref(OP_ARGUMENTS) {
             if (pop_reg_u64_checked(job, &func_index) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            if (!runtime || !runtime->module || func_index >= runtime->module->num_functions) {
+            if (!runtime || !runtime->module || func_index > UINT32_MAX ||
+                func_index >= runtime->module->num_functions) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_ref_checked(job, (fa_ptr)func_index);
+            fa_ptr encoded_ref = 0;
+            if (!fa_funcref_encode_u32((uint32_t)func_index, &encoded_ref)) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_ref_checked(job, encoded_ref);
         }
         default:
             return FA_RUNTIME_ERR_TRAP;
@@ -2498,10 +2536,10 @@ static OP_RETURN_TYPE op_call_indirect(OP_ARGUMENTS) {
     const uint32_t type_u32 = (uint32_t)type_index;
 
     const fa_ptr table_ref = table->data[callee_slot];
-    if (table_ref == 0 || table_ref > UINT32_MAX) {
+    uint32_t function_index = 0;
+    if (runtime_decode_funcref_index(runtime, table_ref, &function_index) != FA_RUNTIME_OK) {
         return FA_RUNTIME_ERR_TRAP;
     }
-    const uint32_t function_index = (uint32_t)table_ref;
     if (!runtime_function_signature_matches(runtime->module, function_index, type_u32)) {
         return FA_RUNTIME_ERR_TRAP;
     }
@@ -2542,7 +2580,11 @@ static OP_RETURN_TYPE op_table(OP_ARGUMENTS) {
             if (index >= table->size) {
                 return FA_RUNTIME_ERR_TRAP;
             }
-            return push_ref_checked(job, table->data[index]);
+            fa_ptr ref_value = table->data[index];
+            if (runtime_validate_table_ref_value(runtime, table, ref_value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            return push_ref_checked(job, ref_value);
         }
         case 0x26: /* table.set */
         {
@@ -2555,6 +2597,9 @@ static OP_RETURN_TYPE op_table(OP_ARGUMENTS) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             if (index >= table->size) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (runtime_validate_table_ref_value(runtime, table, ref_value) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             table->data[index] = ref_value;
@@ -2757,6 +2802,10 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }
+                status = runtime_validate_table_ref_value(runtime, table, ref_value);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
                 table->data[dst + i] = ref_value;
             }
             return FA_RUNTIME_OK;
@@ -2862,6 +2911,9 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
             }
             fa_ptr value = 0;
             if (pop_ref_checked(job, &value) != FA_RUNTIME_OK) {
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (runtime_validate_table_ref_value(runtime, table, value) != FA_RUNTIME_OK) {
                 return FA_RUNTIME_ERR_TRAP;
             }
             uint32_t start = 0;
@@ -5847,6 +5899,10 @@ static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, f
     fa_RuntimeTable* table = runtime_get_table(runtime, table_index);
     if (!table) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    int status = runtime_validate_table_ref_value(runtime, table, init_value);
+    if (status != FA_RUNTIME_OK) {
+        return status;
     }
     *prev_size_out = table->size;
     *grew_out = false;

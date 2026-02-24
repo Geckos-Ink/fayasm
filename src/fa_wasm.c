@@ -253,7 +253,9 @@ static int wasm_read_element_expr_ref(WasmModule* module, uint8_t elem_type, Was
             if (size_read == 0) {
                 return -1;
             }
-            out->value = (fa_ptr)func_index;
+            if (!fa_funcref_encode_u32(func_index, &out->value)) {
+                return -1;
+            }
             break;
         }
         case 0x23: /* global.get */
@@ -1687,7 +1689,9 @@ int wasm_load_elements(WasmModule* module) {
                             return -1;
                         }
                         segment->elements[k].kind = WASM_ELEMENT_INIT_REF_VALUE;
-                        segment->elements[k].value = (fa_ptr)func_index;
+                        if (!fa_funcref_encode_u32(func_index, &segment->elements[k].value)) {
+                            return -1;
+                        }
                     }
                 }
             }

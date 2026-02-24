@@ -737,6 +737,42 @@ static bool runtime_job_value_matches_valtype(const fa_JobValue* value, uint8_t 
 static int runtime_read_uleb128(const uint8_t* buffer, uint32_t buffer_size, uint32_t* cursor, uint64_t* out);
 static int runtime_read_sleb128(const uint8_t* buffer, uint32_t buffer_size, uint32_t* cursor, int64_t* out);
 
+static int runtime_decode_funcref_index(const WasmModule* module, fa_ptr encoded_ref, uint32_t* out_function_index) {
+    if (!module || !out_function_index) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (!fa_funcref_decode_u32(encoded_ref, out_function_index)) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (*out_function_index >= module->num_functions) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return FA_RUNTIME_OK;
+}
+
+static int runtime_validate_table_ref_value(const WasmModule* module,
+                                            const fa_RuntimeTable* table,
+                                            fa_ptr ref_value) {
+    if (!table) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    if (table->elem_type != VALTYPE_FUNCREF || ref_value == 0) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t function_index = 0;
+    return runtime_decode_funcref_index(module, ref_value, &function_index);
+}
+
+static int runtime_validate_global_ref_value(const WasmModule* module,
+                                             uint8_t global_valtype,
+                                             fa_ptr ref_value) {
+    if (global_valtype != VALTYPE_FUNCREF || ref_value == 0) {
+        return FA_RUNTIME_OK;
+    }
+    uint32_t function_index = 0;
+    return runtime_decode_funcref_index(module, ref_value, &function_index);
+}
+
 static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
     if (!runtime || !module) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -813,6 +849,19 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
                             break;
                         }
                         case VALTYPE_FUNCREF:
+                        {
+                            if (global->init_raw > UINT32_MAX) {
+                                runtime_globals_reset(runtime);
+                                free(imported_overrides);
+                                return FA_RUNTIME_ERR_UNSUPPORTED;
+                            }
+                            if (!fa_funcref_encode_u32((uint32_t)global->init_raw, &value.payload.ref_value)) {
+                                runtime_globals_reset(runtime);
+                                free(imported_overrides);
+                                return FA_RUNTIME_ERR_UNSUPPORTED;
+                            }
+                            break;
+                        }
                         case VALTYPE_EXTERNREF:
                             value.payload.ref_value = (fa_ptr)global->init_raw;
                             break;
@@ -841,6 +890,12 @@ static int runtime_init_globals(fa_Runtime* runtime, const WasmModule* module) {
                     free(imported_overrides);
                     return FA_RUNTIME_ERR_UNSUPPORTED;
             }
+        }
+        if (global->valtype == VALTYPE_FUNCREF &&
+            runtime_validate_global_ref_value(module, global->valtype, value.payload.ref_value) != FA_RUNTIME_OK) {
+            runtime_globals_reset(runtime);
+            free(imported_overrides);
+            return FA_RUNTIME_ERR_TRAP;
         }
         runtime->globals[i] = value;
     }
@@ -1079,7 +1134,7 @@ static int runtime_resolve_element_ref(const fa_Runtime* runtime,
     switch (init->kind) {
         case WASM_ELEMENT_INIT_REF_VALUE:
             *out = init->value;
-            return FA_RUNTIME_OK;
+            break;
         case WASM_ELEMENT_INIT_GLOBAL_GET:
         {
             if (!runtime->module || !runtime->module->globals ||
@@ -1093,11 +1148,18 @@ static int runtime_resolve_element_ref(const fa_Runtime* runtime,
                 return FA_RUNTIME_ERR_TRAP;
             }
             *out = value->payload.ref_value;
-            return FA_RUNTIME_OK;
+            break;
         }
         default:
             return FA_RUNTIME_ERR_TRAP;
     }
+    if (segment->elem_type == VALTYPE_FUNCREF && *out != 0) {
+        uint32_t function_index = 0;
+        if (runtime_decode_funcref_index(runtime->module, *out, &function_index) != FA_RUNTIME_OK) {
+            return FA_RUNTIME_ERR_TRAP;
+        }
+    }
+    return FA_RUNTIME_OK;
 }
 
 static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) {
@@ -1167,6 +1229,10 @@ static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) 
             for (uint32_t j = 0; j < segment->element_count; ++j) {
                 fa_ptr ref_value = 0;
                 int status = runtime_resolve_element_ref(runtime, segment, j, &ref_value);
+                if (status != FA_RUNTIME_OK) {
+                    return status;
+                }
+                status = runtime_validate_table_ref_value(module, table, ref_value);
                 if (status != FA_RUNTIME_OK) {
                     return status;
                 }

@@ -10,13 +10,13 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Medium-Term
 
-- Resolve funcref table representation so `null` and function index `0` are unambiguous across `table.*`, `ref.*`, and `call_indirect`.
 - Expand runtime smoke coverage using `wasm_samples/` modules with focus on non-SIMD language/toolchain outputs.
 - Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
 
 ## Recently Completed
 
 - Implemented `call_indirect` with table lookup, signature validation, and trap paths (null slot, OOB index, type mismatch).
+- Resolved funcref representation so `null` and function index `0` are unambiguous (`null` = `0`, function index `n` = `n + 1`) across `ref.*`, `table.*`, and `call_indirect`.
 - Added typed element-segment expression decoding (`flags 4..7`) for `ref.func`/`ref.null`/`global.get` with runtime resolution against globals during active/passive table initialization.
 - Added baseline reference opcode execution (`ref.null`, `ref.is_null`, `ref.func`) plus regression coverage.
 - Implemented core + relaxed SIMD opcodes (v128 load/store, shuffle/swizzle, lane ops, comparisons, arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr).
