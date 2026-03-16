@@ -5,7 +5,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 ## Near-Term
 
 - Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.
-- Expand runtime smoke coverage using Emscripten-built `wasm_samples/` modules.
+- Expand runtime smoke coverage using `wasm_samples/` modules (Emscripten primary toolchain, Rust fallback fixtures available).
 - Validate offload behavior under repeated spill/load cycles on low-RAM targets.
 
 ## Medium-Term
@@ -28,6 +28,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Added targeted offload tests for repeated memory spill/load cycles and JIT eviction + trap-driven reload cycles.
 - Added SD wear/perf + retention guidance to `samples/esp32-trap/README.md`.
 - Added `wasm_samples/` (Emscripten fixture sources + build script) and optional runtime smoke tests that consume generated modules.
+- Added Rust `wasm32-unknown-unknown` fallback fixture sources/build path for `wasm_samples/` so smoke modules can be generated without `emcc`.
 - Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
 - Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
 - Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).

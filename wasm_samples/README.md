@@ -1,24 +1,26 @@
-# WASM Samples (Emscripten)
+# WASM Samples
 
-This folder holds real-world `.wasm` fixtures compiled with Emscripten and used by runtime smoke tests (`test_wasm_sample_*` in `test/main.c`).
+This folder holds `.wasm` fixtures used by runtime smoke tests (`test_wasm_sample_*` in `test/main.c`).
 
 ## Layout
 
-- `src/` - C sources compiled to standalone WASM modules.
+- `src/` - fixture sources (`.c` for Emscripten and `.rs` for Rust fallback).
 - `build/` - Generated `.wasm` outputs (ignored by git).
 - `build.sh` - One-shot build script for all fixtures.
 
 ## Prerequisites
 
-- Emscripten toolchain (`emcc`) available in `PATH`.
-- Recommended activation:
-  - `source /path/to/emsdk/emsdk_env.sh`
+- Preferred: Emscripten toolchain (`emcc`) available in `PATH`.
+- Fallback: Rust toolchain (`rustc`) with `wasm32-unknown-unknown` target installed.
+  - `rustup target add wasm32-unknown-unknown`
 
 ## Build
 
 ```bash
 ./wasm_samples/build.sh
 ```
+
+`build.sh` tries `emcc` first, then falls back to `rustc --target wasm32-unknown-unknown`.
 
 Generated files:
 

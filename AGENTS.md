@@ -23,7 +23,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Build & Test Checklist
 
 - Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
-- Invoke the provided helper: `./build.sh` (optionally builds `wasm_samples/` fixtures when `emcc` is available, cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
+- Invoke the provided helper: `./build.sh` (attempts to build `wasm_samples/` fixtures with `emcc` first and `rustc --target wasm32-unknown-unknown` fallback, cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
 - Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory.
 - Test filtering: `build/bin/fayasm_test_main --list` shows areas + hints; pass a substring filter to run a subset.
 - JIT prescan toggles: `build/bin/fayasm_test_main --jit-prescan` or `--jit-prescan-force` (mirrors `FAYASM_JIT_PRESCAN_FORCE`).
@@ -44,7 +44,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 - `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, `call_indirect` lookup/signature traps including function index `0`, element/data segments including typed expressions for funcref/externref tables, reference ops `ref.null`/`ref.is_null`/`ref.func`, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, repeated memory spill/load cycles, JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests). The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
 - `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory, with a versioned opcode spill format for JIT persistence.
 - `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
-- `wasm_samples/` - Emscripten fixture sources (`src/`) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests.
+- `wasm_samples/` - fixture sources (`.c` for Emscripten, `.rs` for Rust fallback) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests.
 - `build.sh` - one-shot rebuild + test script; keep options in sync with documented build flags.
 
 ### Gaps Worth Watching
