@@ -2973,8 +2973,9 @@ static int runtime_call_imported(fa_Runtime* runtime, fa_Job* job, uint32_t func
 static int runtime_push_frame(fa_Runtime* runtime,
                               fa_RuntimeCallFrame* frames,
                               uint32_t* depth,
+                              fa_Job* job,
                               uint32_t function_index) {
-    if (!runtime || !frames || !depth) {
+    if (!runtime || !frames || !depth || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     if (!runtime->module) {
@@ -3013,6 +3014,28 @@ static int runtime_push_frame(fa_Runtime* runtime,
             return FA_RUNTIME_ERR_INVALID_ARGUMENT;
         }
         type = &runtime->module->types[type_index];
+        if (type->num_params > 0) {
+            if (!type->param_types || frame->locals_count < type->num_params) {
+                runtime_free_frame_resources(frame);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+            if (job->stack.size >= type->num_params) {
+                for (uint32_t i = 0; i < type->num_params; ++i) {
+                    const uint32_t param_index = type->num_params - 1U - i;
+                    fa_JobValue arg_value;
+                    if (!fa_JobStack_pop(&job->stack, &arg_value) ||
+                        type->param_types[param_index] > UINT8_MAX ||
+                        !runtime_job_value_matches_valtype(&arg_value, (uint8_t)type->param_types[param_index])) {
+                        runtime_free_frame_resources(frame);
+                        return FA_RUNTIME_ERR_TRAP;
+                    }
+                    frame->locals[param_index] = arg_value;
+                }
+            } else if (*depth != 0) {
+                runtime_free_frame_resources(frame);
+                return FA_RUNTIME_ERR_TRAP;
+            }
+        }
         for (uint32_t i = 0; i < type->num_results; ++i) {
             fa_JobValue dummy;
             if (runtime_init_value_from_valtype(&dummy, type->result_types[i]) != FA_RUNTIME_OK) {
@@ -3063,7 +3086,7 @@ static int runtime_call_function(fa_Runtime* runtime,
     if (runtime->module->functions[function_index].is_imported) {
         return runtime_call_imported(runtime, job, function_index);
     }
-    return runtime_push_frame(runtime, frames, depth, function_index);
+    return runtime_push_frame(runtime, frames, depth, job, function_index);
 }
 
 static void runtime_pop_frame(fa_RuntimeCallFrame* frames, uint32_t* depth) {

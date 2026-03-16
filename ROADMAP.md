@@ -30,6 +30,9 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Added `wasm_samples/` (Emscripten fixture sources + build script) and optional runtime smoke tests that consume generated modules.
 - Added Rust `wasm32-unknown-unknown` fallback fixture sources/build path for `wasm_samples/` so smoke modules can be generated without `emcc`.
 - Hardened `wasm_samples/build.sh` with `emcc` sanity checks plus Homebrew Python/LLVM/Binaryen auto-detection before Rust fallback, so fixture generation remains reliable when `emcc` is installed but partially configured.
+- Expanded wasm sample smoke coverage with additional exported-function checks (`sample_mul_add_const`, `sample_factorial_6`) and a new `advanced_runtime.wasm` fixture (`sample_memory_mix`, `sample_call_chain`).
+- Added standalone CLI runner target `fayasm_run` for executing exported zero-argument functions from arbitrary `.wasm` modules outside the test harness.
+- Wired argument transfer from operand stack into callee locals for wasm-to-wasm calls, enabling nested calls with parameters in real-world fixture modules.
 - Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
 - Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
 - Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).

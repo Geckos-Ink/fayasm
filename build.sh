@@ -88,6 +88,16 @@ if [ $? -ne 0 ]; then
     echo -e "${RED}Errore durante la compilazione dei test!${NC}"
     exit 1
 fi
+
+# Compila il runner CLI standalone (se disponibile)
+if [[ "${CMAKE_ARGS}" != *"FAYASM_BUILD_TOOLS=OFF"* ]]; then
+    echo -e "${YELLOW}Compilazione del runner CLI (fayasm_run) in corso...${NC}"
+    make fayasm_run
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Errore durante la compilazione del runner CLI!${NC}"
+        exit 1
+    fi
+fi
 echo -e "${GREEN}Compilazione completata con successo!${NC}"
 debug_print "Eseguibile di test creato. Contenuto della directory bin:"
 debug_print "$(ls -la ${BUILD_DIR}/bin/)"
@@ -120,6 +130,9 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${YELLOW}Informazioni:${NC}"
 echo -e "- Libreria compilata in: ${BUILD_DIR}/lib/"
 echo -e "- Eseguibile di test: ${BUILD_DIR}/bin/fayasm_test_main"
+if [[ "${CMAKE_ARGS}" != *"FAYASM_BUILD_TOOLS=OFF"* ]]; then
+    echo -e "- Runner CLI: ${BUILD_DIR}/bin/fayasm_run"
+fi
 echo -e "- Per eseguire i test manualmente: cd ${BUILD_DIR} && bin/fayasm_test_main"
 
 exit 0

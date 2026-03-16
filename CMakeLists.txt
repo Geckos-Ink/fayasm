@@ -5,6 +5,7 @@ project(fayasm VERSION 0.1.0 DESCRIPTION "Experimental, lightweight WebAssembly 
 option(FAYASM_BUILD_SHARED "Build as shared library" ON)
 option(FAYASM_BUILD_STATIC "Build as static library" ON)
 option(FAYASM_BUILD_TESTS "Build tests" ON)
+option(FAYASM_BUILD_TOOLS "Build CLI tools" ON)
 option(FAYASM_TARGET_ESP32 "Target ESP32 at compile time" OFF)
 
 # Impostazioni standard di compilazione
@@ -34,6 +35,23 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test/bin)
 
 # Passa al sottomodulo della libreria principale
 add_subdirectory(src)
+
+if(FAYASM_BUILD_TOOLS)
+    add_executable(fayasm_run samples/cli-runner/main.c)
+    set_target_properties(fayasm_run PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+    target_include_directories(fayasm_run PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    if(TARGET fayasm)
+        target_link_libraries(fayasm_run PRIVATE fayasm)
+    elseif(TARGET fayasm_static)
+        target_link_libraries(fayasm_run PRIVATE fayasm_static)
+    else()
+        message(FATAL_ERROR "Non è stata trovata la libreria fayasm per fayasm_run.")
+    endif()
+endif()
 
 # Aggiungi i test se richiesto
 if(FAYASM_BUILD_TESTS)

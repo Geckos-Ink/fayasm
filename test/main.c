@@ -2172,50 +2172,74 @@ static int test_jit_eviction_trap_reload_cycles(void) {
     return 0;
 }
 
+static int run_wasm_sample_export_i32(const char* sample_name,
+                                      const char* test_name,
+                                      const char* const* exports,
+                                      size_t export_count,
+                                      i32 expected);
+
 static int test_wasm_sample_arithmetic(void) {
-    char path[PATH_MAX] = {0};
-    if (!resolve_wasm_sample_path("arithmetic.wasm", path, sizeof(path))) {
-        printf("SKIP: test_wasm_sample_arithmetic (build wasm_samples first)\n");
-        return 0;
-    }
-
-    WasmModule* module = load_module_from_path(path, 1);
-    if (!module) {
-        return 1;
-    }
     const char* exports[] = { "sample_const42", "_sample_const42" };
-    uint32_t function_index = 0;
-    if (!module_find_exported_function(module, exports, sizeof(exports) / sizeof(exports[0]), &function_index)) {
-        wasm_module_free(module);
-        return 1;
-    }
+    return run_wasm_sample_export_i32("arithmetic.wasm",
+                                      "test_wasm_sample_arithmetic",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      42);
+}
 
-    fa_Runtime* runtime = fa_Runtime_init();
-    if (!runtime) {
-        wasm_module_free(module);
-        return 1;
-    }
-    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
-        fa_Runtime_free(runtime);
-        wasm_module_free(module);
-        return 1;
-    }
-    fa_Job* job = fa_Runtime_createJob(runtime);
-    if (!job) {
-        fa_Runtime_free(runtime);
-        wasm_module_free(module);
-        return 1;
-    }
-
-    int ok = execute_expect_i32(runtime, job, function_index, 42);
-    cleanup_job(runtime, job, module, NULL, NULL);
-    return ok ? 0 : 1;
+static int test_wasm_sample_arithmetic_mul_add(void) {
+    const char* exports[] = { "sample_mul_add_const", "_sample_mul_add_const" };
+    return run_wasm_sample_export_i32("arithmetic.wasm",
+                                      "test_wasm_sample_arithmetic_mul_add",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      42);
 }
 
 static int test_wasm_sample_control_flow(void) {
+    const char* exports[] = { "sample_loop_sum", "_sample_loop_sum" };
+    return run_wasm_sample_export_i32("control_flow.wasm",
+                                      "test_wasm_sample_control_flow",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      55);
+}
+
+static int test_wasm_sample_control_flow_factorial(void) {
+    const char* exports[] = { "sample_factorial_6", "_sample_factorial_6" };
+    return run_wasm_sample_export_i32("control_flow.wasm",
+                                      "test_wasm_sample_control_flow_factorial",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      720);
+}
+
+static int test_wasm_sample_advanced_memory_mix(void) {
+    const char* exports[] = { "sample_memory_mix", "_sample_memory_mix" };
+    return run_wasm_sample_export_i32("advanced_runtime.wasm",
+                                      "test_wasm_sample_advanced_memory_mix",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      3413);
+}
+
+static int test_wasm_sample_advanced_call_chain(void) {
+    const char* exports[] = { "sample_call_chain", "_sample_call_chain" };
+    return run_wasm_sample_export_i32("advanced_runtime.wasm",
+                                      "test_wasm_sample_advanced_call_chain",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      150);
+}
+
+static int run_wasm_sample_export_i32(const char* sample_name,
+                                      const char* test_name,
+                                      const char* const* exports,
+                                      size_t export_count,
+                                      i32 expected) {
     char path[PATH_MAX] = {0};
-    if (!resolve_wasm_sample_path("control_flow.wasm", path, sizeof(path))) {
-        printf("SKIP: test_wasm_sample_control_flow (build wasm_samples first)\n");
+    if (!resolve_wasm_sample_path(sample_name, path, sizeof(path))) {
+        printf("SKIP: %s (build wasm_samples first)\n", test_name);
         return 0;
     }
 
@@ -2223,9 +2247,8 @@ static int test_wasm_sample_control_flow(void) {
     if (!module) {
         return 1;
     }
-    const char* exports[] = { "sample_loop_sum", "_sample_loop_sum" };
     uint32_t function_index = 0;
-    if (!module_find_exported_function(module, exports, sizeof(exports) / sizeof(exports[0]), &function_index)) {
+    if (!module_find_exported_function(module, exports, export_count, &function_index)) {
         wasm_module_free(module);
         return 1;
     }
@@ -2247,7 +2270,7 @@ static int test_wasm_sample_control_flow(void) {
         return 1;
     }
 
-    int ok = execute_expect_i32(runtime, job, function_index, 55);
+    int ok = execute_expect_i32(runtime, job, function_index, expected);
     cleanup_job(runtime, job, module, NULL, NULL);
     return ok ? 0 : 1;
 }
@@ -5442,7 +5465,11 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_memory_spill_load_cycles", "offload", "src/fa_runtime.c (memory spill/load hooks)", test_memory_spill_load_cycles),
     TEST_CASE("test_jit_eviction_trap_reload_cycles", "offload", "src/fa_runtime.c (jit eviction/load), trap hooks", test_jit_eviction_trap_reload_cycles),
     TEST_CASE("test_wasm_sample_arithmetic", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic),
+    TEST_CASE("test_wasm_sample_arithmetic_mul_add", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic_mul_add),
     TEST_CASE("test_wasm_sample_control_flow", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow),
+    TEST_CASE("test_wasm_sample_control_flow_factorial", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow_factorial),
+    TEST_CASE("test_wasm_sample_advanced_memory_mix", "wasm-sample", "wasm_samples/build/advanced_runtime.wasm", test_wasm_sample_advanced_memory_mix),
+    TEST_CASE("test_wasm_sample_advanced_call_chain", "wasm-sample", "wasm_samples/build/advanced_runtime.wasm", test_wasm_sample_advanced_call_chain),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
