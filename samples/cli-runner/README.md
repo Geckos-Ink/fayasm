@@ -15,11 +15,21 @@ You can disable it with:
 ## Usage
 
 ```bash
-build/bin/fayasm_run <module.wasm> <export_name>
+build/bin/fayasm_run <module.wasm> <export_name> [typed-arg ...]
 ```
 
 Notes:
 
 - The selected export must be a function.
-- The current runner supports zero-argument exports.
+- Typed args must match the export signature and use:
+  - `i32:<value>`
+  - `i64:<value>`
+  - `f32:<value>`
+  - `f64:<value>`
 - Results are printed with their WASM value type.
+
+Example:
+
+```bash
+build/bin/fayasm_run module.wasm add i32:7 i32:5
+```

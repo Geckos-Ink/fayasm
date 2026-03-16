@@ -161,6 +161,11 @@ fa_Job* fa_Runtime_createJob(fa_Runtime* runtime);
 int fa_Runtime_destroyJob(fa_Runtime* runtime, fa_Job* job);
 
 int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_index);
+int fa_Runtime_executeJobWithArgs(fa_Runtime* runtime,
+                                  fa_Job* job,
+                                  uint32_t function_index,
+                                  const fa_JobValue* args,
+                                  uint32_t arg_count);
 
 int fa_Runtime_setImportedGlobal(fa_Runtime* runtime, uint32_t global_index, const fa_JobValue* value);
 

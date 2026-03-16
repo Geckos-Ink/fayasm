@@ -4612,7 +4612,11 @@ static int runtime_execute_control_op(fa_Runtime* runtime,
     }
 }
 
-int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_index) {
+static int runtime_execute_job_internal(fa_Runtime* runtime,
+                                        fa_Job* job,
+                                        uint32_t function_index,
+                                        const fa_JobValue* args,
+                                        uint32_t arg_count) {
     if (!runtime || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
@@ -4622,8 +4626,34 @@ int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_in
     if (function_index >= runtime->module->num_functions) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
+    if ((arg_count > 0 && !args)) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+
+    if (arg_count > 0) {
+        const WasmFunction* target_function = &runtime->module->functions[function_index];
+        if (target_function->type_index >= runtime->module->num_types) {
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+        }
+        const WasmFunctionType* target_signature = &runtime->module->types[target_function->type_index];
+        if (target_signature->num_params != arg_count ||
+            (arg_count > 0 && !target_signature->param_types)) {
+            return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+        }
+        for (uint32_t i = 0; i < arg_count; ++i) {
+            if (target_signature->param_types[i] > UINT8_MAX ||
+                !runtime_job_value_matches_valtype(&args[i], (uint8_t)target_signature->param_types[i])) {
+                return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+            }
+        }
+    }
 
     fa_Runtime_resetJobState(job);
+    for (uint32_t i = 0; i < arg_count; ++i) {
+        if (!fa_JobStack_push(&job->stack, &args[i])) {
+            return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+        }
+    }
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
@@ -4739,4 +4769,16 @@ int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_in
     runtime->active_locals_count = 0;
     runtime_free_frames(runtime, frames);
     return status;
+}
+
+int fa_Runtime_executeJob(fa_Runtime* runtime, fa_Job* job, uint32_t function_index) {
+    return runtime_execute_job_internal(runtime, job, function_index, NULL, 0);
+}
+
+int fa_Runtime_executeJobWithArgs(fa_Runtime* runtime,
+                                  fa_Job* job,
+                                  uint32_t function_index,
+                                  const fa_JobValue* args,
+                                  uint32_t arg_count) {
+    return runtime_execute_job_internal(runtime, job, function_index, args, arg_count);
 }
