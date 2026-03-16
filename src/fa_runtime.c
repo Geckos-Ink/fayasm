@@ -9,8 +9,10 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#elif defined(__APPLE__) || defined(__unix__) || defined(__linux__) || defined(__ANDROID__)
+#elif (defined(__APPLE__) || defined(__unix__) || defined(__linux__) || defined(__ANDROID__)) && \
+    !defined(FAYASM_TARGET_ESP32) && !defined(ESP_PLATFORM)
 #include <dlfcn.h>
+#define FA_RUNTIME_HAS_DLOPEN 1
 #endif
 
 typedef struct {
@@ -111,10 +113,12 @@ static void runtime_close_library(void* handle) {
     if (handle) {
         FreeLibrary((HMODULE)handle);
     }
-#else
+#elif defined(FA_RUNTIME_HAS_DLOPEN)
     if (handle) {
         dlclose(handle);
     }
+#else
+    (void)handle;
 #endif
 }
 
@@ -124,11 +128,14 @@ static void* runtime_open_library(const char* path) {
         return NULL;
     }
     return (void*)LoadLibraryA(path);
-#else
+#elif defined(FA_RUNTIME_HAS_DLOPEN)
     if (!path) {
         return NULL;
     }
     return dlopen(path, RTLD_NOW);
+#else
+    (void)path;
+    return NULL;
 #endif
 }
 
@@ -138,11 +145,15 @@ static void* runtime_lookup_symbol(void* handle, const char* symbol) {
         return NULL;
     }
     return (void*)GetProcAddress((HMODULE)handle, symbol);
-#else
+#elif defined(FA_RUNTIME_HAS_DLOPEN)
     if (!handle || !symbol) {
         return NULL;
     }
     return dlsym(handle, symbol);
+#else
+    (void)handle;
+    (void)symbol;
+    return NULL;
 #endif
 }
 

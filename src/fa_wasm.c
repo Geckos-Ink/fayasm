@@ -10,6 +10,20 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+static char* wasm_strdup(const char* value) {
+    if (!value) {
+        return NULL;
+    }
+    size_t len = strlen(value);
+    char* copy = (char*)malloc(len + 1U);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, value, len);
+    copy[len] = '\0';
+    return copy;
+}
+
 static ssize_t wasm_stream_read(WasmModule* module, void* out, size_t size) {
     if (!module || !out || size == 0) {
         return 0;
@@ -321,7 +335,7 @@ WasmModule* wasm_module_init(const char* filename) {
     }
 
     memset(module, 0, sizeof(WasmModule));
-    module->filename = strdup(filename);
+    module->filename = wasm_strdup(filename);
     
     module->fd = open(filename, O_RDONLY);
     if (module->fd < 0) {
@@ -365,7 +379,7 @@ WasmModule* wasm_module_init_from_memory(const uint8_t* data, size_t size) {
     module->cursor = 0;
     module->stream_size = (off_t)size;
     module->fd = -1;
-    module->filename = strdup("<memory>");
+    module->filename = wasm_strdup("<memory>");
     return module;
 }
 

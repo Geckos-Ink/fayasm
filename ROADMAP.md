@@ -38,6 +38,8 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Added JIT cache eviction/spill hooks plus memory spill/load hooks for ESP32-class offload.
 - Added prescan force toggles (`--jit-prescan-force`, `FAYASM_JIT_PRESCAN_FORCE`).
 - Added compile-time target selection (`FAYASM_TARGET_ESP32`, `FAYASM_TARGET_*`).
+- Hardened ESP32 portability by removing embedded `dlopen`/`dlsym` compile dependencies and replacing `strdup` usage in `fa_wasm` with a C99-safe local duplicate helper.
+- Reworked `build.sh` into a target-aware build orchestrator with native/ESP32 presets, ESP-IDF/toolchain personalization flags, pass-through CMake args, and configurable fixture/test execution.
 
 ## Long-Term
 
