@@ -5,6 +5,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Collaboration Rules
 
 - After every code edit, refresh both `README.md` and `AGENTS.md` with any relevant behavioural, architectural, or tooling changes.
+- Keep the README narrative sections (`Quickstart`, command examples, `Project Direction`) aligned with real commands and current roadmap priorities.
 - Keep `ROADMAP.md` updated when priorities shift or new directives are added.
 - Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
 - Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
@@ -90,15 +91,22 @@ Keep this index synchronized when new material lands in `studies/`.
 - Validate whether relevant studies already cover the topic; if not, add a new entry both under `studies/` and above.
 - Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
 
-## Next steps
-1. Expand runtime smoke coverage using `wasm_samples/` modules and include fixture-build guidance in CI/docs.
-2. Add low-footprint runtime validation examples for ESP32-class targets (call depth, table/memory bounds, spill/load cycles).
-3. Add additional non-SIMD compatibility tests around imports/exports/table bounds and control-flow validation paths.
+## Roadmap Snapshot
 
-### General next steps
+Keep this summary aligned with `ROADMAP.md` whenever priorities change.
+
+### Near-term
 1. Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.
-2. Validate offload behavior under repeated spill/load cycles on low-RAM targets.
-3. Add integrity checks (e.g., CRC) and atomic replacement strategy examples to spill/load sample code.
+2. Expand runtime smoke coverage using `wasm_samples/` modules.
+3. Validate offload behavior under repeated spill/load cycles on low-RAM targets.
+
+### Medium-term
+1. Expand smoke coverage with focus on non-SIMD language/toolchain outputs.
+2. Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
+
+### Long-term
+1. Integrate background offload/prefetch for JIT/memory spill with wear-aware storage strategies.
+2. Validate embedded resource heuristics on additional targets and tune `FAYASM_TARGET_*` defaults.
 
 ## Contact & Credits
 
