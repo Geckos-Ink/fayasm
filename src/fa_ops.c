@@ -32,6 +32,19 @@ static const fa_Microcode* g_microcode[256];
 static bool g_microcode_initialized = false;
 static bool g_microcode_enabled = false;
 
+/*
+ * This file intentionally keeps opcode behavior close to metadata.
+ *
+ * Reading guide:
+ * 1) Core stack/register helpers and type conversion guards.
+ * 2) Opcode handlers (control/memory/table/ref/simd).
+ * 3) Macro-generated microcode helpers for arithmetic/convert/float ops.
+ * 4) Opcode and microcode tables (`fa_ops_defs_populate`, `init_microcode_once`).
+ *
+ * Maintenance rule for future edits:
+ * keep section comments and macro-family comments in sync with behavior.
+ */
+
 static size_t op_value_width(const fa_WasmOp* op) {
     if (!op) {
         return 0;
@@ -58,6 +71,11 @@ static size_t op_value_width(const fa_WasmOp* op) {
     return sizeof(fa_ptr);
 }
 
+/*
+ * Reg-window helpers.
+ * The runtime decoder pushes immediates into `job->reg`; opcode handlers
+ * consume them in LIFO order through these utilities.
+ */
 static fa_JobDataFlow* job_node_from_value(const void* data, size_t size) {
     if (!data || size == 0 || size > FA_JOB_DATA_FLOW_MAX_SIZE) {
         return NULL;
@@ -239,6 +257,7 @@ static int push_bool_checked(fa_Job* job, bool truthy) {
     return push_bool_value(job, truthy) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
 }
 
+/* Operand-stack pop/push wrappers that normalize trap-vs-OOM reporting. */
 static bool pop_stack_value(fa_Job* job, fa_JobValue* out) {
     if (!job) {
         return false;
@@ -257,6 +276,11 @@ static void restore_stack_value(fa_Job* job, const fa_JobValue* value) {
     fa_JobStack_push(&job->stack, value);
 }
 
+/*
+ * Value conversion helpers used by handlers and macro-generated operators.
+ * They intentionally accept a few cross-kind casts because WASM op semantics
+ * vary by opcode and are validated by the surrounding handler.
+ */
 static bool job_value_to_u64(const fa_JobValue* value, u64* out) {
     if (!value || !out) {
         return false;
@@ -449,6 +473,7 @@ static bool trunc_f64_to_i64(double value, bool is_signed, u64* out) {
     return true;
 }
 
+/* Immediates/subopcodes are read from the reg window as raw bytes/u64. */
 static bool pop_reg_to_buffer(fa_Job* job, void* buffer, size_t size) {
     if (!job || !buffer || size == 0) {
         return false;
@@ -614,6 +639,7 @@ static int push_v128_checked(fa_Job* job, const fa_V128* value) {
     return fa_JobStack_push(&job->stack, &v) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_OUT_OF_MEMORY;
 }
 
+/* Common runtime guards for memory/table/segment lookup and validation. */
 static int memory_bounds_check(const fa_RuntimeMemory* memory, u64 addr, size_t size) {
     if (!memory || !memory->data) {
         return FA_RUNTIME_ERR_TRAP;
@@ -1276,6 +1302,11 @@ static OP_RETURN_TYPE op_eqz(OP_ARGUMENTS) {
     return push_bool_checked(job, !job_value_truthy(&value));
 }
 
+/*
+ * Reference opcodes keep funcref encoding centralized:
+ * - null is 0
+ * - function index n is encoded as n + 1
+ */
 static OP_RETURN_TYPE op_ref(OP_ARGUMENTS) {
     if (!job || !descriptor) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -1321,6 +1352,14 @@ static OP_RETURN_TYPE op_ref(OP_ARGUMENTS) {
     }
 }
 
+/*
+ * Macro family: bitwise operations.
+ * All generated handlers:
+ * - pop two stack operands (`rhs`, then `lhs`)
+ * - normalize them to u64
+ * - apply `expr`
+ * - mask/sign according to descriptor width/type
+ */
 #define DEFINE_BITWISE_OP(name, expr)                                            \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
         (void)runtime;                                                           \
@@ -1353,6 +1392,7 @@ DEFINE_BITWISE_OP(op_bitwise_and_mc, left & right)
 DEFINE_BITWISE_OP(op_bitwise_or_mc, left | right)
 DEFINE_BITWISE_OP(op_bitwise_xor_mc, left ^ right)
 
+/* Macro family: clz/ctz/popcnt for i32/i64 with descriptor-driven width. */
 #define DEFINE_BITCOUNT_OP(name, op32, op64)                                     \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
         (void)runtime;                                                           \
@@ -1585,6 +1625,10 @@ static OP_RETURN_TYPE op_rotate_right_mc(OP_ARGUMENTS) {
     return push_int_checked(job, outcome, width, is_signed);
 }
 
+/*
+ * Macro family: relational/equality operators.
+ * Signedness and float/int semantics are derived from `descriptor->type`.
+ */
 #define DEFINE_COMPARE_OP(name, cmp)                                            \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                  \
         (void)runtime;                                                          \
@@ -1918,6 +1962,11 @@ static OP_RETURN_TYPE op_arith_rem_mc(OP_ARGUMENTS) {
     return push_int_checked(job, outcome, result_bits, false);
 }
 
+/*
+ * Macro family: scalar conversion operators.
+ * The macro centralizes the guard/stack-pop path; each expansion provides
+ * only the conversion-specific body.
+ */
 #define DEFINE_CONVERT_OP(name, body)                                            \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                   \
         (void)runtime;                                                           \
@@ -2210,6 +2259,10 @@ DEFINE_CONVERT_OP(op_convert_i64_extend32_s_mc, {
     return push_int_checked(job, (u64)extended, 64U, true);
 })
 
+/*
+ * Macro families for float unary/binary-special/reinterpret operators.
+ * These keep stack discipline and trap behavior consistent across many opcodes.
+ */
 #define DEFINE_FLOAT_UNARY_OP(name, ctype, to_func, expr, is_64)                \
     static OP_RETURN_TYPE name(OP_ARGUMENTS) {                                 \
         (void)runtime;                                                         \
@@ -2331,6 +2384,11 @@ DEFINE_REINTERPRET_INT_TO_FLOAT_OP(op_reinterpret_f64_from_i64_mc, u64, f64, tru
 
 static OP_RETURN_TYPE op_select(OP_ARGUMENTS);
 
+/*
+ * A microcode "program" is currently a short sequence of existing C handlers.
+ * Most entries are single-step today, but the structure supports multi-step
+ * expansions without changing the dispatch contract.
+ */
 #define DEFINE_MICROCODE(name, ...)                                            \
     static const Operation name##_steps[] = { __VA_ARGS__ };                   \
     static const fa_Microcode name = {                                         \
@@ -2612,6 +2670,11 @@ static OP_RETURN_TYPE op_table(OP_ARGUMENTS) {
 
 static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, fa_ptr init_value, u64* prev_size_out, bool* grew_out);
 
+/*
+ * Handles 0xFC-prefixed subopcodes.
+ * Immediates are already decoded into the reg window by the runtime decoder.
+ * Dynamic indices/lengths are popped from the operand stack with strict typing.
+ */
 static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
     if (!runtime || !job) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -2933,6 +2996,10 @@ static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
     }
 }
 
+/*
+ * SIMD helpers reinterpret the same 128-bit payload through lane views.
+ * This keeps per-opcode lane math explicit while preserving a single storage type.
+ */
 typedef union {
     fa_V128 v;
     uint8_t u8[16];
@@ -3239,6 +3306,13 @@ static f64 simd_pmax_f64(f64 left, f64 right) {
     return fmax(left, right);
 }
 
+/*
+ * Handles 0xFD-prefixed SIMD and relaxed-SIMD subopcodes.
+ * Convention used throughout this switch:
+ * - decode immediates from reg window
+ * - pop lane/vector operands from stack
+ * - push one result or trap
+ */
 static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
     (void)descriptor;
     if (!runtime || !job) {
@@ -5939,6 +6013,11 @@ static int runtime_table_grow(fa_Runtime* runtime, u64 table_index, u64 delta, f
     return FA_RUNTIME_OK;
 }
 
+/*
+ * Grow helpers mirror WASM semantics:
+ * - structural failure (limits/alloc) is reported via `grew_out = false`
+ * - hard runtime faults still return an error code
+ */
 static int runtime_memory_grow(fa_Runtime* runtime, u64 mem_index, u64 delta_pages, u64* prev_pages_out, bool* grew_out) {
     if (!runtime || !prev_pages_out || !grew_out) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -6075,6 +6154,7 @@ static OP_RETURN_TYPE op_memory_grow(OP_ARGUMENTS) {
     return push_int_checked(job, prev_pages, memory->is_memory64 ? 64U : 32U, true);
 }
 
+/* Centralized descriptor constructor used by `fa_ops_defs_populate`. */
 static void define_op(
     fa_WasmOp* ops,
     uint8_t opcode,
@@ -6119,6 +6199,11 @@ typedef struct {
 #define FA_MICROCODE_MIN_CPU_COUNT 2U
 #endif
 
+/*
+ * Resource probe used only for default microcode enablement.
+ * Embedded targets rely on compile-time hints (`FAYASM_TARGET_*`) while
+ * desktop targets query host RAM/CPU.
+ */
 static fa_SystemProbe probe_system_resources(void) {
     fa_SystemProbe probe;
     memset(&probe, 0, sizeof(probe));
@@ -6214,6 +6299,12 @@ static bool microcode_should_enable(void) {
     return true;
 }
 
+/*
+ * Populates opcode -> microcode mapping.
+ * Keep this table aligned with:
+ * - handlers registered in `fa_ops_defs_populate`
+ * - tests that assert microcode/dispatch behavior
+ */
 static void init_microcode_once(void) {
     if (g_microcode_initialized) {
         return;
@@ -6394,6 +6485,7 @@ bool fa_ops_get_microcode_steps(uint8_t opcode, const Operation** steps_out, uin
     return true;
 }
 
+/* Executes one prepared microcode sequence, stopping on first trap/error. */
 static OP_RETURN_TYPE execute_microcode(const fa_Microcode* microcode,
                                         fa_Runtime* runtime,
                                         fa_Job* job,
@@ -6414,6 +6506,11 @@ static OP_RETURN_TYPE execute_microcode(const fa_Microcode* microcode,
     return FA_RUNTIME_OK;
 }
 
+/*
+ * Single opcode dispatch entry point used by runtime/JIT-prepared paths.
+ * Microcode is attempted first when enabled and available; otherwise the
+ * descriptor handler is executed directly.
+ */
 OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Runtime* runtime, fa_Job* job) {
     const fa_WasmOp* op = fa_get_op(opcode);
     if (!op || !op->operation) {
@@ -6428,6 +6525,11 @@ OP_RETURN_TYPE fa_execute_op(uint8_t opcode, fa_Runtime* runtime, fa_Job* job) {
     return op->operation(runtime, job, op);
 }
 
+/*
+ * Defines the canonical 0..255 opcode table.
+ * Keep metadata (`num_pull`, `num_push`, `num_args`, type/signedness) and
+ * handlers synchronized whenever an opcode implementation changes.
+ */
 void fa_ops_defs_populate(fa_WasmOp* ops) {
     if (!ops) {
         return;

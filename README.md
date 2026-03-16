@@ -167,6 +167,7 @@ Notes:
 - Keep changes incremental and test-backed.
 - Update `README.md`, `AGENTS.md`, and `ROADMAP.md` when behavior or priorities change.
 - Add/extend tests for runtime or opcode changes.
+- When editing `src/fa_ops.c`, keep its explanatory section/macro comments updated with the code paths they describe.
 - Log new research under `studies/` and index it in `AGENTS.md`.
 
 fayasm is intentionally experimental, but the direction is practical: clear runtime internals, solid regression coverage, and a path toward robust low-resource execution.
