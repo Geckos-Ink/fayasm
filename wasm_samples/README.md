@@ -20,7 +20,7 @@ This folder holds `.wasm` fixtures used by runtime smoke tests (`test_wasm_sampl
 ./wasm_samples/build.sh
 ```
 
-`build.sh` tries `emcc` first, then falls back to `rustc --target wasm32-unknown-unknown`.
+`build.sh` tries `emcc` first, performs a sanity check, and auto-detects Homebrew Emscripten paths (`EMSDK_PYTHON`, `EM_LLVM_ROOT`, `EM_BINARYEN_ROOT`) when needed; if `emcc` still fails, it falls back to `rustc --target wasm32-unknown-unknown`.
 
 Generated files:
 

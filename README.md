@@ -39,7 +39,7 @@ The interpreter deliberately stops short of executing a full program: many opcod
 - `build.sh` skips terminal clear when `TERM` is unset/dumb, so it can run in non-interactive shells.
 - Tests live under `test/` and cover cursor behaviour in `fa_wasm_stream`, branch navigation scenarios, plus interpreter regressions (stack arithmetic, call depth, traps, table ops, `call_indirect`, element/data segments including `ref.func`/`ref.null`/`global.get` expressions and externref tables, reference opcodes, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions). Run them with `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside `build/`; pass `--list` or a substring filter to focus on a specific area and see source hints.
 - `fayasm_test_main` also accepts `--jit-prescan` and `--jit-prescan-force` to toggle JIT prescan without code changes.
-- Optional real-module fixtures can be generated via `./wasm_samples/build.sh` (`emcc` preferred; Rust fallback requires `rustup target add wasm32-unknown-unknown`). Missing fixture files are reported as `SKIP` in sample-specific tests.
+- Optional real-module fixtures can be generated via `./wasm_samples/build.sh` (`emcc` preferred; Rust fallback requires `rustup target add wasm32-unknown-unknown`). The fixture builder now sanity-checks `emcc` and auto-applies Homebrew Emscripten path overrides (`EMSDK_PYTHON`, `EM_LLVM_ROOT`, `EM_BINARYEN_ROOT`) when possible before falling back to Rust. Missing fixture files are reported as `SKIP` in sample-specific tests.
 
 ## Repository Layout
 

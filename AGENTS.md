@@ -23,7 +23,7 @@ This document is a fast-access knowledge base for AI agents working on fayasm. U
 ## Build & Test Checklist
 
 - Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
-- Invoke the provided helper: `./build.sh` (attempts to build `wasm_samples/` fixtures with `emcc` first and `rustc --target wasm32-unknown-unknown` fallback, cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
+- Invoke the provided helper: `./build.sh` (attempts to build `wasm_samples/` fixtures with `emcc` first and `rustc --target wasm32-unknown-unknown` fallback, including `emcc` sanity checks and Homebrew env auto-detection for Python/LLVM/Binaryen before fallback, cleans `build/`, regenerates, runs tests; skips terminal clear when `TERM` is unset/dumb).
 - Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory.
 - Test filtering: `build/bin/fayasm_test_main --list` shows areas + hints; pass a substring filter to run a subset.
 - JIT prescan toggles: `build/bin/fayasm_test_main --jit-prescan` or `--jit-prescan-force` (mirrors `FAYASM_JIT_PRESCAN_FORCE`).
