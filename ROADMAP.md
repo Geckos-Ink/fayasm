@@ -5,6 +5,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 ## Near-Term
 
 - Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.
+- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers, with SIMD dispatch as the next cleanup target.
 - Expand runtime smoke coverage using `wasm_samples/` modules (Emscripten primary toolchain, Rust fallback fixtures available).
 - Validate offload behavior under repeated spill/load cycles on low-RAM targets.
 
@@ -15,6 +16,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Recently Completed
 
+- Replaced shared `fa_ops.c` switch towers for control/local/global/ref/table and `0xFC` bulk-memory/table families with prebuilt delegate tables.
 - Implemented `call_indirect` with table lookup, signature validation, and trap paths (null slot, OOB index, type mismatch).
 - Resolved funcref representation so `null` and function index `0` are unambiguous (`null` = `0`, function index `n` = `n + 1`) across `ref.*`, `table.*`, and `call_indirect`.
 - Added typed element-segment expression decoding (`flags 4..7`) for `ref.func`/`ref.null`/`global.get` with runtime resolution against globals during active/passive table initialization.
