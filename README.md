@@ -174,6 +174,6 @@ Notes:
 
 fayasm is intentionally experimental, but the direction is practical: clear runtime internals, solid regression coverage, and a path toward robust low-resource execution.
 
-Inspired by WASM3.
+**Inspired by [WASM3](https://github.com/wasm3/wasm3).**
 
 Riccardo Cecchini, 2025. MIT License.
