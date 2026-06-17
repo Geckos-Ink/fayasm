@@ -2172,6 +2172,103 @@ static int test_jit_eviction_trap_reload_cycles(void) {
     return 0;
 }
 
+/* Validates offload of grown memory: memory.grow extends the page set, then a
+ * repeated spill/load cycle (driven through the explicit fa_Runtime_loadMemory
+ * API) must preserve the full grown region byte-for-byte across iterations.
+ * Guards against spill blobs capturing a stale (pre-grow) size on low-RAM
+ * targets. */
+static int test_memory_grow_spill_load_roundtrip(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);          /* i32.const 1 (grow delta) */
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x40);          /* memory.grow */
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x1A);          /* drop old size */
+    bb_write_byte(&instructions, 0x3F);          /* memory.size -> pages */
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 1, 4, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Grow from 1 to 2 pages and confirm the runtime tracked the new size. */
+    if (!execute_expect_i32(runtime, job, 0, 2)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const uint64_t grown_bytes = 2ULL * FA_WASM_PAGE_SIZE;
+    if (!runtime->memories || runtime->memories_count == 0 ||
+        !runtime->memories[0].data ||
+        runtime->memories[0].size_bytes != grown_bytes) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Seed the whole grown region (including the second page) with a pattern. */
+    for (uint64_t i = 0; i < grown_bytes; ++i) {
+        runtime->memories[0].data[i] = (uint8_t)((i * 31u + 7u) & 0xFFu);
+    }
+
+    OffloadState state = {0};
+    fa_RuntimeSpillHooks hooks = {
+        offload_jit_spill_hook,
+        offload_jit_load_hook,
+        offload_memory_spill_hook,
+        offload_memory_load_hook,
+        &state
+    };
+    fa_Runtime_setSpillHooks(runtime, &hooks);
+
+    const int cycles = 5;
+    for (int c = 0; c < cycles; ++c) {
+        if (fa_Runtime_spillMemory(runtime, 0) != FA_RUNTIME_OK ||
+            runtime->memories[0].data != NULL ||
+            !runtime->memories[0].is_spilled) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        if (fa_Runtime_loadMemory(runtime, 0) != FA_RUNTIME_OK ||
+            !runtime->memories[0].data ||
+            runtime->memories[0].is_spilled ||
+            runtime->memories[0].size_bytes != grown_bytes) {
+            offload_state_free(&state);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+        for (uint64_t i = 0; i < grown_bytes; ++i) {
+            if (runtime->memories[0].data[i] != (uint8_t)((i * 31u + 7u) & 0xFFu)) {
+                offload_state_free(&state);
+                cleanup_job(runtime, job, module, &module_bytes, &instructions);
+                return 1;
+            }
+        }
+    }
+
+    if (state.memory_spill_calls < cycles || state.memory_load_calls < cycles) {
+        offload_state_free(&state);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    offload_state_free(&state);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int run_wasm_sample_export_i32(const char* sample_name,
                                       const char* test_name,
                                       const char* const* exports,
@@ -6168,6 +6265,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_imported_table_rebind_after_attach", "table", "src/fa_runtime.c (host table rebind propagation)", test_imported_table_rebind_after_attach),
     TEST_CASE("test_memory_spill_load_cycles", "offload", "src/fa_runtime.c (memory spill/load hooks)", test_memory_spill_load_cycles),
     TEST_CASE("test_jit_eviction_trap_reload_cycles", "offload", "src/fa_runtime.c (jit eviction/load), trap hooks", test_jit_eviction_trap_reload_cycles),
+    TEST_CASE("test_memory_grow_spill_load_roundtrip", "offload", "src/fa_runtime.c (memory grow + spill/load), fa_Runtime_loadMemory", test_memory_grow_spill_load_roundtrip),
     TEST_CASE("test_wasm_sample_arithmetic", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic),
     TEST_CASE("test_wasm_sample_arithmetic_mul_add", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic_mul_add),
     TEST_CASE("test_wasm_sample_control_flow", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow),
