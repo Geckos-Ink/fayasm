@@ -34,3 +34,6 @@ add_custom_target(check
     COMMAND ${CMAKE_BINARY_DIR}/bin/fayasm_test_main
     DEPENDS fayasm_test_main
 )
+
+# Register the harness with CTest so `ctest --output-on-failure` works as documented.
+add_test(NAME fayasm_test_main COMMAND fayasm_test_main)

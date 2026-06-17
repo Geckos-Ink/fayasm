@@ -5,7 +5,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 ## Near-Term
 
 - Standardize runtime-wide spill/load persistence conventions around versioned opcode/memory payloads.
-- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers, with SIMD dispatch as the next cleanup target.
+- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, and now `0xFD` SIMD) are table-driven. Remaining work is folding per-family operator selection into microcode where it pays off.
 - Expand runtime smoke coverage using `wasm_samples/` modules (Emscripten primary toolchain, Rust fallback fixtures available).
 - Validate offload behavior under repeated spill/load cycles on low-RAM targets.
 
@@ -16,6 +16,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Recently Completed
 
+- Replaced the 347-case `0xFD` SIMD/relaxed-SIMD switch tower in `op_simd` with 14 contiguous-range family handlers reached through a prebuilt dispatch table (`g_simd_dispatch`, built once from `[lo, hi]` ranges). Added SIMD regression tests covering 12 of the 14 family handlers (`op_simd_bitwise`, `op_simd_cmp`, `op_simd_i16x8`, `op_simd_i32x4`, `op_simd_i64x2`, `op_simd_f32x4`, `op_simd_relaxed`, plus the previously covered mem/build/lane/i8x16/convert paths) and registered the test harness with CTest (`add_test`).
 - Replaced shared `fa_ops.c` switch towers for control/local/global/ref/table and `0xFC` bulk-memory/table families with prebuilt delegate tables.
 - Implemented `call_indirect` with table lookup, signature validation, and trap paths (null slot, OOB index, type mismatch).
 - Resolved funcref representation so `null` and function index `0` are unambiguous (`null` = `0`, function index `n` = `n + 1`) across `ref.*`, `table.*`, and `call_indirect`.

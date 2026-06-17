@@ -3502,21 +3502,19 @@ static f64 simd_pmax_f64(f64 left, f64 right) {
 }
 
 /*
- * Handles 0xFD-prefixed SIMD and relaxed-SIMD subopcodes.
- * Convention used throughout this switch:
+ * SIMD family handlers.
+ * Each handler owns a contiguous run of 0xFD subopcodes and is reached through
+ * the prebuilt dispatch table at the bottom of this section. The subopcode is
+ * passed in so families that share a body (compares, arithmetic, shifts, ...)
+ * can still select the exact lane operation.
+ * Convention used throughout:
  * - decode immediates from reg window
  * - pop lane/vector operands from stack
  * - push one result or trap
  */
-static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
+static OP_RETURN_TYPE op_simd_mem(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
     (void)descriptor;
-    if (!runtime || !job) {
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    u64 subopcode = 0;
-    if (pop_reg_u64_checked(job, &subopcode) != FA_RUNTIME_OK) {
-        return FA_RUNTIME_ERR_TRAP;
-    }
     switch (subopcode) {
         case 0x00: /* v128.load */
         {
@@ -3735,6 +3733,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return simd_store_bytes(memory, addr, &value, sizeof(value));
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_build(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x0c: /* v128.const */
         {
             fa_V128 value = {0};
@@ -3895,6 +3902,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             memcpy(&value, lanes, sizeof(lanes));
             return push_v128_checked(job, &value);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_lane(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x15: /* i8x16.extract_lane_s */
         {
             uint8_t lane = 0;
@@ -4175,6 +4191,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             lanes.f64[lane] = scalar.payload.f64_value;
             return push_v128_lanes_checked(job, &lanes);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_cmp(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x23: /* i8x16.eq */
         case 0x24: /* i8x16.ne */
         case 0x25: /* i8x16.lt_s */
@@ -4377,6 +4402,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_bitwise(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x4d: /* v128.not */
         {
             fa_V128 value = {0};
@@ -4455,6 +4489,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_bool_checked(job, (value.low != 0 || value.high != 0));
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_memlane(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x54: /* v128.load8_lane */
         {
             uint8_t lane = 0;
@@ -4733,6 +4776,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             out.f64[1] = (f64)lanes.f32[1];
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_i8x16(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x60: /* i8x16.abs */
         {
             fa_V128 value = {0};
@@ -4972,6 +5024,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_i16x8(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x79: /* i16x8.abs */
         {
             fa_V128 value = {0};
@@ -5242,6 +5303,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_i32x4(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x97: /* i32x4.abs */
         {
             fa_V128 value = {0};
@@ -5460,6 +5530,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_i64x2(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0xae: /* i64x2.abs */
         {
             fa_V128 value = {0};
@@ -5669,6 +5748,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_f32x4(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0xc6: /* f32x4.abs */
         case 0xc7: /* f32x4.neg */
         case 0xc8: /* f32x4.sqrt */
@@ -5745,6 +5833,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_f64x2(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0xd1: /* f64x2.abs */
         case 0xd2: /* f64x2.neg */
         case 0xd3: /* f64x2.sqrt */
@@ -5821,6 +5918,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_convert(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0xdc: /* i32x4.trunc_sat_f32x4_s */
         case 0xdd: /* i32x4.trunc_sat_f32x4_u */
         {
@@ -5899,6 +6005,15 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
             }
             return push_v128_lanes_checked(job, &out);
         }
+        default:
+            return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+}
+
+static OP_RETURN_TYPE op_simd_relaxed(OP_ARGUMENTS, u64 subopcode) {
+    (void)runtime;
+    (void)descriptor;
+    switch (subopcode) {
         case 0x100: /* i8x16.relaxed_swizzle */
         {
             fa_V128 lhs = {0};
@@ -6158,6 +6273,75 @@ static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
         default:
             return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
     }
+}
+
+/*
+ * SIMD dispatch table.
+ * Each 0xFD subopcode maps to the family handler that owns it. The mapping is
+ * built once from compact [lo, hi] ranges so the hot path is a single indexed
+ * lookup instead of the former 347-case switch tower.
+ */
+typedef OP_RETURN_TYPE (*SimdHandler)(OP_ARGUMENTS, u64 subopcode);
+
+#define FA_SIMD_DISPATCH_SIZE 0x112u /* covers subopcodes 0x00..0x111 */
+
+static SimdHandler g_simd_dispatch[FA_SIMD_DISPATCH_SIZE];
+static bool g_simd_dispatch_initialized = false;
+
+static void init_simd_dispatch(void) {
+    if (g_simd_dispatch_initialized) {
+        return;
+    }
+    static const struct {
+        uint32_t lo;
+        uint32_t hi;
+        SimdHandler handler;
+    } kSimdRanges[] = {
+        {0x00, 0x0b, op_simd_mem},      /* v128 load/store */
+        {0x0c, 0x14, op_simd_build},    /* const/shuffle/swizzle/splat */
+        {0x15, 0x22, op_simd_lane},     /* extract/replace lane */
+        {0x23, 0x4c, op_simd_cmp},      /* integer + float compares */
+        {0x4d, 0x53, op_simd_bitwise},  /* not/and/or/xor/bitselect/any_true */
+        {0x54, 0x5f, op_simd_memlane},  /* load/store lane, load_zero, demote/promote */
+        {0x60, 0x78, op_simd_i8x16},    /* i8x16 family + extadd_pairwise */
+        {0x79, 0x96, op_simd_i16x8},    /* i16x8 family */
+        {0x97, 0xad, op_simd_i32x4},    /* i32x4 family */
+        {0xae, 0xc5, op_simd_i64x2},    /* i64x2 family */
+        {0xc6, 0xd0, op_simd_f32x4},    /* f32x4 family */
+        {0xd1, 0xdb, op_simd_f64x2},    /* f64x2 family */
+        {0xdc, 0xe3, op_simd_convert},  /* trunc_sat / convert */
+        {0x100, 0x111, op_simd_relaxed} /* relaxed SIMD */
+    };
+    memset(g_simd_dispatch, 0, sizeof(g_simd_dispatch));
+    for (size_t r = 0; r < sizeof(kSimdRanges) / sizeof(kSimdRanges[0]); ++r) {
+        for (uint32_t s = kSimdRanges[r].lo; s <= kSimdRanges[r].hi; ++s) {
+            g_simd_dispatch[s] = kSimdRanges[r].handler;
+        }
+    }
+    g_simd_dispatch_initialized = true;
+}
+
+/*
+ * Handles 0xFD-prefixed SIMD and relaxed-SIMD subopcodes.
+ * Decodes the subopcode immediate, then routes to the owning family handler
+ * through the prebuilt dispatch table.
+ */
+static OP_RETURN_TYPE op_simd(OP_ARGUMENTS) {
+    if (!runtime || !job) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    u64 subopcode = 0;
+    if (pop_reg_u64_checked(job, &subopcode) != FA_RUNTIME_OK) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    if (subopcode >= FA_SIMD_DISPATCH_SIZE) {
+        return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+    SimdHandler handler = g_simd_dispatch[subopcode];
+    if (!handler) {
+        return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
+    }
+    return handler(runtime, job, descriptor, subopcode);
 }
 
 
@@ -6644,6 +6828,7 @@ static void init_ops_once(void) {
     }
     fa_ops_defs_populate(g_ops);
     init_microcode_once();
+    init_simd_dispatch();
     g_ops_initialized = true;
 }
 

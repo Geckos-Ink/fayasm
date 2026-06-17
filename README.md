@@ -23,7 +23,7 @@ fayasm already supports a substantial runtime slice:
 - SIMD core + relaxed opcode coverage wired through `fa_ops.*` (with active regression tests).
 - Host import bindings for functions, memories, and tables; dynamic-library bindings on supported desktop targets.
 - JIT/microcode preparation scaffolding (`fa_jit.*`) with per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory.
-- `fa_ops.*` now routes control/local/global/ref/table plus `0xFC` bulk-memory/table families through prebuilt delegate tables, reducing per-call switch dispatch while the remaining SIMD tower is still being drained incrementally.
+- `fa_ops.*` now routes control/local/global/ref/table plus `0xFC` bulk-memory/table families through prebuilt delegate tables, and the `0xFD` SIMD/relaxed-SIMD prefix dispatches through a prebuilt family-handler table (`g_simd_dispatch`) instead of a 347-case switch tower, reducing per-call dispatch to a single indexed lookup.
 
 ## Quickstart (Native, Recommended)
 
@@ -126,7 +126,7 @@ Notes:
 ## Architecture At a Glance
 
 - `src/fa_runtime.*`: execution loop, frames, locals/globals, memory/table plumbing, trap + spill/load hooks, host bindings.
-- `src/fa_ops.*`: opcode descriptors + dispatch, prebuilt delegate tables for control/local/global/ref/table/`0xFC` bulk ops, microcode-backed math/bit/select/float-special handlers, and the remaining SIMD/ref ops.
+- `src/fa_ops.*`: opcode descriptors + dispatch, prebuilt delegate tables for control/local/global/ref/table/`0xFC` bulk ops and the `0xFD` SIMD family handlers (`g_simd_dispatch`), microcode-backed math/bit/select/float-special handlers, and ref ops.
 - `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution.
 - `src/fa_wasm.*`: parser/loader for module structure and function bodies.
 - `src/fa_wasm_stream.*`: instruction cursor and immediate decoding helpers.
@@ -138,7 +138,7 @@ Notes:
 ### Near-term focus
 
 - Standardize runtime-wide spill/load persistence conventions for versioned opcode + memory payloads.
-- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers, with SIMD dispatch as the next cleanup target.
+- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
 - Expand smoke coverage using `wasm_samples/` modules.
 - Validate repeated offload cycles on low-RAM targets.
 
