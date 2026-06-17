@@ -27,6 +27,7 @@ Generated files:
 - `wasm_samples/build/arithmetic.wasm`
 - `wasm_samples/build/control_flow.wasm`
 - `wasm_samples/build/advanced_runtime.wasm`
+- `wasm_samples/build/typed_values.wasm` (parameterized exports + i64 return)
 
 ## Runtime Tests
 

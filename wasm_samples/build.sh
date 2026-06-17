@@ -149,6 +149,11 @@ build_all_with_emcc() {
     build_with_emcc advanced_runtime.c advanced_runtime.wasm \
         -Wl,--export=sample_memory_mix \
         -Wl,--export=sample_call_chain
+
+    build_with_emcc typed_values.c typed_values.wasm \
+        -Wl,--export=sample_add_i32 \
+        -Wl,--export=sample_sum_to_n \
+        -Wl,--export=sample_scale_i64
 }
 
 if command -v "${EMCC_BIN}" >/dev/null 2>&1; then
@@ -173,6 +178,7 @@ if [ -z "${toolchain:-}" ] && command -v "${RUSTC_BIN}" >/dev/null 2>&1; then
     build_with_rustc arithmetic.rs arithmetic.wasm
     build_with_rustc control_flow.rs control_flow.wasm
     build_with_rustc advanced_runtime.rs advanced_runtime.wasm
+    build_with_rustc typed_values.rs typed_values.wasm
     toolchain="rustc (${RUST_TARGET}) fallback"
 fi
 
@@ -185,3 +191,4 @@ echo "Built wasm samples with ${toolchain}:"
 echo "  - ${OUT_DIR}/arithmetic.wasm"
 echo "  - ${OUT_DIR}/control_flow.wasm"
 echo "  - ${OUT_DIR}/advanced_runtime.wasm"
+echo "  - ${OUT_DIR}/typed_values.wasm"

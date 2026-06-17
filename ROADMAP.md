@@ -16,6 +16,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 
 ## Recently Completed
 
+- Expanded runtime smoke coverage toward non-SIMD toolchain outputs: added the `typed_values.{c,rs}` fixture and `test_wasm_sample_typed_add_i32`/`test_wasm_sample_typed_sum_to_n`/`test_wasm_sample_typed_scale_i64`, the first smoke tests to drive parameterized exports (i32/i64 args) and i64-typed returns through `fa_Runtime_executeJobWithArgs` with real compiled output (suite is 83 tests).
 - Closed the last SIMD family-handler test gap: added direct regression tests for `op_simd_memlane` (`test_simd_v128_load32_lane`, `test_simd_v128_store32_lane` — both validate lane selection against non-zero lanes) and `op_simd_f64x2` (`test_simd_f64x2_add`), so all 14 `g_simd_dispatch` family handlers now have direct coverage (suite is 80 tests, all passing under CTest).
 - Replaced the 347-case `0xFD` SIMD/relaxed-SIMD switch tower in `op_simd` with 14 contiguous-range family handlers reached through a prebuilt dispatch table (`g_simd_dispatch`, built once from `[lo, hi]` ranges). Added SIMD regression tests covering the family handlers (`op_simd_bitwise`, `op_simd_cmp`, `op_simd_i16x8`, `op_simd_i32x4`, `op_simd_i64x2`, `op_simd_f32x4`, `op_simd_relaxed`, `op_simd_memlane`, `op_simd_f64x2`, plus the previously covered mem/build/lane/i8x16/convert paths) and registered the test harness with CTest (`add_test`).
 - Replaced shared `fa_ops.c` switch towers for control/local/global/ref/table and `0xFC` bulk-memory/table families with prebuilt delegate tables.

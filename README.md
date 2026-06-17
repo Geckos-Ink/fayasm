@@ -62,7 +62,11 @@ build/bin/fayasm_run wasm_samples/build/control_flow.wasm sample_factorial_6
 If your module has parameters, pass typed args:
 
 ```bash
-build/bin/fayasm_run ./my_module.wasm add i32:7 i32:5
+build/bin/fayasm_run wasm_samples/build/typed_values.wasm sample_add_i32 i32:7 i32:5
+# result[0] (i32): 12
+
+build/bin/fayasm_run wasm_samples/build/typed_values.wasm sample_scale_i64 i64:100000 i64:100000
+# result[0] (i64): 10000000001
 ```
 
 Supported CLI arg types:

@@ -2275,6 +2275,125 @@ static int run_wasm_sample_export_i32(const char* sample_name,
     return ok ? 0 : 1;
 }
 
+/* Builds an i32 argument value for parameterized smoke exports. */
+static fa_JobValue sample_arg_i32(i32 v) {
+    fa_JobValue value = {0};
+    value.kind = fa_job_value_i32;
+    value.is_signed = true;
+    value.bit_width = 32;
+    value.payload.i32_value = v;
+    return value;
+}
+
+/* Builds an i64 argument value for parameterized smoke exports. */
+static fa_JobValue sample_arg_i64(i64 v) {
+    fa_JobValue value = {0};
+    value.kind = fa_job_value_i64;
+    value.is_signed = true;
+    value.bit_width = 64;
+    value.payload.i64_value = v;
+    return value;
+}
+
+/* Loads a sample module and runs an export with typed args, comparing the
+ * top-of-stack result against an expected i32/i64 value. Exercises
+ * fa_Runtime_executeJobWithArgs and argument transfer with real toolchain
+ * output. */
+static int run_wasm_sample_export_checked(const char* sample_name,
+                                          const char* test_name,
+                                          const char* const* exports,
+                                          size_t export_count,
+                                          const fa_JobValue* args,
+                                          uint32_t arg_count,
+                                          fa_JobValue expected) {
+    char path[PATH_MAX] = {0};
+    if (!resolve_wasm_sample_path(sample_name, path, sizeof(path))) {
+        printf("SKIP: %s (build wasm_samples first)\n", test_name);
+        return 0;
+    }
+
+    WasmModule* module = load_module_from_path(path, 1);
+    if (!module) {
+        return 1;
+    }
+    uint32_t function_index = 0;
+    if (!module_find_exported_function(module, exports, export_count, &function_index)) {
+        wasm_module_free(module);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        return 1;
+    }
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJobWithArgs(runtime, job, function_index, args, arg_count);
+    int ok = 0;
+    if (status == FA_RUNTIME_OK) {
+        const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+        if (value && value->kind == expected.kind) {
+            if (expected.kind == fa_job_value_i32) {
+                ok = (value->payload.i32_value == expected.payload.i32_value);
+            } else if (expected.kind == fa_job_value_i64) {
+                ok = (value->payload.i64_value == expected.payload.i64_value);
+            }
+        }
+    }
+    cleanup_job(runtime, job, module, NULL, NULL);
+    return ok ? 0 : 1;
+}
+
+/* Parameterized i32 export: sample_add_i32(40, 2) == 42 (arg transfer). */
+static int test_wasm_sample_typed_add_i32(void) {
+    const char* exports[] = { "sample_add_i32", "_sample_add_i32" };
+    fa_JobValue args[] = { sample_arg_i32(40), sample_arg_i32(2) };
+    return run_wasm_sample_export_checked("typed_values.wasm",
+                                          "test_wasm_sample_typed_add_i32",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(42));
+}
+
+/* Arg-driven control flow: sample_sum_to_n(100) == 5050. */
+static int test_wasm_sample_typed_sum_to_n(void) {
+    const char* exports[] = { "sample_sum_to_n", "_sample_sum_to_n" };
+    fa_JobValue args[] = { sample_arg_i32(100) };
+    return run_wasm_sample_export_checked("typed_values.wasm",
+                                          "test_wasm_sample_typed_sum_to_n",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(5050));
+}
+
+/* i64 params + i64 return: sample_scale_i64(100000, 100000) == 10000000001. */
+static int test_wasm_sample_typed_scale_i64(void) {
+    const char* exports[] = { "sample_scale_i64", "_sample_scale_i64" };
+    fa_JobValue args[] = { sample_arg_i64(100000), sample_arg_i64(100000) };
+    return run_wasm_sample_export_checked("typed_values.wasm",
+                                          "test_wasm_sample_typed_scale_i64",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i64(10000000001LL));
+}
+
 static int test_div_by_zero_trap(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -6055,6 +6174,9 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_control_flow_factorial", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow_factorial),
     TEST_CASE("test_wasm_sample_advanced_memory_mix", "wasm-sample", "wasm_samples/build/advanced_runtime.wasm", test_wasm_sample_advanced_memory_mix),
     TEST_CASE("test_wasm_sample_advanced_call_chain", "wasm-sample", "wasm_samples/build/advanced_runtime.wasm", test_wasm_sample_advanced_call_chain),
+    TEST_CASE("test_wasm_sample_typed_add_i32", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_add_i32),
+    TEST_CASE("test_wasm_sample_typed_sum_to_n", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_sum_to_n),
+    TEST_CASE("test_wasm_sample_typed_scale_i64", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_scale_i64),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
