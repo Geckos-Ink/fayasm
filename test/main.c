@@ -4599,6 +4599,194 @@ static int test_simd_f32x4_relaxed_min(void) {
     return 0;
 }
 
+/* Exercises op_simd_memlane (v128.load32_lane) load + lane-index path. */
+static int test_simd_v128_load32_lane(void) {
+    ByteBuffer instructions = {0};
+    const int32_t marker = 0x33333333; /* 858993459, positive sleb32 */
+    const uint8_t zeros[16] = {0};
+
+    /* Seed memory[0] with the marker via i32.store. */
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (store addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);          /* i32.const marker */
+    bb_write_sleb32(&instructions, marker);
+    bb_write_byte(&instructions, 0x36);          /* i32.store */
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+
+    /* Load the marker into lane 1 of a zeroed vector. */
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (load base addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0xFD);          /* v128.const zeros */
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, zeros, sizeof(zeros));
+    bb_write_byte(&instructions, 0xFD);          /* v128.load32_lane */
+    bb_write_uleb(&instructions, 0x56);
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+    bb_write_byte(&instructions, 1);             /* lane index */
+    bb_write_byte(&instructions, 0xFD);          /* i32x4.extract_lane */
+    bb_write_uleb(&instructions, 0x1b);
+    bb_write_byte(&instructions, 1);             /* lane index */
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != marker) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+/* Exercises op_simd_memlane (v128.store32_lane) store + lane-index path. */
+static int test_simd_v128_store32_lane(void) {
+    ByteBuffer instructions = {0};
+    /* Distinct little-endian 32-bit lanes so lane selection is observable. */
+    const uint8_t lanes[16] = {
+        0x11, 0x11, 0x11, 0x11,  /* lane 0 = 0x11111111 */
+        0x22, 0x22, 0x22, 0x22,  /* lane 1 = 0x22222222 */
+        0x33, 0x33, 0x33, 0x33,  /* lane 2 = 0x33333333 */
+        0x44, 0x44, 0x44, 0x44   /* lane 3 = 0x44444444 */
+    };
+    const int32_t expected = 0x33333333; /* lane 2 */
+
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (store base addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0xFD);          /* v128.const lanes */
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, lanes, sizeof(lanes));
+    bb_write_byte(&instructions, 0xFD);          /* v128.store32_lane */
+    bb_write_uleb(&instructions, 0x5a);
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+    bb_write_byte(&instructions, 2);             /* lane index */
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (load addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x28);          /* i32.load */
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != expected) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+/* Exercises op_simd_f64x2 dispatch (f64x2.add) plus f64x2.extract_lane. */
+static int test_simd_f64x2_add(void) {
+    ByteBuffer instructions = {0};
+
+    bb_write_byte(&instructions, 0xFD);          /* v128.const {1.5, 1.5} */
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_f64(&instructions, 1.5);
+    bb_write_f64(&instructions, 1.5);
+    bb_write_byte(&instructions, 0xFD);          /* v128.const {2.25, 2.25} */
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_f64(&instructions, 2.25);
+    bb_write_f64(&instructions, 2.25);
+    bb_write_byte(&instructions, 0xFD);          /* f64x2.add */
+    bb_write_uleb(&instructions, 0xd4);
+    bb_write_byte(&instructions, 0xFD);          /* f64x2.extract_lane */
+    bb_write_uleb(&instructions, 0x21);
+    bb_write_byte(&instructions, 0x01);          /* lane 1 */
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultF64, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_f64 ||
+        fabs(value->payload.f64_value - 3.75) > 0.0001) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 static int test_i32_clz(void) {
     ByteBuffer instructions = {0};
     bb_write_byte(&instructions, 0x41);
@@ -5904,6 +6092,9 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_simd_i32x4_mul", "simd", "src/fa_ops.c (op_simd_i32x4)", test_simd_i32x4_mul),
     TEST_CASE("test_simd_f32x4_add", "simd", "src/fa_ops.c (op_simd_f32x4)", test_simd_f32x4_add),
     TEST_CASE("test_simd_f32x4_relaxed_min", "simd", "src/fa_ops.c (op_simd_relaxed)", test_simd_f32x4_relaxed_min),
+    TEST_CASE("test_simd_v128_load32_lane", "simd", "src/fa_ops.c (op_simd_memlane load)", test_simd_v128_load32_lane),
+    TEST_CASE("test_simd_v128_store32_lane", "simd", "src/fa_ops.c (op_simd_memlane store)", test_simd_v128_store32_lane),
+    TEST_CASE("test_simd_f64x2_add", "simd", "src/fa_ops.c (op_simd_f64x2)", test_simd_f64x2_add),
     TEST_CASE("test_i32_clz", "arith", "src/fa_ops.c (i32 clz)", test_i32_clz),
     TEST_CASE("test_f32_abs", "arith", "src/fa_ops.c (f32 abs)", test_f32_abs),
     TEST_CASE("test_local_get_set", "locals", "src/fa_ops.c (local.get/set)", test_local_get_set),
