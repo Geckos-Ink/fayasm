@@ -154,6 +154,26 @@ build_all_with_emcc() {
         -Wl,--export=sample_add_i32 \
         -Wl,--export=sample_sum_to_n \
         -Wl,--export=sample_scale_i64
+
+    build_with_emcc floating_point.c floating_point.wasm \
+        -Wl,--export=sample_f64_poly \
+        -Wl,--export=sample_f64_hypot \
+        -Wl,--export=sample_f32_lerp \
+        -Wl,--export=sample_f64_round \
+        -Wl,--export=sample_f64_series
+
+    build_with_emcc indirect_dispatch.c indirect_dispatch.wasm \
+        -Wl,--export=sample_dispatch \
+        -Wl,--export=sample_dispatch_fold \
+        -Wl,--export=sample_classify
+
+    # -mbulk-memory so memcpy/memset over a runtime length lower to
+    # memory.copy / memory.fill, exercising the 0xFC bulk-memory family.
+    build_with_emcc memory_ops.c memory_ops.wasm \
+        -mbulk-memory \
+        -Wl,--export=sample_sort_checksum \
+        -Wl,--export=sample_buffer_pipeline \
+        -Wl,--export=sample_table_lookup
 }
 
 if command -v "${EMCC_BIN}" >/dev/null 2>&1; then
@@ -179,6 +199,9 @@ if [ -z "${toolchain:-}" ] && command -v "${RUSTC_BIN}" >/dev/null 2>&1; then
     build_with_rustc control_flow.rs control_flow.wasm
     build_with_rustc advanced_runtime.rs advanced_runtime.wasm
     build_with_rustc typed_values.rs typed_values.wasm
+    build_with_rustc floating_point.rs floating_point.wasm
+    build_with_rustc indirect_dispatch.rs indirect_dispatch.wasm
+    build_with_rustc memory_ops.rs memory_ops.wasm
     toolchain="rustc (${RUST_TARGET}) fallback"
 fi
 
@@ -192,3 +215,6 @@ echo "  - ${OUT_DIR}/arithmetic.wasm"
 echo "  - ${OUT_DIR}/control_flow.wasm"
 echo "  - ${OUT_DIR}/advanced_runtime.wasm"
 echo "  - ${OUT_DIR}/typed_values.wasm"
+echo "  - ${OUT_DIR}/floating_point.wasm"
+echo "  - ${OUT_DIR}/indirect_dispatch.wasm"
+echo "  - ${OUT_DIR}/memory_ops.wasm"

@@ -2392,6 +2392,24 @@ static fa_JobValue sample_arg_i64(i64 v) {
     return value;
 }
 
+/* Builds an f32 argument value for parameterized smoke exports. */
+static fa_JobValue sample_arg_f32(f32 v) {
+    fa_JobValue value = {0};
+    value.kind = fa_job_value_f32;
+    value.bit_width = 32;
+    value.payload.f32_value = v;
+    return value;
+}
+
+/* Builds an f64 argument value for parameterized smoke exports. */
+static fa_JobValue sample_arg_f64(f64 v) {
+    fa_JobValue value = {0};
+    value.kind = fa_job_value_f64;
+    value.bit_width = 64;
+    value.payload.f64_value = v;
+    return value;
+}
+
 /* Loads a sample module and runs an export with typed args, comparing the
  * top-of-stack result against an expected i32/i64 value. Exercises
  * fa_Runtime_executeJobWithArgs and argument transfer with real toolchain
@@ -2445,6 +2463,12 @@ static int run_wasm_sample_export_checked(const char* sample_name,
                 ok = (value->payload.i32_value == expected.payload.i32_value);
             } else if (expected.kind == fa_job_value_i64) {
                 ok = (value->payload.i64_value == expected.payload.i64_value);
+            } else if (expected.kind == fa_job_value_f32) {
+                /* Tolerant compare: smoke fixtures pick exactly-representable
+                 * results, but allow a small epsilon for iterative kernels. */
+                ok = (fabsf(value->payload.f32_value - expected.payload.f32_value) <= 1e-4f);
+            } else if (expected.kind == fa_job_value_f64) {
+                ok = (fabs(value->payload.f64_value - expected.payload.f64_value) <= 1e-9);
             }
         }
     }
@@ -2489,6 +2513,219 @@ static int test_wasm_sample_typed_scale_i64(void) {
                                           args,
                                           (uint32_t)(sizeof(args) / sizeof(args[0])),
                                           sample_arg_i64(10000000001LL));
+}
+
+/* Runs `f64.const value; (0xFC sub); end` as a one-shot i32-returning function
+ * and checks the i32 payload. Exercises the scalar saturating truncation
+ * conversions directly with hand-built bytecode. Returns 1 on match. */
+static int run_trunc_sat_f64_i32_case(double value, uint8_t sub, i32 expected) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x44);          /* f64.const */
+    bb_write_f64(&instructions, value);
+    bb_write_byte(&instructions, 0xFC);
+    bb_write_uleb(&instructions, sub);
+    bb_write_byte(&instructions, 0x0B);          /* end */
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 0;
+    }
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 0;
+    }
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    int ok = 0;
+    if (status == FA_RUNTIME_OK) {
+        const fa_JobValue* top = fa_JobStack_peek(&job->stack, 0);
+        ok = (top && top->kind == fa_job_value_i32 && top->payload.i32_value == expected);
+    }
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return ok;
+}
+
+/* Saturation edge cases for the i32 trunc_sat conversions (0xFC 0x02 signed,
+ * 0xFC 0x03 unsigned): NaN -> 0, +/-inf and overflow clamp to the type bounds,
+ * negatives clamp to 0 for the unsigned form. Locks in the runtime handlers
+ * that the floating_point smoke fixture only touches on the in-range path. */
+static int test_trunc_sat_f64_i32_saturation(void) {
+    const double inf = (double)INFINITY;
+    const double nan_value = (double)NAN;
+    /* i32.trunc_sat_f64_s (0x02). */
+    if (!run_trunc_sat_f64_i32_case(3.9, 0x02, 3)) return 1;
+    if (!run_trunc_sat_f64_i32_case(-3.9, 0x02, -3)) return 1;
+    if (!run_trunc_sat_f64_i32_case(nan_value, 0x02, 0)) return 1;
+    if (!run_trunc_sat_f64_i32_case(inf, 0x02, INT32_MAX)) return 1;
+    if (!run_trunc_sat_f64_i32_case(-inf, 0x02, INT32_MIN)) return 1;
+    if (!run_trunc_sat_f64_i32_case(1e30, 0x02, INT32_MAX)) return 1;
+    if (!run_trunc_sat_f64_i32_case(-1e30, 0x02, INT32_MIN)) return 1;
+    /* i32.trunc_sat_f64_u (0x03): UINT32_MAX reads back as -1 in i32 payload. */
+    if (!run_trunc_sat_f64_i32_case(-1.0, 0x03, 0)) return 1;
+    if (!run_trunc_sat_f64_i32_case(nan_value, 0x03, 0)) return 1;
+    if (!run_trunc_sat_f64_i32_case(1e30, 0x03, (i32)UINT32_MAX)) return 1;
+    if (!run_trunc_sat_f64_i32_case(4294967295.0, 0x03, (i32)UINT32_MAX)) return 1;
+    return 0;
+}
+
+/* f64 args + f64 return: Horner polynomial 3x^3-2x^2+x-5 at x=2 == 13.0. */
+static int test_wasm_sample_float_poly(void) {
+    const char* exports[] = { "sample_f64_poly", "_sample_f64_poly" };
+    fa_JobValue args[] = { sample_arg_f64(2.0) };
+    return run_wasm_sample_export_checked("floating_point.wasm",
+                                          "test_wasm_sample_float_poly",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(13.0));
+}
+
+/* f64 mul/add + open-coded sqrt loop: hypot(3,4) == 5.0. */
+static int test_wasm_sample_float_hypot(void) {
+    const char* exports[] = { "sample_f64_hypot", "_sample_f64_hypot" };
+    fa_JobValue args[] = { sample_arg_f64(3.0), sample_arg_f64(4.0) };
+    return run_wasm_sample_export_checked("floating_point.wasm",
+                                          "test_wasm_sample_float_hypot",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(5.0));
+}
+
+/* f32 args + f32 return: lerp(0, 10, 0.5) == 5.0f. */
+static int test_wasm_sample_float_lerp(void) {
+    const char* exports[] = { "sample_f32_lerp", "_sample_f32_lerp" };
+    fa_JobValue args[] = { sample_arg_f32(0.0f), sample_arg_f32(10.0f), sample_arg_f32(0.5f) };
+    return run_wasm_sample_export_checked("floating_point.wasm",
+                                          "test_wasm_sample_float_lerp",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f32(5.0f));
+}
+
+/* f64->i32 saturating conversion (trunc_sat): round(3.7) == 4. Drives the
+ * 0xFC 0x02 path that emcc emits for a plain (int) cast of a double. */
+static int test_wasm_sample_float_round(void) {
+    const char* exports[] = { "sample_f64_round", "_sample_f64_round" };
+    fa_JobValue args[] = { sample_arg_f64(3.7) };
+    return run_wasm_sample_export_checked("floating_point.wasm",
+                                          "test_wasm_sample_float_round",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(4));
+}
+
+/* i32->f64 conversion inside a loop: sum(i*1.5, i=1..10) == 82.5. */
+static int test_wasm_sample_float_series(void) {
+    const char* exports[] = { "sample_f64_series", "_sample_f64_series" };
+    fa_JobValue args[] = { sample_arg_i32(10) };
+    return run_wasm_sample_export_checked("floating_point.wasm",
+                                          "test_wasm_sample_float_series",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(82.5));
+}
+
+/* call_indirect through a real funcref table: dispatch(2,6,7) selects mul. */
+static int test_wasm_sample_dispatch_mul(void) {
+    const char* exports[] = { "sample_dispatch", "_sample_dispatch" };
+    fa_JobValue args[] = { sample_arg_i32(2), sample_arg_i32(6), sample_arg_i32(7) };
+    return run_wasm_sample_export_checked("indirect_dispatch.wasm",
+                                          "test_wasm_sample_dispatch_mul",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(42));
+}
+
+/* Repeated call_indirect in a loop: fold every op over (6,7) == 61. */
+static int test_wasm_sample_dispatch_fold(void) {
+    const char* exports[] = { "sample_dispatch_fold", "_sample_dispatch_fold" };
+    fa_JobValue args[] = { sample_arg_i32(6), sample_arg_i32(7) };
+    return run_wasm_sample_export_checked("indirect_dispatch.wasm",
+                                          "test_wasm_sample_dispatch_fold",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(61));
+}
+
+/* Dense switch -> br_table: classify(5) == 320 + 50 + 20 == 390. */
+static int test_wasm_sample_classify_brtable(void) {
+    const char* exports[] = { "sample_classify", "_sample_classify" };
+    fa_JobValue args[] = { sample_arg_i32(5) };
+    return run_wasm_sample_export_checked("indirect_dispatch.wasm",
+                                          "test_wasm_sample_classify_brtable",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(390));
+}
+
+/* br_table default arm: classify(9) falls through to -1. */
+static int test_wasm_sample_classify_default(void) {
+    const char* exports[] = { "sample_classify", "_sample_classify" };
+    fa_JobValue args[] = { sample_arg_i32(9) };
+    return run_wasm_sample_export_checked("indirect_dispatch.wasm",
+                                          "test_wasm_sample_classify_default",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(-1));
+}
+
+/* Zero-arg memory-heavy export: bubble sort + weighted checksum == 204. */
+static int test_wasm_sample_sort_checksum(void) {
+    const char* exports[] = { "sample_sort_checksum", "_sample_sort_checksum" };
+    return run_wasm_sample_export_i32("memory_ops.wasm",
+                                      "test_wasm_sample_sort_checksum",
+                                      exports,
+                                      sizeof(exports) / sizeof(exports[0]),
+                                      204);
+}
+
+/* memcpy/memset over a runtime length -> memory.copy / memory.fill, then a
+ * stable unsigned checksum. pipeline(7, 64) == 1380176480. */
+static int test_wasm_sample_buffer_pipeline(void) {
+    const char* exports[] = { "sample_buffer_pipeline", "_sample_buffer_pipeline" };
+    fa_JobValue args[] = { sample_arg_i32(7), sample_arg_i32(64) };
+    return run_wasm_sample_export_checked("memory_ops.wasm",
+                                          "test_wasm_sample_buffer_pipeline",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(1380176480));
+}
+
+/* Data-segment lookup table read by runtime index: squares[5] == 25. */
+static int test_wasm_sample_table_lookup(void) {
+    const char* exports[] = { "sample_table_lookup", "_sample_table_lookup" };
+    fa_JobValue args[] = { sample_arg_i32(5) };
+    return run_wasm_sample_export_checked("memory_ops.wasm",
+                                          "test_wasm_sample_table_lookup",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(25));
 }
 
 static int test_div_by_zero_trap(void) {
@@ -6275,6 +6512,18 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_typed_add_i32", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_add_i32),
     TEST_CASE("test_wasm_sample_typed_sum_to_n", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_sum_to_n),
     TEST_CASE("test_wasm_sample_typed_scale_i64", "wasm-sample", "wasm_samples/build/typed_values.wasm", test_wasm_sample_typed_scale_i64),
+    TEST_CASE("test_wasm_sample_float_poly", "wasm-sample", "wasm_samples/build/floating_point.wasm", test_wasm_sample_float_poly),
+    TEST_CASE("test_wasm_sample_float_hypot", "wasm-sample", "wasm_samples/build/floating_point.wasm", test_wasm_sample_float_hypot),
+    TEST_CASE("test_wasm_sample_float_lerp", "wasm-sample", "wasm_samples/build/floating_point.wasm", test_wasm_sample_float_lerp),
+    TEST_CASE("test_wasm_sample_float_round", "wasm-sample", "wasm_samples/build/floating_point.wasm", test_wasm_sample_float_round),
+    TEST_CASE("test_wasm_sample_float_series", "wasm-sample", "wasm_samples/build/floating_point.wasm", test_wasm_sample_float_series),
+    TEST_CASE("test_wasm_sample_dispatch_mul", "wasm-sample", "wasm_samples/build/indirect_dispatch.wasm", test_wasm_sample_dispatch_mul),
+    TEST_CASE("test_wasm_sample_dispatch_fold", "wasm-sample", "wasm_samples/build/indirect_dispatch.wasm", test_wasm_sample_dispatch_fold),
+    TEST_CASE("test_wasm_sample_classify_brtable", "wasm-sample", "wasm_samples/build/indirect_dispatch.wasm", test_wasm_sample_classify_brtable),
+    TEST_CASE("test_wasm_sample_classify_default", "wasm-sample", "wasm_samples/build/indirect_dispatch.wasm", test_wasm_sample_classify_default),
+    TEST_CASE("test_wasm_sample_sort_checksum", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_sort_checksum),
+    TEST_CASE("test_wasm_sample_buffer_pipeline", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_buffer_pipeline),
+    TEST_CASE("test_wasm_sample_table_lookup", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_table_lookup),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
@@ -6305,6 +6554,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_simd_i8x16_add", "simd", "src/fa_ops.c (i8x16.add)", test_simd_i8x16_add),
     TEST_CASE("test_simd_i8x16_replace_extract", "simd", "src/fa_ops.c (lane ops)", test_simd_i8x16_replace_extract),
     TEST_CASE("test_simd_trunc_sat_f32x4", "simd", "src/fa_ops.c (trunc sat)", test_simd_trunc_sat_f32x4),
+    TEST_CASE("test_trunc_sat_f64_i32_saturation", "convert", "src/fa_ops.c (scalar trunc_sat 0xFC 0x00-0x07)", test_trunc_sat_f64_i32_saturation),
     TEST_CASE("test_simd_v128_bitwise_xor", "simd", "src/fa_ops.c (op_simd_bitwise)", test_simd_v128_bitwise_xor),
     TEST_CASE("test_simd_i16x8_add", "simd", "src/fa_ops.c (op_simd_i16x8)", test_simd_i16x8_add),
     TEST_CASE("test_simd_i64x2_add", "simd", "src/fa_ops.c (op_simd_i64x2)", test_simd_i64x2_add),

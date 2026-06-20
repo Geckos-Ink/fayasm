@@ -20,6 +20,7 @@ fayasm already supports a substantial runtime slice:
 - Runtime execution (`fa_runtime.*`) with call frames, locals/globals, branch stack semantics, multi-value returns, label arity checks, memory64/multi-memory behavior, and trap propagation.
 - Reference operations and `call_indirect` with table lookup and signature validation, using encoded funcref storage (`null = 0`, index `n = n + 1`).
 - Bulk memory and table operations, typed element expressions (`ref.func`, `ref.null`, `global.get`), and live imported memory/table rebind after attach.
+- Scalar integer<->float conversions including the non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`, `0xFC 0x00`–`0x07`) that toolchains emit by default for `(int)`/`(long)` casts of floats.
 - SIMD core + relaxed opcode coverage wired through `fa_ops.*` (with active regression tests).
 - Host import bindings for functions, memories, and tables; dynamic-library bindings on supported desktop targets.
 - JIT/microcode preparation scaffolding (`fa_jit.*`) with per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory.
@@ -67,6 +68,19 @@ build/bin/fayasm_run wasm_samples/build/typed_values.wasm sample_add_i32 i32:7 i
 
 build/bin/fayasm_run wasm_samples/build/typed_values.wasm sample_scale_i64 i64:100000 i64:100000
 # result[0] (i64): 10000000001
+```
+
+The advanced fixtures exercise floating point, `call_indirect`/`br_table`, and bulk memory:
+
+```bash
+build/bin/fayasm_run wasm_samples/build/floating_point.wasm sample_f64_hypot f64:3 f64:4
+# result[0] (f64): 5
+
+build/bin/fayasm_run wasm_samples/build/indirect_dispatch.wasm sample_dispatch i32:2 i32:6 i32:7
+# result[0] (i32): 42   (call_indirect selects multiply)
+
+build/bin/fayasm_run wasm_samples/build/memory_ops.wasm sample_buffer_pipeline i32:7 i32:64
+# result[0] (i32): 1380176480   (memcpy/memset -> memory.copy/memory.fill)
 ```
 
 Supported CLI arg types:

@@ -28,6 +28,9 @@ Generated files:
 - `wasm_samples/build/control_flow.wasm`
 - `wasm_samples/build/advanced_runtime.wasm`
 - `wasm_samples/build/typed_values.wasm` (parameterized exports + i64 return)
+- `wasm_samples/build/floating_point.wasm` (f32/f64 arithmetic, int<->float conversions incl. `trunc_sat`)
+- `wasm_samples/build/indirect_dispatch.wasm` (function-pointer table -> `call_indirect`; dense switch -> `br_table`)
+- `wasm_samples/build/memory_ops.wasm` (array sort, data-segment lookup, `memcpy`/`memset` -> `memory.copy`/`memory.fill`; built with `-mbulk-memory`)
 
 ## Runtime Tests
 
