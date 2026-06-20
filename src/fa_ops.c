@@ -473,6 +473,60 @@ static bool trunc_f64_to_i64(double value, bool is_signed, u64* out) {
     return true;
 }
 
+/*
+ * Non-trapping saturating truncation (the 0xFC 0x00..0x07 trunc_sat family).
+ * Unlike the trapping conversions above these never fail: NaN maps to 0 and
+ * out-of-range inputs clamp to the destination type's min/max. Returns the
+ * raw bit pattern ready for push_int_checked at the given width/signedness.
+ */
+static u64 trunc_sat_f64_to_i32(double value, bool is_signed) {
+    if (isnan(value)) {
+        return 0;
+    }
+    const double truncated = isfinite(value) ? trunc(value) : value;
+    if (is_signed) {
+        if (truncated < (double)INT32_MIN) {
+            return (u64)(i32)INT32_MIN;
+        }
+        if (truncated > (double)INT32_MAX) {
+            return (u64)(i32)INT32_MAX;
+        }
+        return (u64)(i32)truncated;
+    }
+    if (truncated <= 0.0) {
+        return 0;
+    }
+    if (truncated > (double)UINT32_MAX) {
+        return (u64)UINT32_MAX;
+    }
+    return (u64)(u32)truncated;
+}
+
+static u64 trunc_sat_f64_to_i64(double value, bool is_signed) {
+    if (isnan(value)) {
+        return 0;
+    }
+    const double truncated = isfinite(value) ? trunc(value) : value;
+    if (is_signed) {
+        if (truncated < (double)INT64_MIN) {
+            return (u64)INT64_MIN;
+        }
+        /* (double)INT64_MAX rounds up to 2^63, so saturate at >=. */
+        if (truncated >= (double)INT64_MAX) {
+            return (u64)INT64_MAX;
+        }
+        return (u64)(i64)truncated;
+    }
+    if (truncated <= 0.0) {
+        return 0;
+    }
+    /* (double)UINT64_MAX rounds up to 2^64, so saturate at >=. */
+    if (truncated >= (double)UINT64_MAX) {
+        return UINT64_MAX;
+    }
+    return (u64)truncated;
+}
+
 /* Immediates/subopcodes are read from the reg window as raw bytes/u64. */
 static bool pop_reg_to_buffer(fa_Job* job, void* buffer, size_t size) {
     if (!job || !buffer || size == 0) {
@@ -2232,6 +2286,85 @@ DEFINE_CONVERT_OP(op_convert_i64_trunc_f64_u_mc, {
     return push_int_checked(job, truncated, 64U, false);
 })
 
+/*
+ * Saturating (non-trapping) float->int conversions, 0xFC subopcodes 0x00..0x07.
+ * These mirror the trapping trunc ops above but clamp instead of trapping, and
+ * are dispatched from op_bulk_memory's subopcode table rather than the primary
+ * opcode descriptors. emcc emits these by default (nontrapping-fptoint) for a
+ * plain (int)/(long) cast of a float, so real toolchain output depends on them.
+ */
+DEFINE_CONVERT_OP(op_convert_i32_trunc_sat_f32_s_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i32((double)value, true), 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_sat_f32_u_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i32((double)value, false), 32U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_sat_f64_s_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i32(value, true), 32U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i32_trunc_sat_f64_u_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i32(value, false), 32U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_sat_f32_s_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i64((double)value, true), 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_sat_f32_u_mc, {
+    f32 value = 0.0f;
+    if (!job_value_to_f32(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i64((double)value, false), 64U, false);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_sat_f64_s_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i64(value, true), 64U, true);
+})
+
+DEFINE_CONVERT_OP(op_convert_i64_trunc_sat_f64_u_mc, {
+    f64 value = 0.0;
+    if (!job_value_to_f64(&source, &value)) {
+        restore_stack_value(job, &source);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    return push_int_checked(job, trunc_sat_f64_to_i64(value, false), 64U, false);
+})
+
 DEFINE_CONVERT_OP(op_convert_f32_from_i32_s_mc, {
     i64 value = 0;
     if (!job_value_to_i64(&source, &value)) {
@@ -3163,6 +3296,14 @@ static OP_RETURN_TYPE op_bulk_table_fill(OP_ARGUMENTS) {
  */
 static OP_RETURN_TYPE op_bulk_memory(OP_ARGUMENTS) {
     static const Operation kBulkHandlers[] = {
+        [0] = op_convert_i32_trunc_sat_f32_s_mc,
+        [1] = op_convert_i32_trunc_sat_f32_u_mc,
+        [2] = op_convert_i32_trunc_sat_f64_s_mc,
+        [3] = op_convert_i32_trunc_sat_f64_u_mc,
+        [4] = op_convert_i64_trunc_sat_f32_s_mc,
+        [5] = op_convert_i64_trunc_sat_f32_u_mc,
+        [6] = op_convert_i64_trunc_sat_f64_s_mc,
+        [7] = op_convert_i64_trunc_sat_f64_u_mc,
         [8] = op_bulk_memory_init,
         [9] = op_bulk_data_drop,
         [10] = op_bulk_memory_copy,

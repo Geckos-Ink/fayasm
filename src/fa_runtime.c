@@ -1946,6 +1946,16 @@ static int runtime_prescan_skip_immediates(const fa_Runtime* runtime,
                 return status;
             }
             switch (subopcode) {
+                case 0: /* i32.trunc_sat_f32_s */
+                case 1: /* i32.trunc_sat_f32_u */
+                case 2: /* i32.trunc_sat_f64_s */
+                case 3: /* i32.trunc_sat_f64_u */
+                case 4: /* i64.trunc_sat_f32_s */
+                case 5: /* i64.trunc_sat_f32_u */
+                case 6: /* i64.trunc_sat_f64_s */
+                case 7: /* i64.trunc_sat_f64_u */
+                    /* Saturating conversions carry no static immediates. */
+                    return FA_RUNTIME_OK;
                 case 8: /* memory.init */
                     status = runtime_prescan_read_uleb128(body, body_size, cursor);
                     if (status != FA_RUNTIME_OK) {
@@ -2409,6 +2419,16 @@ static int runtime_skip_immediates(const uint8_t* body,
                 return status;
             }
             switch (uleb) {
+                case 0: /* i32.trunc_sat_f32_s */
+                case 1: /* i32.trunc_sat_f32_u */
+                case 2: /* i32.trunc_sat_f64_s */
+                case 3: /* i32.trunc_sat_f64_u */
+                case 4: /* i64.trunc_sat_f32_s */
+                case 5: /* i64.trunc_sat_f32_u */
+                case 6: /* i64.trunc_sat_f64_s */
+                case 7: /* i64.trunc_sat_f64_u */
+                    /* Saturating conversions carry no static immediates. */
+                    return FA_RUNTIME_OK;
                 case 8: /* memory.init */
                     status = runtime_read_uleb128(body, body_size, cursor, &uleb);
                     if (status != FA_RUNTIME_OK) {
@@ -4120,6 +4140,17 @@ static int runtime_decode_instruction(const uint8_t* body,
             }
             uint32_t sub = (uint32_t)subopcode;
             switch (sub) {
+                case 0: // i32.trunc_sat_f32_s
+                case 1: // i32.trunc_sat_f32_u
+                case 2: // i32.trunc_sat_f64_s
+                case 3: // i32.trunc_sat_f64_u
+                case 4: // i64.trunc_sat_f32_s
+                case 5: // i64.trunc_sat_f32_u
+                case 6: // i64.trunc_sat_f64_s
+                case 7: // i64.trunc_sat_f64_u
+                    // Saturating conversions take no static immediates; the
+                    // subopcode alone drives op_bulk_memory's dispatch table.
+                    return runtime_push_reg_value(job, &sub, sizeof(sub));
                 case 8: // memory.init
                 {
                     uint64_t data_index = 0;
