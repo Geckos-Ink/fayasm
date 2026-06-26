@@ -3727,6 +3727,112 @@ int fa_Runtime_ensureMemoryLoaded(fa_Runtime* runtime, uint32_t memory_index) {
     return FA_RUNTIME_OK;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Versioned linear-memory serialization.
+ *
+ * Layout: shared spill envelope (kind FA_SPILL_KIND_MEMORY) + memory sub-header
+ * + raw bytes. The sub-header keeps the blob self-describing:
+ *   offset 0  u8   flags          (bit0 = is_memory64)
+ *   offset 1  u8   reserved[7]    (zeroed)
+ *   offset 8  u64  size_bytes
+ * ------------------------------------------------------------------------- */
+size_t fa_Runtime_serializedMemorySize(const fa_Runtime* runtime, uint32_t memory_index) {
+    if (!runtime || !runtime->memories || memory_index >= runtime->memories_count) {
+        return 0;
+    }
+    const fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    const uint64_t overhead = (uint64_t)FA_SPILL_HEADER_BYTES + (uint64_t)FA_SPILL_MEMORY_BODY_HEADER_BYTES;
+    if (memory->size_bytes > (uint64_t)SIZE_MAX - overhead) {
+        return 0;
+    }
+    return (size_t)overhead + (size_t)memory->size_bytes;
+}
+
+bool fa_Runtime_serializeMemory(fa_Runtime* runtime,
+                                uint32_t memory_index,
+                                uint8_t* out,
+                                size_t capacity,
+                                size_t* written_out) {
+    if (written_out) {
+        *written_out = 0;
+    }
+    if (!runtime || !runtime->memories || memory_index >= runtime->memories_count) {
+        return false;
+    }
+    fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    /* A spilled (unloaded) memory has no bytes to capture. */
+    if (!memory->data && memory->size_bytes != 0) {
+        return false;
+    }
+    size_t needed = fa_Runtime_serializedMemorySize(runtime, memory_index);
+    if (needed == 0 || !out || capacity < needed) {
+        return false;
+    }
+    const uint64_t payload = (uint64_t)FA_SPILL_MEMORY_BODY_HEADER_BYTES + memory->size_bytes;
+    if (fa_spill_write_header(out, capacity, (uint16_t)FA_SPILL_KIND_MEMORY, payload) != FA_SPILL_HEADER_BYTES) {
+        return false;
+    }
+    uint8_t* body = out + FA_SPILL_HEADER_BYTES;
+    memset(body, 0, FA_SPILL_MEMORY_BODY_HEADER_BYTES);
+    body[0] = (uint8_t)(memory->is_memory64 ? 0x01u : 0x00u);
+    fa_spill_put_u64(body + 8, memory->size_bytes);
+    if (memory->size_bytes != 0) {
+        memcpy(body + FA_SPILL_MEMORY_BODY_HEADER_BYTES, memory->data, (size_t)memory->size_bytes);
+    }
+    if (written_out) {
+        *written_out = needed;
+    }
+    return true;
+}
+
+bool fa_Runtime_deserializeMemory(fa_Runtime* runtime,
+                                  uint32_t memory_index,
+                                  const uint8_t* buffer,
+                                  size_t size) {
+    if (!runtime || !runtime->memories || memory_index >= runtime->memories_count) {
+        return false;
+    }
+    uint16_t kind = 0;
+    uint64_t payload = 0;
+    if (!fa_spill_read_header(buffer, size, &kind, &payload)) {
+        return false;
+    }
+    if (kind != (uint16_t)FA_SPILL_KIND_MEMORY || payload < FA_SPILL_MEMORY_BODY_HEADER_BYTES) {
+        return false;
+    }
+    const uint8_t* body = buffer + FA_SPILL_HEADER_BYTES;
+    const uint8_t flags = body[0];
+    const uint64_t size_bytes = fa_spill_get_u64(body + 8);
+    if (size_bytes != payload - (uint64_t)FA_SPILL_MEMORY_BODY_HEADER_BYTES) {
+        return false;
+    }
+    if (size_bytes > (uint64_t)INT_MAX) {
+        return false;
+    }
+    fa_RuntimeMemory* memory = &runtime->memories[memory_index];
+    /* Never clobber a host-provided buffer the runtime does not own. */
+    if (!memory->owns_data && memory->data) {
+        return false;
+    }
+    uint8_t* data = NULL;
+    if (size_bytes != 0) {
+        data = (uint8_t*)runtime->malloc((int)size_bytes);
+        if (!data) {
+            return false;
+        }
+        memcpy(data, body + FA_SPILL_MEMORY_BODY_HEADER_BYTES, (size_t)size_bytes);
+    }
+    if (memory->data) {
+        runtime->free(memory->data);
+    }
+    memory->data = data;
+    memory->size_bytes = size_bytes;
+    memory->is_memory64 = (flags & 0x01u) != 0;
+    memory->owns_data = true;
+    memory->is_spilled = false;
+    return true;
+}
+
 typedef enum {
     FA_CTRL_NONE = 0,
     FA_CTRL_BLOCK,

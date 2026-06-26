@@ -199,6 +199,82 @@ static int offload_trap_jit_load_handler(fa_Runtime* runtime, uint32_t function_
     return fa_Runtime_jitLoadProgram(runtime, function_index);
 }
 
+/* Captures the result of round-tripping a real JIT program through the shared
+   versioned spill envelope from inside a live runtime spill hook. */
+typedef struct {
+    int spill_calls;
+    int validation_ok;
+    uint8_t header_magic_ok;
+    size_t blob_size;
+    size_t opcode_count;
+} SpillEnvelopeState;
+
+static int spill_envelope_jit_hook(fa_Runtime* runtime,
+                                   uint32_t function_index,
+                                   const fa_JitProgram* program,
+                                   size_t program_bytes,
+                                   void* user_data) {
+    (void)runtime;
+    (void)function_index;
+    (void)program_bytes;
+    SpillEnvelopeState* st = (SpillEnvelopeState*)user_data;
+    if (!st || !program || program->count == 0) {
+        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
+    }
+    st->spill_calls += 1;
+    st->validation_ok = 0;
+
+    size_t needed = fa_jit_program_serialized_size(program);
+    if (needed == 0) {
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    uint8_t* blob = (uint8_t*)malloc(needed);
+    if (!blob) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    size_t written = 0;
+    if (!fa_jit_program_serialize(program, blob, needed, &written) || written != needed) {
+        free(blob);
+        return FA_RUNTIME_ERR_TRAP;
+    }
+    st->blob_size = written;
+    st->header_magic_ok = (fa_spill_get_u32(blob) == FA_SPILL_MAGIC) ? 1u : 0u;
+
+    fa_JitProgram restored = {0};
+    fa_jit_program_init(&restored);
+    int ok = 1;
+    uint8_t* orig_ops = (uint8_t*)malloc(program->count);
+    uint8_t* new_ops = NULL;
+    if (!fa_jit_program_deserialize(blob, written, &restored) ||
+        restored.count != program->count) {
+        ok = 0;
+    } else {
+        new_ops = (uint8_t*)malloc(restored.count);
+        size_t oc = 0;
+        size_t nc = 0;
+        if (!orig_ops || !new_ops ||
+            !fa_jit_program_export_opcodes(program, orig_ops, program->count, &oc) ||
+            !fa_jit_program_export_opcodes(&restored, new_ops, restored.count, &nc) ||
+            oc != nc || memcmp(orig_ops, new_ops, oc) != 0) {
+            ok = 0;
+        }
+        /* Microcode must have been rebuilt from the persisted opcode stream. */
+        for (size_t i = 0; ok && i < restored.count; ++i) {
+            if (restored.ops[i].step_count == 0) {
+                ok = 0;
+            }
+        }
+        st->opcode_count = restored.count;
+    }
+    free(orig_ops);
+    free(new_ops);
+    fa_jit_program_free(&restored);
+    free(blob);
+
+    st->validation_ok = ok;
+    return ok ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
+}
+
 static int host_add(fa_Runtime* runtime, const fa_RuntimeHostCall* call, void* user_data) {
     (void)runtime;
     (void)user_data;
@@ -1204,6 +1280,183 @@ static int test_jit_program_opcode_roundtrip(void) {
     fa_jit_program_free(&restored);
     fa_jit_program_free(&prepared);
     return 0;
+}
+
+/* Exercises the versioned spill envelope for JIT programs: serialize -> inspect
+   header -> deserialize -> opcode/microcode equivalence, plus rejection of
+   corrupted magic, wrong kind, and truncated blobs. */
+static int test_spill_envelope_jit_roundtrip(void) {
+    const uint8_t opcodes[] = { 0x6A, 0x8B, 0x1B, 0x67 };
+    fa_JitProgram prepared = {0};
+    fa_jit_program_init(&prepared);
+    if (!fa_jit_prepare_program_from_opcodes(opcodes, sizeof(opcodes), &prepared)) {
+        return 1;
+    }
+
+    size_t needed = fa_jit_program_serialized_size(&prepared);
+    if (needed != FA_SPILL_HEADER_BYTES + sizeof(opcodes)) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    uint8_t blob[FA_SPILL_HEADER_BYTES + sizeof(opcodes)] = {0};
+    size_t written = 0;
+    /* Undersized buffer must be rejected before any bytes are written. */
+    if (fa_jit_program_serialize(&prepared, blob, needed - 1, &written) || written != 0) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+    if (!fa_jit_program_serialize(&prepared, blob, sizeof(blob), &written) || written != needed) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    /* Header fields are little-endian and self-describing. */
+    if (fa_spill_get_u32(blob) != FA_SPILL_MAGIC ||
+        fa_spill_get_u16(blob + 4) != (uint16_t)FA_SPILL_VERSION ||
+        fa_spill_get_u16(blob + 6) != (uint16_t)FA_SPILL_KIND_JIT_OPCODES ||
+        fa_spill_get_u64(blob + 8) != sizeof(opcodes)) {
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    fa_JitProgram restored = {0};
+    fa_jit_program_init(&restored);
+    if (!fa_jit_program_deserialize(blob, written, &restored) ||
+        restored.count != prepared.count) {
+        fa_jit_program_free(&restored);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+    for (size_t i = 0; i < restored.count; ++i) {
+        if (!restored.ops[i].descriptor ||
+            restored.ops[i].descriptor->id != opcodes[i] ||
+            restored.ops[i].step_count == 0) {
+            fa_jit_program_free(&restored);
+            fa_jit_program_free(&prepared);
+            return 1;
+        }
+    }
+    fa_jit_program_free(&restored);
+
+    /* Corrupted magic must be rejected. */
+    uint8_t bad_magic[sizeof(blob)];
+    memcpy(bad_magic, blob, sizeof(blob));
+    bad_magic[0] ^= 0xFFu;
+    fa_JitProgram reject = {0};
+    fa_jit_program_init(&reject);
+    if (fa_jit_program_deserialize(bad_magic, written, &reject)) {
+        fa_jit_program_free(&reject);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    /* Wrong version must be rejected. */
+    uint8_t bad_version[sizeof(blob)];
+    memcpy(bad_version, blob, sizeof(blob));
+    fa_spill_put_u16(bad_version + 4, (uint16_t)(FA_SPILL_VERSION + 1u));
+    if (fa_jit_program_deserialize(bad_version, written, &reject)) {
+        fa_jit_program_free(&reject);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    /* A memory blob must not deserialize as a JIT program (kind mismatch). */
+    uint8_t wrong_kind[sizeof(blob)];
+    memcpy(wrong_kind, blob, sizeof(blob));
+    fa_spill_put_u16(wrong_kind + 6, (uint16_t)FA_SPILL_KIND_MEMORY);
+    if (fa_jit_program_deserialize(wrong_kind, written, &reject)) {
+        fa_jit_program_free(&reject);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    /* Truncated buffer (header only) must be rejected. */
+    if (fa_jit_program_deserialize(blob, FA_SPILL_HEADER_BYTES, &reject)) {
+        fa_jit_program_free(&reject);
+        fa_jit_program_free(&prepared);
+        return 1;
+    }
+
+    fa_jit_program_free(&prepared);
+    return 0;
+}
+
+/* Real-WASM validation: load a compiled module, execute it so the runtime
+   records + microcode-compiles the real opcode stream, then drive the live
+   spill hook through the versioned JIT envelope and confirm the persisted blob
+   round-trips back to an equivalent, re-microcoded program. */
+static int test_spill_envelope_jit_real_wasm(void) {
+    char path[PATH_MAX] = {0};
+    if (!resolve_wasm_sample_path("control_flow.wasm", path, sizeof(path))) {
+        printf("SKIP: test_spill_envelope_jit_real_wasm (build wasm_samples first)\n");
+        return 0;
+    }
+
+    test_set_env("FAYASM_MICROCODE", "1");
+    if (!fa_ops_microcode_enabled()) {
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_path(path, 1);
+    if (!module) {
+        return 1;
+    }
+    const char* exports[] = { "sample_loop_sum", "_sample_loop_sum" };
+    uint32_t function_index = 0;
+    if (!module_find_exported_function(module, exports, sizeof(exports) / sizeof(exports[0]),
+                                       &function_index)) {
+        wasm_module_free(module);
+        return 1;
+    }
+
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        return 1;
+    }
+    /* Lower JIT thresholds so a single execution prepares the microcode. */
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_executed_ops = 1;
+    runtime->jit_context.config.min_advantage_score = 0.0f;
+
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        return 1;
+    }
+
+    SpillEnvelopeState state = {0};
+    fa_RuntimeSpillHooks hooks = { spill_envelope_jit_hook, NULL, NULL, NULL, &state };
+    fa_Runtime_setSpillHooks(runtime, &hooks);
+
+    /* Execute the real module (also validates correct execution: loop sum). */
+    if (fa_Runtime_executeJob(runtime, job, function_index) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, NULL, NULL);
+        return 1;
+    }
+
+    /* Spill the prepared program -> fires the validating envelope hook. */
+    if (fa_Runtime_jitSpillProgram(runtime, function_index) != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, NULL, NULL);
+        return 1;
+    }
+
+    int ok = (state.spill_calls > 0 &&
+              state.validation_ok == 1 &&
+              state.header_magic_ok == 1u &&
+              state.opcode_count > 0 &&
+              state.blob_size == FA_SPILL_HEADER_BYTES + state.opcode_count);
+    cleanup_job(runtime, job, module, NULL, NULL);
+    return ok ? 0 : 1;
 }
 
 static int test_host_import_call(void) {
@@ -2265,6 +2518,169 @@ static int test_memory_grow_spill_load_roundtrip(void) {
     }
 
     offload_state_free(&state);
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
+/* Exercises the versioned linear-memory spill envelope: grow real memory, seed
+   it, serialize, validate the self-describing header, scribble over the live
+   bytes, restore from the blob, and confirm the post-grow size + every byte
+   come back. Also restores the blob into a separate fresh instance (proving the
+   blob carries its own size) and rejects corrupted/mismatched blobs. */
+static int test_spill_envelope_memory_roundtrip(void) {
+    ByteBuffer instructions = {0};
+    bb_write_byte(&instructions, 0x41);          /* i32.const 1 (grow delta) */
+    bb_write_sleb32(&instructions, 1);
+    bb_write_byte(&instructions, 0x40);          /* memory.grow */
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x1A);          /* drop old size */
+    bb_write_byte(&instructions, 0x3F);          /* memory.size -> pages */
+    bb_write_uleb(&instructions, 0);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 1, 1, 1, 4, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    if (!execute_expect_i32(runtime, job, 0, 2)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const uint64_t grown_bytes = 2ULL * FA_WASM_PAGE_SIZE;
+    if (!runtime->memories || runtime->memories[0].size_bytes != grown_bytes ||
+        !runtime->memories[0].data) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    for (uint64_t i = 0; i < grown_bytes; ++i) {
+        runtime->memories[0].data[i] = (uint8_t)((i * 131u + 17u) & 0xFFu);
+    }
+
+    /* Serialize into a versioned blob. */
+    size_t needed = fa_Runtime_serializedMemorySize(runtime, 0);
+    if (needed != FA_SPILL_HEADER_BYTES + FA_SPILL_MEMORY_BODY_HEADER_BYTES + grown_bytes) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    uint8_t* blob = (uint8_t*)malloc(needed);
+    if (!blob) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    size_t written = 0;
+    /* Undersized buffer must be rejected. */
+    if (fa_Runtime_serializeMemory(runtime, 0, blob, needed - 1, &written) || written != 0) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    if (!fa_Runtime_serializeMemory(runtime, 0, blob, needed, &written) || written != needed) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Self-describing header: envelope + memory sub-header (flags + size). */
+    if (fa_spill_get_u32(blob) != FA_SPILL_MAGIC ||
+        fa_spill_get_u16(blob + 6) != (uint16_t)FA_SPILL_KIND_MEMORY ||
+        fa_spill_get_u64(blob + 8) != FA_SPILL_MEMORY_BODY_HEADER_BYTES + grown_bytes ||
+        blob[FA_SPILL_HEADER_BYTES] != 0x00u /* not memory64 */ ||
+        fa_spill_get_u64(blob + FA_SPILL_HEADER_BYTES + 8) != grown_bytes) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Corrupt the live memory, then restore it from the blob. */
+    memset(runtime->memories[0].data, 0xAB, (size_t)grown_bytes);
+    if (!fa_Runtime_deserializeMemory(runtime, 0, blob, written) ||
+        runtime->memories[0].size_bytes != grown_bytes ||
+        runtime->memories[0].is_spilled ||
+        !runtime->memories[0].data) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    for (uint64_t i = 0; i < grown_bytes; ++i) {
+        if (runtime->memories[0].data[i] != (uint8_t)((i * 131u + 17u) & 0xFFu)) {
+            free(blob);
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+    }
+
+    /* Restore the blob into a separate fresh instance (1-page module): the blob
+       carries its own size, so the target ends up with the full grown region. */
+    ByteBuffer module_bytes2 = {0};
+    if (!build_module(&module_bytes2, bodies, sizes, 1, 1, 1, 1, 4, kResultI32, 1, NULL, 0)) {
+        free(blob);
+        bb_free(&module_bytes2);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    fa_Runtime* runtime2 = NULL;
+    fa_Job* job2 = NULL;
+    WasmModule* module2 = NULL;
+    if (!run_job(&module_bytes2, &runtime2, &job2, &module2)) {
+        free(blob);
+        cleanup_job(runtime2, job2, module2, &module_bytes2, NULL);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    int cross_ok = (fa_Runtime_deserializeMemory(runtime2, 0, blob, written) &&
+                    runtime2->memories[0].size_bytes == grown_bytes &&
+                    runtime2->memories[0].data != NULL);
+    for (uint64_t i = 0; cross_ok && i < grown_bytes; ++i) {
+        if (runtime2->memories[0].data[i] != (uint8_t)((i * 131u + 17u) & 0xFFu)) {
+            cross_ok = 0;
+        }
+    }
+    cleanup_job(runtime2, job2, module2, &module_bytes2, NULL);
+    if (!cross_ok) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Corruption / mismatch rejection. */
+    uint8_t saved_magic = blob[0];
+    blob[0] ^= 0xFFu;
+    int rejected = !fa_Runtime_deserializeMemory(runtime, 0, blob, written);
+    blob[0] = saved_magic;
+    if (!rejected) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    /* Wrong kind (claim JIT opcodes) must be rejected. */
+    fa_spill_put_u16(blob + 6, (uint16_t)FA_SPILL_KIND_JIT_OPCODES);
+    rejected = !fa_Runtime_deserializeMemory(runtime, 0, blob, written);
+    fa_spill_put_u16(blob + 6, (uint16_t)FA_SPILL_KIND_MEMORY);
+    if (!rejected) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    /* Truncated buffer (drops trailing payload) must be rejected. */
+    if (fa_Runtime_deserializeMemory(runtime, 0, blob, written - 1)) {
+        free(blob);
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    free(blob);
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
 }
@@ -6495,6 +6911,8 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
     TEST_CASE("test_jit_program_opcode_roundtrip", "jit", "src/fa_jit.c (opcode serialization)", test_jit_program_opcode_roundtrip),
+    TEST_CASE("test_spill_envelope_jit_roundtrip", "offload", "src/fa_jit.c (versioned spill envelope), fa_jit_program_serialize/deserialize", test_spill_envelope_jit_roundtrip),
+    TEST_CASE("test_spill_envelope_jit_real_wasm", "offload", "src/fa_jit.c (versioned spill envelope) via real wasm + live spill hook", test_spill_envelope_jit_real_wasm),
     TEST_CASE("test_host_import_call", "runtime", "src/fa_runtime.c (host imports), src/fa_wasm.c (import parsing)", test_host_import_call),
     TEST_CASE("test_imported_memory_binding", "memory", "src/fa_runtime.c (host memory imports), src/fa_ops.c (load)", test_imported_memory_binding),
     TEST_CASE("test_imported_memory_rebind_after_attach", "memory", "src/fa_runtime.c (host memory rebind propagation)", test_imported_memory_rebind_after_attach),
@@ -6503,6 +6921,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_memory_spill_load_cycles", "offload", "src/fa_runtime.c (memory spill/load hooks)", test_memory_spill_load_cycles),
     TEST_CASE("test_jit_eviction_trap_reload_cycles", "offload", "src/fa_runtime.c (jit eviction/load), trap hooks", test_jit_eviction_trap_reload_cycles),
     TEST_CASE("test_memory_grow_spill_load_roundtrip", "offload", "src/fa_runtime.c (memory grow + spill/load), fa_Runtime_loadMemory", test_memory_grow_spill_load_roundtrip),
+    TEST_CASE("test_spill_envelope_memory_roundtrip", "offload", "src/fa_runtime.c (versioned memory spill envelope), fa_Runtime_serializeMemory/deserializeMemory", test_spill_envelope_memory_roundtrip),
     TEST_CASE("test_wasm_sample_arithmetic", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic),
     TEST_CASE("test_wasm_sample_arithmetic_mul_add", "wasm-sample", "wasm_samples/build/arithmetic.wasm", test_wasm_sample_arithmetic_mul_add),
     TEST_CASE("test_wasm_sample_control_flow", "wasm-sample", "wasm_samples/build/control_flow.wasm", test_wasm_sample_control_flow),

@@ -10,21 +10,15 @@
 #define FAYASM_SAMPLE_WASM_PATH "/sdcard/app.wasm"
 #endif
 
-#define JIT_MAGIC 0x54494A46u
-#define JIT_VERSION 1u
-#define MEM_MAGIC 0x4D454D46u
-
-typedef struct {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t reserved;
-    uint32_t count;
-} JitFileHeader;
-
-typedef struct {
-    uint32_t magic;
-    uint64_t size;
-} MemFileHeader;
+/*
+ * Persistence uses the runtime-wide versioned spill envelope (FA_SPILL_*),
+ * shared by every host: blobs are produced by fa_jit_program_serialize /
+ * fa_Runtime_serializeMemory and consumed by the matching deserialize calls.
+ * The envelope carries its own magic/version/kind/size in fixed little-endian
+ * byte order, so the on-SD format is portable across boots and architectures
+ * without any hand-rolled struct layout. JIT blobs store opcode streams (never
+ * raw function pointers) and rebuild microcode on load.
+ */
 
 static void make_jit_path(char* out, size_t out_size, uint32_t func_index) {
     snprintf(out, out_size, "/sdcard/fayasm_jit_%u.bin", func_index);
@@ -32,6 +26,54 @@ static void make_jit_path(char* out, size_t out_size, uint32_t func_index) {
 
 static void make_mem_path(char* out, size_t out_size, uint32_t mem_index) {
     snprintf(out, out_size, "/sdcard/fayasm_mem_%u.bin", mem_index);
+}
+
+/* Writes a finished spill blob to SD. */
+static int write_blob_file(const char* path, const uint8_t* blob, size_t size) {
+    FILE* file = fopen(path, "wb");
+    if (!file) {
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    if (size > 0 && fwrite(blob, 1, size, file) != size) {
+        fclose(file);
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    fclose(file);
+    return FA_RUNTIME_OK;
+}
+
+/* Reads an entire spill blob from SD into a freshly allocated buffer. */
+static int read_blob_file(const char* path, uint8_t** blob_out, size_t* size_out) {
+    *blob_out = NULL;
+    *size_out = 0;
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    long length = ftell(file);
+    if (length < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    size_t size = (size_t)length;
+    uint8_t* blob = (uint8_t*)malloc(size > 0 ? size : 1);
+    if (!blob) {
+        fclose(file);
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    if (size > 0 && fread(blob, 1, size, file) != size) {
+        free(blob);
+        fclose(file);
+        return FA_RUNTIME_ERR_STREAM;
+    }
+    fclose(file);
+    *blob_out = blob;
+    *size_out = size;
+    return FA_RUNTIME_OK;
 }
 
 static int jit_spill(fa_Runtime* runtime,
@@ -42,36 +84,24 @@ static int jit_spill(fa_Runtime* runtime,
     (void)runtime;
     (void)program_bytes;
     (void)user_data;
-    if (!program || !program->ops || program->count == 0 || program->count > UINT32_MAX) {
+    size_t needed = fa_jit_program_serialized_size(program);
+    if (needed == 0) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    uint8_t* opcodes = (uint8_t*)calloc(program->count, sizeof(uint8_t));
-    if (!opcodes) {
+    uint8_t* blob = (uint8_t*)malloc(needed);
+    if (!blob) {
         return FA_RUNTIME_ERR_OUT_OF_MEMORY;
     }
-    size_t opcode_count = 0;
-    if (!fa_jit_program_export_opcodes(program, opcodes, program->count, &opcode_count) ||
-        opcode_count != program->count) {
-        free(opcodes);
+    size_t written = 0;
+    if (!fa_jit_program_serialize(program, blob, needed, &written) || written != needed) {
+        free(blob);
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
     char path[64];
     make_jit_path(path, sizeof(path), function_index);
-    FILE* file = fopen(path, "wb");
-    if (!file) {
-        free(opcodes);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    JitFileHeader header = { JIT_MAGIC, JIT_VERSION, 0, (uint32_t)opcode_count };
-    if (fwrite(&header, sizeof(header), 1, file) != 1 ||
-        fwrite(opcodes, sizeof(uint8_t), opcode_count, file) != opcode_count) {
-        free(opcodes);
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    free(opcodes);
-    fclose(file);
-    return FA_RUNTIME_OK;
+    int status = write_blob_file(path, blob, written);
+    free(blob);
+    return status;
 }
 
 static int jit_load(fa_Runtime* runtime,
@@ -85,38 +115,18 @@ static int jit_load(fa_Runtime* runtime,
     }
     char path[64];
     make_jit_path(path, sizeof(path), function_index);
-    FILE* file = fopen(path, "rb");
-    if (!file) {
-        return FA_RUNTIME_ERR_STREAM;
+    uint8_t* blob = NULL;
+    size_t size = 0;
+    int status = read_blob_file(path, &blob, &size);
+    if (status != FA_RUNTIME_OK) {
+        return status;
     }
-    JitFileHeader header = {0};
-    if (fread(&header, sizeof(header), 1, file) != 1 ||
-        header.magic != JIT_MAGIC ||
-        header.version != JIT_VERSION) {
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    if (header.count == 0) {
-        fclose(file);
-        return FA_RUNTIME_ERR_INVALID_ARGUMENT;
-    }
-    uint8_t* opcodes = (uint8_t*)calloc(header.count, sizeof(uint8_t));
-    if (!opcodes) {
-        fclose(file);
-        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
-    }
-    if (fread(opcodes, sizeof(uint8_t), header.count, file) != header.count) {
-        free(opcodes);
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    if (!fa_jit_program_import_opcodes(opcodes, header.count, program_out)) {
-        free(opcodes);
-        fclose(file);
+    /* Validates magic/version/kind and rebuilds microcode from the opcodes. */
+    if (!fa_jit_program_deserialize(blob, size, program_out)) {
+        free(blob);
         return FA_RUNTIME_ERR_TRAP;
     }
-    free(opcodes);
-    fclose(file);
+    free(blob);
     return FA_RUNTIME_OK;
 }
 
@@ -124,29 +134,28 @@ static int memory_spill(fa_Runtime* runtime,
                         uint32_t memory_index,
                         const fa_RuntimeMemory* memory,
                         void* user_data) {
-    (void)runtime;
     (void)user_data;
     if (!memory || !memory->data || memory->size_bytes == 0) {
         return FA_RUNTIME_OK;
     }
-    if (memory->size_bytes > SIZE_MAX) {
+    size_t needed = fa_Runtime_serializedMemorySize(runtime, memory_index);
+    if (needed == 0) {
         return FA_RUNTIME_ERR_UNSUPPORTED;
     }
-    const size_t bytes = (size_t)memory->size_bytes;
+    uint8_t* blob = (uint8_t*)malloc(needed);
+    if (!blob) {
+        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
+    }
+    size_t written = 0;
+    if (!fa_Runtime_serializeMemory(runtime, memory_index, blob, needed, &written) || written != needed) {
+        free(blob);
+        return FA_RUNTIME_ERR_STREAM;
+    }
     char path[64];
     make_mem_path(path, sizeof(path), memory_index);
-    FILE* file = fopen(path, "wb");
-    if (!file) {
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    MemFileHeader header = { MEM_MAGIC, memory->size_bytes };
-    if (fwrite(&header, sizeof(header), 1, file) != 1 ||
-        fwrite(memory->data, 1, bytes, file) != bytes) {
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    fclose(file);
-    return FA_RUNTIME_OK;
+    int status = write_blob_file(path, blob, written);
+    free(blob);
+    return status;
 }
 
 static int memory_load(fa_Runtime* runtime,
@@ -157,37 +166,20 @@ static int memory_load(fa_Runtime* runtime,
     if (!runtime || !memory || memory->size_bytes == 0) {
         return FA_RUNTIME_OK;
     }
-    if (memory->size_bytes > SIZE_MAX) {
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    const size_t bytes = (size_t)memory->size_bytes;
     char path[64];
     make_mem_path(path, sizeof(path), memory_index);
-    FILE* file = fopen(path, "rb");
-    if (!file) {
+    uint8_t* blob = NULL;
+    size_t size = 0;
+    int status = read_blob_file(path, &blob, &size);
+    if (status != FA_RUNTIME_OK) {
+        return status;
+    }
+    /* Restores size/flags/bytes and re-attaches the buffer to the memory. */
+    if (!fa_Runtime_deserializeMemory(runtime, memory_index, blob, size)) {
+        free(blob);
         return FA_RUNTIME_ERR_STREAM;
     }
-    MemFileHeader header = {0};
-    if (fread(&header, sizeof(header), 1, file) != 1 || header.magic != MEM_MAGIC) {
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    if (header.size != memory->size_bytes) {
-        fclose(file);
-        return FA_RUNTIME_ERR_UNSUPPORTED;
-    }
-    memory->data = (uint8_t*)runtime->malloc((int)memory->size_bytes);
-    if (!memory->data) {
-        fclose(file);
-        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
-    }
-    if (fread(memory->data, 1, bytes, file) != bytes) {
-        runtime->free(memory->data);
-        memory->data = NULL;
-        fclose(file);
-        return FA_RUNTIME_ERR_STREAM;
-    }
-    fclose(file);
+    free(blob);
     return FA_RUNTIME_OK;
 }
 

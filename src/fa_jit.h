@@ -10,6 +10,75 @@
 #define FA_JIT_MAX_STEPS_PER_OP 4
 #endif
 
+/* ------------------------------------------------------------------------- *
+ * Runtime-wide spill/load persistence envelope.
+ *
+ * Spill blobs (JIT opcode programs, linear memory) all begin with a fixed
+ * 16-byte little-endian header so a single, versioned format persists across
+ * boots and architectures. Multi-byte fields are encoded explicitly in
+ * little-endian byte order (no struct packing / host-endianness assumptions),
+ * which is what makes the blobs portable on embedded targets. Raw function
+ * pointers are never serialized: JIT programs persist as opcode streams and are
+ * recompiled to microcode on load.
+ *
+ * Header layout:
+ *   offset 0  u32  magic           (FA_SPILL_MAGIC)
+ *   offset 4  u16  version         (FA_SPILL_VERSION)
+ *   offset 6  u16  kind            (fa_SpillKind)
+ *   offset 8  u64  payload_bytes   (bytes following the header)
+ * ------------------------------------------------------------------------- */
+#define FA_SPILL_MAGIC        0x4D535946u /* 'F''Y''S''M' little-endian */
+#define FA_SPILL_VERSION      1u
+#define FA_SPILL_HEADER_BYTES 16u
+
+typedef enum {
+    FA_SPILL_KIND_JIT_OPCODES = 1,
+    FA_SPILL_KIND_MEMORY = 2
+} fa_SpillKind;
+
+/* Little-endian primitive accessors shared by every spill payload so the
+   on-disk byte order is fixed regardless of host endianness. */
+static inline void fa_spill_put_u16(uint8_t* p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+static inline void fa_spill_put_u32(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+static inline void fa_spill_put_u64(uint8_t* p, uint64_t v) {
+    for (int i = 0; i < 8; ++i) {
+        p[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
+    }
+}
+static inline uint16_t fa_spill_get_u16(const uint8_t* p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+static inline uint32_t fa_spill_get_u32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static inline uint64_t fa_spill_get_u64(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) {
+        v |= (uint64_t)p[i] << (8 * i);
+    }
+    return v;
+}
+
+/* Writes the shared spill envelope. Returns FA_SPILL_HEADER_BYTES on success
+   (the number of bytes written) or 0 if the buffer is too small. */
+size_t fa_spill_write_header(uint8_t* out, size_t capacity, uint16_t kind, uint64_t payload_bytes);
+
+/* Validates magic/version and that payload_bytes fits within the buffer.
+   Returns false on any mismatch; on success reports kind + payload size. */
+bool fa_spill_read_header(const uint8_t* in,
+                          size_t size,
+                          uint16_t* kind_out,
+                          uint64_t* payload_bytes_out);
+
 typedef enum {
     FA_JIT_TIER_OFF = 0,
     FA_JIT_TIER_MICROCODE = 1,
@@ -98,4 +167,14 @@ bool fa_jit_program_export_opcodes(const fa_JitProgram* program,
                                    size_t* opcode_count_out);
 bool fa_jit_program_import_opcodes(const uint8_t* opcodes, size_t opcode_count, fa_JitProgram* program_out);
 size_t fa_jit_program_estimate_bytes(const fa_JitProgram* program);
+
+/* Versioned spill serialization for a prepared program. The blob is the shared
+   spill envelope (kind FA_SPILL_KIND_JIT_OPCODES) followed by the opcode stream,
+   so it persists across boots and rebuilds microcode on load. */
+size_t fa_jit_program_serialized_size(const fa_JitProgram* program);
+bool fa_jit_program_serialize(const fa_JitProgram* program,
+                              uint8_t* out,
+                              size_t capacity,
+                              size_t* written_out);
+bool fa_jit_program_deserialize(const uint8_t* buffer, size_t size, fa_JitProgram* program_out);
 OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job);

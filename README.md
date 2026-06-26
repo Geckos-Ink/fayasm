@@ -23,7 +23,7 @@ fayasm already supports a substantial runtime slice:
 - Scalar integer<->float conversions including the non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`, `0xFC 0x00`–`0x07`) that toolchains emit by default for `(int)`/`(long)` casts of floats.
 - SIMD core + relaxed opcode coverage wired through `fa_ops.*` (with active regression tests).
 - Host import bindings for functions, memories, and tables; dynamic-library bindings on supported desktop targets.
-- JIT/microcode preparation scaffolding (`fa_jit.*`) with per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory.
+- JIT/microcode preparation scaffolding (`fa_jit.*`) with per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory, plus a runtime-wide versioned spill envelope (`FA_SPILL_*`) for portable, endianness-stable persistence of JIT programs and memory.
 - `fa_ops.*` now routes control/local/global/ref/table plus `0xFC` bulk-memory/table families through prebuilt delegate tables, and the `0xFD` SIMD/relaxed-SIMD prefix dispatches through a prebuilt family-handler table (`g_simd_dispatch`) instead of a 347-case switch tower, reducing per-call dispatch to a single indexed lookup.
 
 ## Quickstart (Native, Recommended)
@@ -155,7 +155,7 @@ Notes:
 
 ### Near-term focus
 
-- Standardize runtime-wide spill/load persistence conventions for versioned opcode + memory payloads.
+- Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
 - Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
 - Expand smoke coverage using `wasm_samples/` modules.
 - Validate repeated offload cycles on low-RAM targets.

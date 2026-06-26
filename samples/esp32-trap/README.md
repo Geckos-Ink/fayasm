@@ -8,7 +8,7 @@ What it shows:
 - Linear memory spill/load hooks that move WASM memory to SD on demand.
 
 Notes:
-- The JIT spill/load in `main.c` writes a versioned opcode stream (`JIT_MAGIC` + version + opcodes), then rebuilds microcode on load. This avoids persisting raw function pointers across boots.
+- The spill/load hooks in `main.c` use the runtime-wide versioned spill envelope (`FA_SPILL_*`): `fa_jit_program_serialize`/`fa_jit_program_deserialize` for JIT programs and `fa_Runtime_serializeMemory`/`fa_Runtime_deserializeMemory` for linear memory. Each blob carries its own magic/version/kind/size in fixed little-endian byte order, so the SD format is portable across boots and architectures without any hand-rolled struct layout. JIT blobs persist opcode streams (never raw function pointers) and rebuild microcode on load.
 - The sample uses `/sdcard` paths. Mount your SD card there before running.
 
 ## SD Wear / Performance / Retention Guidance
@@ -22,8 +22,8 @@ Use this sample as a baseline, then tune for your board and SD profile:
    - Keep a small in-RAM dirty map and spill only changed ranges where possible.
    - Batch writes (single larger write is usually better than many tiny writes).
 3. Validate persistence:
-   - Add a payload checksum (CRC32 or stronger) and reject corrupted blobs on load.
-   - Keep a version field (already present for JIT blobs) and migrate or invalidate old records safely.
+   - Add a payload checksum (CRC32 or stronger) and reject corrupted blobs on load (the shared envelope already validates magic/version/kind/size and rejects truncated blobs).
+   - The shared envelope version field (`FA_SPILL_VERSION`) is bumped centrally; migrate or invalidate old records safely when it changes.
 4. Plan retention behavior:
    - Decide upfront if offload is a cache (rebuild on miss) or durable state (must survive reboot).
    - For durable state, use atomic file replacement (write temp + fsync + rename).

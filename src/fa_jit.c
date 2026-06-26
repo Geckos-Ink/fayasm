@@ -318,6 +318,110 @@ bool fa_jit_program_import_opcodes(const uint8_t* opcodes, size_t opcode_count, 
     return fa_jit_prepare_program_from_opcodes(opcodes, opcode_count, program_out);
 }
 
+/* ------------------------------------------------------------------------- *
+ * Shared spill envelope (see fa_jit.h for the layout). Both the JIT opcode
+ * serializer below and the runtime memory serializer encode through these so
+ * every spill blob carries the same versioned, little-endian header.
+ * ------------------------------------------------------------------------- */
+size_t fa_spill_write_header(uint8_t* out, size_t capacity, uint16_t kind, uint64_t payload_bytes) {
+    if (!out || capacity < FA_SPILL_HEADER_BYTES) {
+        return 0;
+    }
+    fa_spill_put_u32(out + 0, FA_SPILL_MAGIC);
+    fa_spill_put_u16(out + 4, (uint16_t)FA_SPILL_VERSION);
+    fa_spill_put_u16(out + 6, kind);
+    fa_spill_put_u64(out + 8, payload_bytes);
+    return FA_SPILL_HEADER_BYTES;
+}
+
+bool fa_spill_read_header(const uint8_t* in,
+                          size_t size,
+                          uint16_t* kind_out,
+                          uint64_t* payload_bytes_out) {
+    if (kind_out) {
+        *kind_out = 0;
+    }
+    if (payload_bytes_out) {
+        *payload_bytes_out = 0;
+    }
+    if (!in || size < FA_SPILL_HEADER_BYTES) {
+        return false;
+    }
+    if (fa_spill_get_u32(in + 0) != FA_SPILL_MAGIC) {
+        return false;
+    }
+    if (fa_spill_get_u16(in + 4) != (uint16_t)FA_SPILL_VERSION) {
+        return false;
+    }
+    uint64_t payload = fa_spill_get_u64(in + 8);
+    /* The declared payload must fit within the remaining buffer. */
+    if (payload > (uint64_t)(size - FA_SPILL_HEADER_BYTES)) {
+        return false;
+    }
+    if (kind_out) {
+        *kind_out = fa_spill_get_u16(in + 6);
+    }
+    if (payload_bytes_out) {
+        *payload_bytes_out = payload;
+    }
+    return true;
+}
+
+size_t fa_jit_program_serialized_size(const fa_JitProgram* program) {
+    if (!program || program->count == 0) {
+        return 0;
+    }
+    if (program->count > SIZE_MAX - FA_SPILL_HEADER_BYTES) {
+        return 0;
+    }
+    return (size_t)FA_SPILL_HEADER_BYTES + program->count;
+}
+
+bool fa_jit_program_serialize(const fa_JitProgram* program,
+                              uint8_t* out,
+                              size_t capacity,
+                              size_t* written_out) {
+    if (written_out) {
+        *written_out = 0;
+    }
+    size_t needed = fa_jit_program_serialized_size(program);
+    if (needed == 0 || !out || capacity < needed) {
+        return false;
+    }
+    if (fa_spill_write_header(out, capacity, (uint16_t)FA_SPILL_KIND_JIT_OPCODES,
+                              (uint64_t)program->count) != FA_SPILL_HEADER_BYTES) {
+        return false;
+    }
+    size_t opcode_count = 0;
+    if (!fa_jit_program_export_opcodes(program, out + FA_SPILL_HEADER_BYTES,
+                                       capacity - FA_SPILL_HEADER_BYTES, &opcode_count) ||
+        opcode_count != program->count) {
+        return false;
+    }
+    if (written_out) {
+        *written_out = needed;
+    }
+    return true;
+}
+
+bool fa_jit_program_deserialize(const uint8_t* buffer, size_t size, fa_JitProgram* program_out) {
+    if (!program_out) {
+        return false;
+    }
+    uint16_t kind = 0;
+    uint64_t payload = 0;
+    if (!fa_spill_read_header(buffer, size, &kind, &payload)) {
+        return false;
+    }
+    if (kind != (uint16_t)FA_SPILL_KIND_JIT_OPCODES) {
+        return false;
+    }
+    if (payload == 0 || payload > (uint64_t)SIZE_MAX) {
+        return false;
+    }
+    return fa_jit_program_import_opcodes(buffer + FA_SPILL_HEADER_BYTES, (size_t)payload, program_out);
+}
+
 OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job) {
     if (!prepared || !prepared->descriptor) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;

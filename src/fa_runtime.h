@@ -210,3 +210,20 @@ int fa_Runtime_jitLoadProgram(fa_Runtime* runtime, uint32_t function_index);
 int fa_Runtime_spillMemory(fa_Runtime* runtime, uint32_t memory_index);
 int fa_Runtime_loadMemory(fa_Runtime* runtime, uint32_t memory_index);
 int fa_Runtime_ensureMemoryLoaded(fa_Runtime* runtime, uint32_t memory_index);
+
+/* Versioned spill serialization for linear memory. The blob is the shared spill
+   envelope (kind FA_SPILL_KIND_MEMORY) followed by a fixed memory sub-header
+   (flags + size) and the raw bytes, so a loaded blob restores the post-grow
+   size and memory64-ness without external bookkeeping. Spill/load hooks can use
+   these to produce a portable, endianness-stable on-storage format. */
+#define FA_SPILL_MEMORY_BODY_HEADER_BYTES 16u
+size_t fa_Runtime_serializedMemorySize(const fa_Runtime* runtime, uint32_t memory_index);
+bool fa_Runtime_serializeMemory(fa_Runtime* runtime,
+                                uint32_t memory_index,
+                                uint8_t* out,
+                                size_t capacity,
+                                size_t* written_out);
+bool fa_Runtime_deserializeMemory(fa_Runtime* runtime,
+                                  uint32_t memory_index,
+                                  const uint8_t* buffer,
+                                  size_t size);
