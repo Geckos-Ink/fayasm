@@ -1217,6 +1217,92 @@ static int test_jit_cache_dispatch(void) {
     return 0;
 }
 
+/* Regression: function bodies with more recorded opcodes than the JIT budget
+ * cap (max_ops_per_chunk) must not re-prepare their microcode program on
+ * every executed instruction. Builds a body with >1200 opcodes (beyond the
+ * default 512 cap), runs it twice, and asserts the second execution performs
+ * zero program (re)builds (jit_program_prepare_calls resets per execution). */
+static int test_jit_large_body_prepare_once(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    /* Prescan would prepare the function at attach time and hide the
+     * first-execution prepare this test asserts on. */
+    test_set_env("FAYASM_JIT_PRESCAN", "0");
+    test_set_env("FAYASM_JIT_PRESCAN_FORCE", "0");
+
+    ByteBuffer instructions = {0};
+    for (int i = 0; i < 600; ++i) {
+        if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 1) ||
+            !bb_write_byte(&instructions, 0x1A)) { /* i32.const 1; drop */
+            bb_free(&instructions);
+            return 1;
+        }
+    }
+    if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 42) ||
+        !bb_write_byte(&instructions, 0x0B)) {
+        bb_free(&instructions);
+        return 1;
+    }
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module(&module_bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+
+    WasmModule* module = load_module_from_bytes(module_bytes.data, module_bytes.size);
+    if (!module) {
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    fa_Runtime* runtime = fa_Runtime_init();
+    if (!runtime) {
+        wasm_module_free(module);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_executed_ops = 1;
+    runtime->jit_context.config.min_advantage_score = 0.0f;
+
+    if (fa_Runtime_attachModule(runtime, module) != FA_RUNTIME_OK) {
+        fa_Runtime_free(runtime);
+        wasm_module_free(module);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    fa_Job* job = fa_Runtime_createJob(runtime);
+    if (!job) {
+        cleanup_job(runtime, NULL, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* First execution records opcodes and prepares (up to the budget cap). */
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK || !fa_ops_microcode_enabled() ||
+        runtime->jit_program_prepare_calls == 0) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    /* Second execution: everything preparable is prepared; any rebuild here
+     * means the capped-body staleness check regressed. */
+    status = fa_Runtime_executeJob(runtime, job, 0);
+    int ok = (status == FA_RUNTIME_OK);
+    if (ok) {
+        const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+        ok = (value && value->kind == fa_job_value_i32 && value->payload.i32_value == 42);
+    }
+    if (ok && runtime->jit_program_prepare_calls != 0) {
+        ok = 0;
+    }
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return ok ? 0 : 1;
+}
+
 static int test_microcode_float_select(void) {
     test_set_env("FAYASM_MICROCODE", "1");
     if (!fa_ops_microcode_enabled()) {
@@ -3142,6 +3228,116 @@ static int test_wasm_sample_table_lookup(void) {
                                           args,
                                           (uint32_t)(sizeof(args) / sizeof(args[0])),
                                           sample_arg_i32(25));
+}
+
+/* Expected values for the stats_suite fixture come from a native reference
+ * build of wasm_samples/src/stats_suite.c (cc -O2 -ffp-contract=off, so no
+ * FMA contraction diverges from wasm f64 semantics); fayasm reproduces them
+ * bit-identically under both the emcc and rustc fixture builds, so the 1e-9
+ * f64 tolerance in run_wasm_sample_export_checked has plenty of slack. */
+
+/* PRNG mean over 4096 uniform draws; tight f64 accumulate loop. */
+static int test_wasm_sample_stats_mean(void) {
+    const char* exports[] = { "sample_stats_mean", "_sample_stats_mean" };
+    fa_JobValue args[] = { sample_arg_i32(4096) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_mean",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(0.5032667011837475));
+}
+
+/* One-pass Welford variance: dependent f64 div/mul/sub chains. */
+static int test_wasm_sample_stats_variance(void) {
+    const char* exports[] = { "sample_stats_variance", "_sample_stats_variance" };
+    fa_JobValue args[] = { sample_arg_i32(4096) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_variance",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(0.08247046371009549));
+}
+
+/* Least-squares slope of y = 3x + 7 + bounded noise; ~3 for n=2048. */
+static int test_wasm_sample_stats_linreg_slope(void) {
+    const char* exports[] = { "sample_linreg_slope", "_sample_linreg_slope" };
+    fa_JobValue args[] = { sample_arg_i32(2048) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_linreg_slope",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(3.0000028610236313));
+}
+
+/* Pearson correlation with two Newton-sqrt normalizations. */
+static int test_wasm_sample_stats_pearson_r(void) {
+    const char* exports[] = { "sample_pearson_r", "_sample_pearson_r" };
+    fa_JobValue args[] = { sample_arg_i32(4096) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_pearson_r",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(0.89458235693681454));
+}
+
+/* Monte Carlo pi with a fixed seed: hit count is integer-exact. */
+static int test_wasm_sample_stats_monte_carlo_pi(void) {
+    const char* exports[] = { "sample_monte_carlo_pi", "_sample_monte_carlo_pi" };
+    fa_JobValue args[] = { sample_arg_i32(10000), sample_arg_i32(42) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_monte_carlo_pi",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(3.1551999999999998));
+}
+
+/* Sieve of Eratosthenes (memset -> memory.fill): pi(10000) == 1229. */
+static int test_wasm_sample_stats_prime_count(void) {
+    const char* exports[] = { "sample_prime_count", "_sample_prime_count" };
+    fa_JobValue args[] = { sample_arg_i32(10000) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_prime_count",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i32(1229));
+}
+
+/* 16x16 integer matrix multiply + position-weighted i64 checksum. */
+static int test_wasm_sample_stats_matrix_checksum(void) {
+    const char* exports[] = { "sample_matrix_checksum", "_sample_matrix_checksum" };
+    fa_JobValue args[] = { sample_arg_i32(16) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_matrix_checksum",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_i64(-39609LL));
+}
+
+/* Single-call pipeline combining every stats kernel; locks the whole module. */
+static int test_wasm_sample_stats_pipeline(void) {
+    const char* exports[] = { "sample_stats_pipeline", "_sample_stats_pipeline" };
+    fa_JobValue args[] = { sample_arg_i32(2000) };
+    return run_wasm_sample_export_checked("stats_suite.wasm",
+                                          "test_wasm_sample_stats_pipeline",
+                                          exports,
+                                          sizeof(exports) / sizeof(exports[0]),
+                                          args,
+                                          (uint32_t)(sizeof(args) / sizeof(args[0])),
+                                          sample_arg_f64(7.9224987970405749));
 }
 
 static int test_div_by_zero_trap(void) {
@@ -6909,6 +7105,7 @@ static int test_local_f32_default(void) {
 #define TEST_CASE(name, area, hint, fn) { name, area, hint, fn }
 static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
+    TEST_CASE("test_jit_large_body_prepare_once", "jit", "src/fa_runtime.c (runtime_jit_maybe_prepare capped-body staleness)", test_jit_large_body_prepare_once),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
     TEST_CASE("test_jit_program_opcode_roundtrip", "jit", "src/fa_jit.c (opcode serialization)", test_jit_program_opcode_roundtrip),
     TEST_CASE("test_spill_envelope_jit_roundtrip", "offload", "src/fa_jit.c (versioned spill envelope), fa_jit_program_serialize/deserialize", test_spill_envelope_jit_roundtrip),
@@ -6943,6 +7140,14 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_sort_checksum", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_sort_checksum),
     TEST_CASE("test_wasm_sample_buffer_pipeline", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_buffer_pipeline),
     TEST_CASE("test_wasm_sample_table_lookup", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_table_lookup),
+    TEST_CASE("test_wasm_sample_stats_mean", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_mean),
+    TEST_CASE("test_wasm_sample_stats_variance", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_variance),
+    TEST_CASE("test_wasm_sample_stats_linreg_slope", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_linreg_slope),
+    TEST_CASE("test_wasm_sample_stats_pearson_r", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_pearson_r),
+    TEST_CASE("test_wasm_sample_stats_monte_carlo_pi", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_monte_carlo_pi),
+    TEST_CASE("test_wasm_sample_stats_prime_count", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_prime_count),
+    TEST_CASE("test_wasm_sample_stats_matrix_checksum", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_matrix_checksum),
+    TEST_CASE("test_wasm_sample_stats_pipeline", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_pipeline),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),

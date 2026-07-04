@@ -59,6 +59,11 @@ typedef struct fa_JitProgramCacheEntry {
     fa_JitProgram program;
     size_t program_bytes;
     size_t prepared_count;
+    /* Number of recorded source opcodes consumed by the last successful
+     * prepare. Compared against the budget-capped target (not the raw
+     * recorded count) so bodies larger than max_ops_per_chunk are not
+     * re-prepared on every executed instruction. */
+    size_t prepared_source_count;
     bool ready;
     bool spilled;
 } fa_JitProgramCacheEntry;
@@ -1574,6 +1579,7 @@ static void runtime_jit_cache_release_program(fa_Runtime* runtime, fa_JitProgram
     fa_jit_program_free(&entry->program);
     entry->program_bytes = 0;
     entry->prepared_count = 0;
+    entry->prepared_source_count = 0;
     entry->ready = false;
 }
 
@@ -1694,6 +1700,8 @@ static int runtime_jit_cache_load_entry(fa_Runtime* runtime, fa_JitProgramCacheE
     entry->program_bytes = bytes;
     runtime->jit_cache_bytes += bytes;
     entry->prepared_count = entry->program.count;
+    /* Loaded programs are serialized 1:1 from opcode streams. */
+    entry->prepared_source_count = entry->program.count;
     entry->ready = entry->program.count > 0;
     entry->spilled = false;
     return entry->ready ? FA_RUNTIME_OK : FA_RUNTIME_ERR_INVALID_ARGUMENT;
@@ -2183,6 +2191,7 @@ static bool runtime_jit_prepare_program(fa_Runtime* runtime, fa_JitProgramCacheE
     if (!runtime || !entry || opcode_count == 0) {
         return false;
     }
+    runtime->jit_program_prepare_calls++;
     const size_t estimate_bytes = runtime_jit_program_bytes_for_ops(opcode_count);
     if (!runtime_jit_cache_reserve_bytes(runtime, estimate_bytes, entry->func_index)) {
         return false;
@@ -2203,6 +2212,7 @@ static bool runtime_jit_prepare_program(fa_Runtime* runtime, fa_JitProgramCacheE
     entry->program_bytes = program_bytes;
     runtime->jit_cache_bytes += program_bytes;
     entry->prepared_count = entry->program.count;
+    entry->prepared_source_count = opcode_count;
     entry->ready = true;
     entry->spilled = false;
     return true;
@@ -2227,13 +2237,16 @@ static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* 
             return;
         }
     }
-    if (entry->prepared_count == entry->count && entry->ready) {
-        return;
-    }
     size_t opcode_count = entry->count;
     if (runtime->jit_context.decision.budget.max_ops_per_chunk > 0 &&
         opcode_count > runtime->jit_context.decision.budget.max_ops_per_chunk) {
         opcode_count = runtime->jit_context.decision.budget.max_ops_per_chunk;
+    }
+    /* Compare against the budget-capped target: bodies larger than
+     * max_ops_per_chunk stay prepared once their capped prefix is built,
+     * instead of re-preparing on every executed instruction. */
+    if (entry->ready && entry->prepared_source_count >= opcode_count) {
+        return;
     }
     (void)runtime_jit_prepare_program(runtime, entry, opcode_count);
 }
@@ -3166,6 +3179,7 @@ fa_Runtime* fa_Runtime_init(void) {
     fa_jit_context_init(&runtime->jit_context, NULL);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
+    runtime->jit_program_prepare_calls = 0;
     runtime->jit_cache_bytes = 0;
     runtime->jit_cache_eviction_cursor = 0;
     runtime->jit_cache_prescanned = false;
@@ -4804,6 +4818,7 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
     }
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
+    runtime->jit_program_prepare_calls = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
     if (runtime->jit_context.config.prescan_force && !runtime->jit_cache_prescanned) {
         int prescan_status = runtime_jit_cache_prescan(runtime);

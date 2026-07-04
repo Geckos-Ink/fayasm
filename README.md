@@ -83,6 +83,19 @@ build/bin/fayasm_run wasm_samples/build/memory_ops.wasm sample_buffer_pipeline i
 # result[0] (i32): 1380176480   (memcpy/memset -> memory.copy/memory.fill)
 ```
 
+The statistical suite (`stats_suite.wasm`) doubles as a benchmark workload:
+
+```bash
+build/bin/fayasm_run wasm_samples/build/stats_suite.wasm sample_monte_carlo_pi i32:10000 i32:42
+# result[0] (f64): 3.1551999999999998
+
+build/bin/fayasm_run wasm_samples/build/stats_suite.wasm sample_prime_count i32:10000
+# result[0] (i32): 1229
+
+build/bin/fayasm_run wasm_samples/build/stats_suite.wasm sample_stats_pipeline i32:2000
+# result[0] (f64): 7.9224987970405749   (all kernels in one call)
+```
+
 Supported CLI arg types:
 
 - `i32:<value>`
@@ -140,6 +153,41 @@ Notes:
 - `FAYASM_JIT_PRESCAN=1` to enable per-function prescan.
 - `FAYASM_JIT_PRESCAN_FORCE=1` to force prescan mode.
 - `FAYASM_TARGET_RAM_BYTES` / `FAYASM_TARGET_CPU_COUNT` compile-time hints for embedded probes.
+
+## Performance Snapshot
+
+Measured 2026-07 on an Apple M1 Pro (16 GB) with the `stats_suite.wasm`
+fixture (Emscripten 5.0.3, `-O2`), best-of-3 wall time through
+`fayasm_run` with the ~10 ms startup baseline subtracted, against the same C
+compiled natively (`cc -O2 -ffp-contract=off`). Full data and methodology:
+`studies/runtime/stats_benchmarks.md`.
+
+| Workload | fayasm | native -O2 | slowdown |
+| --- | ---: | ---: | ---: |
+| Welford variance, 500k samples | 4.3 s | 3.7 ms | ~1,150x |
+| Monte Carlo pi, 500k points | 5.5 s | 2.5 ms | ~2,100x |
+| Sieve of Eratosthenes, n=100k | 0.7 s | 0.26 ms | ~2,900x |
+| 40x40 int matrix multiply | 0.32 s | 0.03 ms | ~11,500x |
+| Combined stats pipeline, n=100k | 5.2 s | 1.9 ms | ~2,700x |
+
+What the numbers say:
+
+- The structural interpreter executes roughly **5-7 million wasm
+  instructions/second** (~150-200 ns/op) on this class of hardware. fayasm
+  optimizes for clarity and hackability, not raw speed; the worst ratios are
+  kernels native LLVM auto-vectorizes.
+- **Numerical results are bit-identical to native IEEE semantics**: every
+  stats kernel (dependent Welford chains, Newton sqrt loops, PRNG-driven
+  Monte Carlo) reproduces the native reference exactly, under both the emcc
+  and rustc fixture builds.
+- Microcode-prepared dispatch is currently within +/-5% of plain descriptor
+  dispatch on real workloads — extensions to microcode coverage should be
+  justified by measured wins on these fixtures.
+- Benchmarking exposed (and fixed) a real defect: function bodies larger than
+  the JIT budget cap (512 recorded opcodes) were re-preparing their microcode
+  program on **every executed instruction** (~9.5x slowdown on the inlined
+  pipeline body). The runtime now tracks the budget-capped prepared count
+  (`test_jit_large_body_prepare_once` guards the fix).
 
 ## Architecture At a Glance
 

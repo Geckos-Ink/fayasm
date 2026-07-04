@@ -133,6 +133,11 @@ typedef struct fa_Runtime {
     struct fa_JitProgramCacheEntry* jit_cache;
     uint32_t jit_cache_count;
     uint64_t jit_prepared_executions;
+    /* Number of microcode program (re)builds in the current execution; reset
+     * alongside jit_prepared_executions. Steady-state executions of already
+     * prepared functions must keep this at 0 (regression guard for the
+     * per-instruction re-preparation of >max_ops_per_chunk bodies). */
+    uint64_t jit_program_prepare_calls;
     size_t jit_cache_bytes;
     uint32_t jit_cache_eviction_cursor;
     bool jit_cache_prescanned;
