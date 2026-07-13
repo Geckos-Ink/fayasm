@@ -3230,6 +3230,34 @@ static int test_wasm_sample_table_lookup(void) {
                                           sample_arg_i32(25));
 }
 
+static int test_wasm_sample_signed_divrem(void) {
+    const char* exports[] = { "sample_signed_divrem", "_sample_signed_divrem" };
+    fa_JobValue args[] = { sample_arg_i32(-100), sample_arg_i32(7) };
+    return run_wasm_sample_export_checked("integer_ops.wasm", "test_wasm_sample_signed_divrem", exports,
+        sizeof(exports) / sizeof(exports[0]), args, 2, sample_arg_i32(-436));
+}
+
+static int test_wasm_sample_i32_bit_mix(void) {
+    const char* exports[] = { "sample_i32_bit_mix", "_sample_i32_bit_mix" };
+    fa_JobValue args[] = { sample_arg_i32(0x12345678) };
+    return run_wasm_sample_export_checked("integer_ops.wasm", "test_wasm_sample_i32_bit_mix", exports,
+        sizeof(exports) / sizeof(exports[0]), args, 1, sample_arg_i32(388709386));
+}
+
+static int test_wasm_sample_i64_bit_mix(void) {
+    const char* exports[] = { "sample_i64_bit_mix", "_sample_i64_bit_mix" };
+    fa_JobValue args[] = { sample_arg_i64(0x123456789LL) };
+    return run_wasm_sample_export_checked("integer_ops.wasm", "test_wasm_sample_i64_bit_mix", exports,
+        sizeof(exports) / sizeof(exports[0]), args, 1, sample_arg_i64(4343721840599439908LL));
+}
+
+static int test_wasm_sample_nested_calls(void) {
+    const char* exports[] = { "sample_nested_calls", "_sample_nested_calls" };
+    fa_JobValue args[] = { sample_arg_i32(1), sample_arg_i32(2), sample_arg_i32(3), sample_arg_i32(4) };
+    return run_wasm_sample_export_checked("integer_ops.wasm", "test_wasm_sample_nested_calls", exports,
+        sizeof(exports) / sizeof(exports[0]), args, 4, sample_arg_i32(42));
+}
+
 /* Expected values for the stats_suite fixture come from a native reference
  * build of wasm_samples/src/stats_suite.c (cc -O2 -ffp-contract=off, so no
  * FMA contraction diverges from wasm f64 semantics); fayasm reproduces them
@@ -7140,6 +7168,10 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_sort_checksum", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_sort_checksum),
     TEST_CASE("test_wasm_sample_buffer_pipeline", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_buffer_pipeline),
     TEST_CASE("test_wasm_sample_table_lookup", "wasm-sample", "wasm_samples/build/memory_ops.wasm", test_wasm_sample_table_lookup),
+    TEST_CASE("test_wasm_sample_signed_divrem", "wasm-sample", "wasm_samples/build/integer_ops.wasm", test_wasm_sample_signed_divrem),
+    TEST_CASE("test_wasm_sample_i32_bit_mix", "wasm-sample", "wasm_samples/build/integer_ops.wasm", test_wasm_sample_i32_bit_mix),
+    TEST_CASE("test_wasm_sample_i64_bit_mix", "wasm-sample", "wasm_samples/build/integer_ops.wasm", test_wasm_sample_i64_bit_mix),
+    TEST_CASE("test_wasm_sample_nested_calls", "wasm-sample", "wasm_samples/build/integer_ops.wasm", test_wasm_sample_nested_calls),
     TEST_CASE("test_wasm_sample_stats_mean", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_mean),
     TEST_CASE("test_wasm_sample_stats_variance", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_variance),
     TEST_CASE("test_wasm_sample_stats_linreg_slope", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_linreg_slope),

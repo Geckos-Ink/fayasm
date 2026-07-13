@@ -3099,7 +3099,9 @@ static int runtime_push_frame(fa_Runtime* runtime,
                                   type ? type->result_types : NULL,
                                   type ? type->num_results : 0,
                                   false,
-                                  0);
+                                  /* Arguments are gone, but operands belonging
+                                   * to the caller may remain below this call. */
+                                  job->stack.size);
     if (status != FA_RUNTIME_OK) {
         runtime_free_frame_resources(frame);
         return status;

@@ -175,6 +175,12 @@ build_all_with_emcc() {
         -Wl,--export=sample_buffer_pipeline \
         -Wl,--export=sample_table_lookup
 
+    build_with_emcc integer_ops.c integer_ops.wasm \
+        -Wl,--export=sample_signed_divrem \
+        -Wl,--export=sample_i32_bit_mix \
+        -Wl,--export=sample_i64_bit_mix \
+        -Wl,--export=sample_nested_calls
+
     # Statistical/algorithmic benchmark suite; -mbulk-memory so the sieve's
     # memset lowers to memory.fill.
     build_with_emcc stats_suite.c stats_suite.wasm \
@@ -215,6 +221,7 @@ if [ -z "${toolchain:-}" ] && command -v "${RUSTC_BIN}" >/dev/null 2>&1; then
     build_with_rustc floating_point.rs floating_point.wasm
     build_with_rustc indirect_dispatch.rs indirect_dispatch.wasm
     build_with_rustc memory_ops.rs memory_ops.wasm
+    build_with_rustc integer_ops.rs integer_ops.wasm
     build_with_rustc stats_suite.rs stats_suite.wasm
     toolchain="rustc (${RUST_TARGET}) fallback"
 fi
@@ -232,4 +239,5 @@ echo "  - ${OUT_DIR}/typed_values.wasm"
 echo "  - ${OUT_DIR}/floating_point.wasm"
 echo "  - ${OUT_DIR}/indirect_dispatch.wasm"
 echo "  - ${OUT_DIR}/memory_ops.wasm"
+echo "  - ${OUT_DIR}/integer_ops.wasm"
 echo "  - ${OUT_DIR}/stats_suite.wasm"

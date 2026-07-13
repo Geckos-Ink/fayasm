@@ -31,6 +31,7 @@ Generated files:
 - `wasm_samples/build/floating_point.wasm` (f32/f64 arithmetic, int<->float conversions incl. `trunc_sat`)
 - `wasm_samples/build/indirect_dispatch.wasm` (function-pointer table -> `call_indirect`; dense switch -> `br_table`)
 - `wasm_samples/build/memory_ops.wasm` (array sort, data-segment lookup, `memcpy`/`memset` -> `memory.copy`/`memory.fill`; built with `-mbulk-memory`)
+- `wasm_samples/build/integer_ops.wasm` (signed division/remainder, i32/i64 rotate/population-count/leading-zero operators, and nested calls that preserve earlier expression operands)
 - `wasm_samples/build/stats_suite.wasm` (statistical/algorithmic benchmark + smoke module: PRNG, mean, Welford variance, linear regression, Pearson correlation, Monte Carlo pi, prime sieve, matrix multiply + i64 checksum, combined pipeline entry; parameterized by `n` so it doubles as a scalable benchmark — see `studies/runtime/stats_benchmarks.md`)
 
 ## Runtime Tests

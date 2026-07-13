@@ -17,7 +17,7 @@ Most runtimes optimize for performance and spec completeness first. fayasm takes
 fayasm already supports a substantial runtime slice:
 
 - Real `.wasm` parsing from disk or memory (`fa_wasm.*`) including types, functions, exports, globals, memories, tables, element segments, and data segments.
-- Runtime execution (`fa_runtime.*`) with call frames, locals/globals, branch stack semantics, multi-value returns, label arity checks, memory64/multi-memory behavior, and trap propagation.
+- Runtime execution (`fa_runtime.*`) with call frames, locals/globals, branch stack semantics, nested-call operand preservation, multi-value returns, label arity checks, memory64/multi-memory behavior, and trap propagation.
 - Reference operations and `call_indirect` with table lookup and signature validation, using encoded funcref storage (`null = 0`, index `n = n + 1`).
 - Bulk memory and table operations, typed element expressions (`ref.func`, `ref.null`, `global.get`), and live imported memory/table rebind after attach.
 - Scalar integer<->float conversions including the non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`, `0xFC 0x00`–`0x07`) that toolchains emit by default for `(int)`/`(long)` casts of floats.
@@ -81,6 +81,9 @@ build/bin/fayasm_run wasm_samples/build/indirect_dispatch.wasm sample_dispatch i
 
 build/bin/fayasm_run wasm_samples/build/memory_ops.wasm sample_buffer_pipeline i32:7 i32:64
 # result[0] (i32): 1380176480   (memcpy/memset -> memory.copy/memory.fill)
+
+build/bin/fayasm_run wasm_samples/build/integer_ops.wasm sample_signed_divrem i32:-100 i32:7
+# result[0] (i32): -436   (signed div/rem with truncation toward zero)
 ```
 
 The statistical suite (`stats_suite.wasm`) doubles as a benchmark workload:
@@ -205,7 +208,7 @@ What the numbers say:
 
 - Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
 - Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
-- Expand smoke coverage using `wasm_samples/` modules.
+- Expand smoke coverage using `wasm_samples/` modules; real-toolchain integer div/rem, bit-count, and rotate coverage now complements the floating-point, indirect-call, and bulk-memory fixtures.
 - Validate repeated offload cycles on low-RAM targets.
 
 ### Medium-term focus
