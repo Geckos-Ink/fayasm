@@ -5,7 +5,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 ## Near-Term
 
 - Spill/load persistence is standardized around the runtime-wide versioned envelope (`FA_SPILL_*`, fixed little-endian header: magic/version/kind/payload) shared by JIT programs (`fa_jit_program_serialize`/`deserialize`) and linear memory (`fa_Runtime_serializeMemory`/`deserializeMemory`); extend the same convention to any further persisted runtime state (e.g. tables/globals) as it lands.
-- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, and now `0xFD` SIMD) are table-driven. Remaining work is folding per-family operator selection into microcode where it pays off — note: the 2026-07 stats benchmarks (`studies/runtime/stats_benchmarks.md`) show prepared-op dispatch within +/-5% of descriptor dispatch on real workloads, so new microcode coverage must be justified by measured wins on the `stats_suite` fixtures.
+- Continue replacing remaining switch/subopcode towers in the focused `src/fa_ops_*.c` families; control/local/global/ref/table, `0xFC`, and `0xFD` SIMD prefix dispatch are table-driven. Remaining work is folding per-family operator selection into microcode where it pays off — note: the 2026-07 stats benchmarks (`studies/runtime/stats_benchmarks.md`) show prepared-op dispatch within +/-5% of descriptor dispatch on real workloads, so new microcode coverage must be justified by measured wins on the `stats_suite` fixtures.
 - Expand runtime smoke coverage using `wasm_samples/` modules (Emscripten primary toolchain, Rust fallback fixtures available).
 - Validate offload behavior under repeated spill/load cycles on low-RAM targets.
 - Reduce per-instruction interpreter overhead (currently ~150-200 ns/op, ~5-7M ops/s on M1-class hardware); candidates: cheaper instruction-context setup/teardown in the main execute loop and lighter operand-stack traffic than the linked-list `fa_JobStack`.
@@ -16,6 +16,8 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
 
 ## Recently Completed
+
+- Split the former monolithic `src/fa_ops.c` into focused C99 translation units for shared typed-value/runtime helpers, core control/scalar operations, numeric microcode, calls/tables, bulk memory/table operations, and SIMD families. `fa_ops.c` now owns only the canonical descriptor registry, resource-gated microcode selection, and public dispatch; `fa_ops_internal.h` keeps cross-family implementation contracts out of the public API.
 
 - Expanded real-toolchain, non-SIMD smoke coverage with the paired `integer_ops.{c,rs}` fixture and fixed callee frame unwinding to retain the caller's pre-existing operand-stack base. Added four parameterized export tests.
 

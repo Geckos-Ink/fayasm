@@ -195,7 +195,7 @@ What the numbers say:
 ## Architecture At a Glance
 
 - `src/fa_runtime.*`: execution loop, frames, locals/globals, memory/table plumbing, trap + spill/load hooks, host bindings.
-- `src/fa_ops.*`: opcode descriptors + dispatch, prebuilt delegate tables for control/local/global/ref/table/`0xFC` bulk ops and the `0xFD` SIMD family handlers (`g_simd_dispatch`), microcode-backed math/bit/select/float-special handlers, and ref ops.
+- `src/fa_ops.c` / `src/fa_ops_*.c`: the central opcode registry and public dispatch, with focused translation units for shared typed-value helpers, control/scalar memory/ref ops, numeric microcode, calls/tables, `0xFC` bulk operations, and `0xFD` SIMD/relaxed-SIMD families.
 - `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution.
 - `src/fa_wasm.*`: parser/loader for module structure and function bodies.
 - `src/fa_wasm_stream.*`: instruction cursor and immediate decoding helpers.
@@ -207,7 +207,7 @@ What the numbers say:
 ### Near-term focus
 
 - Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
-- Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
+- Continue replacing remaining per-family switch/subopcode towers under `src/fa_ops_*.c`; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
 - Expand smoke coverage using `wasm_samples/` modules; real-toolchain integer div/rem, bit-count, and rotate coverage now complements the floating-point, indirect-call, and bulk-memory fixtures.
 - Validate repeated offload cycles on low-RAM targets.
 
@@ -238,7 +238,7 @@ What the numbers say:
 - Keep changes incremental and test-backed.
 - Treat `AGENTS.md` as the operational ownership/contract map: review it after every code change and update it, `README.md`, and `ROADMAP.md` whenever their documented behavior, commands, or priorities change.
 - Add/extend tests for runtime or opcode changes.
-- When editing `src/fa_ops.c`, keep its explanatory section/macro comments updated with the code paths they describe.
+- When editing the `src/fa_ops*.c` family, keep the central dispatch comments and the numeric/SIMD macro-family comments updated with the code paths they describe.
 - Log new research under `studies/` and index it in `AGENTS.md`.
 
 fayasm is intentionally experimental, but the direction is practical: clear runtime internals, solid regression coverage, and a path toward robust low-resource execution.

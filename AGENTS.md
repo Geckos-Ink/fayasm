@@ -23,7 +23,7 @@ When sources disagree, inspect the relevant code and focused test. Fix stale doc
 - After every code edit, review both [`README.md`](README.md) and this handbook. Update every behavioral, architectural, API, ownership, command, or tooling fact made stale by the change; do not add cosmetic churn when no durable fact changed.
 - Keep README `Quickstart`, command examples, performance claims, and `Project Direction` aligned with executable workflows and [`ROADMAP.md`](ROADMAP.md).
 - Update [`ROADMAP.md`](ROADMAP.md) when priorities or status change. Keep only current operational priorities here and link the roadmap for chronology.
-- Keep the explanatory section and macro-family comments in [`src/fa_ops.c`](src/fa_ops.c) synchronized with dispatch behavior; update them instead of deleting them during refactors.
+- Keep the central registry/dispatch comments in [`src/fa_ops.c`](src/fa_ops.c) and the macro-family comments in the focused `src/fa_ops_*.c` files synchronized with behavior; update them instead of deleting them during refactors.
 - Add regression tests with runtime, parser, opcode, persistence, or ABI changes. Run the narrowest relevant filter, then the full harness when practical.
 - Record new research or experiments under [`studies/`](studies/) and add them to the Research Archive subsection below. Consult existing studies before repeating an investigation.
 - Treat `build/`, `build-esp32/`, `build-esp32-compile/`, `build-esp32-cmake/`, and `wasm_samples/build/` as generated output. Most are ignored; never commit the selected build directory even when a custom/default name is not yet covered by `.gitignore`. Change generators or sources, never generated artifacts.
@@ -215,12 +215,46 @@ Defines opcode descriptors, operation callbacks, public descriptor lookup/execut
 
 ### [`src/fa_ops.c`](src/fa_ops.c)
 
-Owns scalar operations, memory/table/ref behavior, prefixed opcode families, SIMD families, descriptor population, and macro-built microcode tables.
+Owns the canonical opcode descriptor registry, resource-gated microcode selection, one-time family initialization, and the public descriptor/microcode dispatch entry points.
 
-- **Key subparts:** `kControlHandlers`, `kLocalHandlers`, `kGlobalHandlers`, `kRefHandlers`, `kTableHandlers`, `kBulkHandlers`, the 14 `op_simd_*` family handlers, `kSimdRanges`, `g_simd_dispatch`, `init_microcode_once`, `init_ops_once`.
+- **Key subparts:** `g_ops`, `g_microcode`, `init_microcode_once`, `init_ops_once`, `fa_ops_defs_populate`, `fa_execute_op`.
 - **Called by:** runtime descriptor dispatch and [`src/fa_jit.c`](src/fa_jit.c) preparation.
-- **Tests:** arithmetic, conversion, memory, table, ref, `call_indirect`, SIMD, and microcode areas in [`test/main.c`](test/main.c).
-- **Common mistakes:** adding a handler without matching descriptor/decoder support, dropping explanatory macro comments, or forgetting a SIMD range.
+- **Common mistake:** changing a family handler without keeping descriptor metadata or microcode routing aligned.
+
+### [`src/fa_ops_internal.h`](src/fa_ops_internal.h)
+
+Declares private cross-translation-unit helpers, family entry points, and numeric microcode programs. It is not part of the public opcode API in [`src/fa_ops.h`](src/fa_ops.h).
+
+- **Common mistake:** moving an implementation-only contract into `fa_ops.h` and accidentally expanding the supported ABI.
+
+### [`src/fa_ops_helpers.c`](src/fa_ops_helpers.c)
+
+Owns typed operand-stack/register-window conversions, bounds/resource lookup helpers, integer bit utilities, and shared trap/OOM normalization used by opcode families.
+
+### [`src/fa_ops_core.c`](src/fa_ops_core.c)
+
+Owns control, local/global, scalar load/store, constant, equality-zero, and reference handlers plus their delegate tables.
+
+### [`src/fa_ops_numeric.c`](src/fa_ops_numeric.c)
+
+Owns scalar integer/float arithmetic, comparison, conversion, reinterpretation, drop/select handlers, and macro-built microcode programs.
+
+- **Common mistake:** changing a generated handler without updating its macro-family explanation and the central microcode/descriptor mapping.
+
+### [`src/fa_ops_call.c`](src/fa_ops_call.c)
+
+Owns direct/indirect call, return, and table get/set execution.
+
+### [`src/fa_ops_bulk.c`](src/fa_ops_bulk.c)
+
+Owns `0xFC` non-trapping conversions, bulk memory/table operations, and memory/table size and growth behavior.
+
+### [`src/fa_ops_simd.c`](src/fa_ops_simd.c)
+
+Owns core and relaxed SIMD helpers, the 14 `op_simd_*` family handlers, `kSimdRanges`, and `g_simd_dispatch`.
+
+- **Common mistake:** adding a SIMD handler without a matching range and direct regression.
+- **Tests for all operation files:** arithmetic, conversion, memory, table, ref, `call_indirect`, SIMD, and microcode areas in [`test/main.c`](test/main.c).
 
 ### [`src/fa_jit.h`](src/fa_jit.h)
 
