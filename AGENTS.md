@@ -1,122 +1,566 @@
-# AI Reference
+# fayasm — AI Agent Reference
 
-This document is a fast-access knowledge base for AI agents working on fayasm. Update it alongside `README.md` whenever you modify code or documentation so the next agent inherits the latest context.
+This is the fast-access operational reference for agents working on fayasm, an experimental C99 WebAssembly (WASM) parser and runtime built for transparent execution, runtime prototyping, and embedded experiments. The checked-out runtime implements a broad but incomplete WASM slice; it is not a production-hardened, fully validating, spec-complete engine, and its “JIT” layer currently prepares portable microcode rather than emitting native machine code.
 
-## Collaboration Rules
+## Read This First
 
-- After every code edit, refresh both `README.md` and `AGENTS.md` with any relevant behavioural, architectural, or tooling changes.
-- Keep the README narrative sections (`Quickstart`, command examples, `Project Direction`) aligned with real commands and current roadmap priorities.
-- Keep `src/fa_ops.c` explanatory section/macro comments in sync with behavior; when refactoring those paths, update comments instead of removing them.
-- Keep `ROADMAP.md` updated when priorities shift or new directives are added.
-- Log fresh research or experiments under `studies/` and cross-reference them here to avoid repeating the same investigations.
-- Prefer incremental changes: keep commits small, document breaking changes, and run the available tests before yielding control.
+Use this source-of-truth order:
 
-## Naming Convention
+1. [`LICENSE`](LICENSE) — legal terms; no code or documentation may contradict it.
+2. Executable contracts and tests: public headers under [`src/`](src/), [`test/main.c`](test/main.c), and the CMake files — authoritative for ABI, behavior actually asserted, and build registration.
+3. Current implementations under [`src/`](src/) and build/sample scripts — authoritative for checked-out behavior when not contradicted by a higher-order contract.
+4. [`README.md`](README.md) and sample READMEs — user-facing commands, supported workflows, and examples.
+5. [`ROADMAP.md`](ROADMAP.md) — planned priorities and recently completed work; a roadmap entry does not prove implementation.
+6. [`studies/`](studies/) — research, prototypes, and benchmark evidence; these files inform work but are not production code.
+7. Git history — historical context only.
 
-- Public helpers follow scoped camelCase (e.g., prefer `fa_Runtime_bindHostFunctionFromLibrary` over `fa_Runtime_bind_host_function_from_library`). Keep docs/samples aligned whenever new API helpers land so future agents inherit the pattern.
+When sources disagree, inspect the relevant code and focused test. Fix stale documentation in the same task when it is in scope; otherwise record the mismatch as a known gap. A test proves only the behavior it asserts, comments do not override executable behavior, and planned work must never be described as shipped.
 
-## High Priority Directive
+## Collaboration and Maintenance Rules
 
-- Replace opcode switch-case towers with a microcode compilation path: macro-built micro-op sequences (pre-stacked function pointers) compiled just in time and gated by a RAM/CPU probe (defaults to >=64MB RAM and >=2 CPUs; override via `FAYASM_MICROCODE`).
-- Keep `fa_jit` tied to microcode preparation and WASM-to-microcode conversions; feed decoded opcode streams into `fa_jit_prepare_program_from_opcodes` as the runtime executes.
-- Maintain trap plus spill/load hooks for offload; harden spill formats so microcode and memory can persist across boots (avoid raw function pointers).
-- Keep ESP32 configuration compile-time via `FAYASM_TARGET_ESP32`/`FAYASM_TARGET_*` macros (CMake/defines), not runtime discovery.
+- Read this file completely before editing and search for any nested `AGENTS.md` between the repository root and the target file. None are currently tracked below the root.
+- Start with `git status --short --branch`; preserve unrelated user changes and ignored build outputs. Never clean a dirty tree merely to simplify the task.
+- After every code edit, review both [`README.md`](README.md) and this handbook. Update every behavioral, architectural, API, ownership, command, or tooling fact made stale by the change; do not add cosmetic churn when no durable fact changed.
+- Keep README `Quickstart`, command examples, performance claims, and `Project Direction` aligned with executable workflows and [`ROADMAP.md`](ROADMAP.md).
+- Update [`ROADMAP.md`](ROADMAP.md) when priorities or status change. Keep only current operational priorities here and link the roadmap for chronology.
+- Keep the explanatory section and macro-family comments in [`src/fa_ops.c`](src/fa_ops.c) synchronized with dispatch behavior; update them instead of deleting them during refactors.
+- Add regression tests with runtime, parser, opcode, persistence, or ABI changes. Run the narrowest relevant filter, then the full harness when practical.
+- Record new research or experiments under [`studies/`](studies/) and add them to the Research Archive subsection below. Consult existing studies before repeating an investigation.
+- Treat `build/`, `build-esp32/`, `build-esp32-compile/`, `build-esp32-cmake/`, and `wasm_samples/build/` as generated output. Most are ignored; never commit the selected build directory even when a custom/default name is not yet covered by `.gitignore`. Change generators or sources, never generated artifacts.
+- Keep changes incremental, document breaking changes, and review the complete diff before committing. A commit must describe the post-commit repository, not an aspirational state.
+- Public helpers use scoped camelCase, for example `fa_Runtime_bindHostFunctionFromLibrary`; keep headers, samples, and docs aligned when APIs change.
+- Do not maintain manual test-count claims in this file. Use `build/bin/fayasm_test_main --list` for the current registry.
 
-## Build & Test Checklist
+## Essential Project Principles
 
-- Configure and build with CMake (>= 3.10): `cmake .. -DFAYASM_BUILD_TESTS=ON -DFAYASM_BUILD_SHARED=ON -DFAYASM_BUILD_STATIC=ON`
-- Invoke the provided helper: `./build.sh` (target-aware wrapper with `--target native|esp32`, configurable CMake toggles/forwarded args, optional fixtures/tests, and ESP-IDF personalization via `--esp-idf-path`, `--esp-chip`, `--esp-toolchain-file`, `--esp-ram-bytes`, `--esp-cpu-count`; native preset builds/tests by default, ESP32 preset defaults to static-only compile checks with tests/tools OFF; skips terminal clear when `TERM` is unset/dumb).
-- Run the harness: `build/bin/fayasm_test_main` or `ctest --output-on-failure` inside the build directory (the harness is registered with CTest via `add_test` in `test/CMakeLists.txt`).
-- Test filtering: `build/bin/fayasm_test_main --list` shows areas + hints; pass a substring filter to run a subset.
-- JIT prescan toggles: `build/bin/fayasm_test_main --jit-prescan` or `--jit-prescan-force` (mirrors `FAYASM_JIT_PRESCAN_FORCE`).
-- Ensure new tests land alongside new features; runtime code lacks extensive coverage, so favour regression tests around control flow and stack behaviour.
+### Transparency before opaque optimization
 
-## Core Code Map
+- Keep parsing, stack effects, control flow, traps, host bindings, and microcode preparation traceable in C99.
+- Performance work must preserve inspectable execution paths and focused regression coverage; do not replace behavior with an untested black box.
 
-- `src/fa_runtime.*` - execution entry points, allocator hooks, call-frame management, operand stack reset, locals initialization, call-argument transfer from operand stack into callee locals for wasm-to-wasm calls, top-level argument injection via `fa_Runtime_executeJobWithArgs`, linear memory provisioning (multi-memory/memory64), multi-value returns, loop label unwinding (params when present, otherwise results), label arity checks, imported-global overrides via `fa_Runtime_setImportedGlobal`, host import bindings for functions + imported memories/tables (callbacks/buffers or dynamic libraries on targets with loader support) with `fa_RuntimeHostCall_*` ABI helpers, encoded funcref handling (`null` = `0`, function index `n` = `n + 1`) across runtime/host ref carriers, live rebind propagation for imported memories/tables after module attach, optional per-function trap hooks, spill/load hooks for JIT programs and memory, versioned linear-memory serializers (`fa_Runtime_serializeMemory`/`fa_Runtime_deserializeMemory`/`fa_Runtime_serializedMemorySize`, kind `FA_SPILL_KIND_MEMORY` with a self-describing memory sub-header capturing size + memory64 flag, built on the shared `fa_jit.h` spill envelope), JIT cache eviction bookkeeping, plus per-function JIT opcode caches (optionally pre-scanned with `FAYASM_JIT_PRESCAN` or forced with `FAYASM_JIT_PRESCAN_FORCE`) that feed microcode preparation, precompile passes, and dispatch; microcode preparation is budget-capped (`max_ops_per_chunk`, default 512) and each cache entry tracks `prepared_source_count` so bodies larger than the cap are prepared once instead of on every executed instruction (per-execution `fa_Runtime.jit_program_prepare_calls` counter; regression `test_jit_large_body_prepare_once`). ESP32/embedded builds now compile without `dlopen` dependencies and return unsupported for dynamic-library bindings.
-- `src/fa_job.*` - linked-list operand stack (`fa_JobStack`) and register window (`fa_JobDataFlow`).
-- `src/fa_ops.*` - opcode descriptors plus delegate tables; control/local/global/ref/table plus `0xFC` bulk-memory/table families now route through prebuilt opcode/subopcode handler tables (the `0xFC` subopcode table `kBulkHandlers` covers entries `0..7` = the scalar non-trapping saturating truncations `i32`/`i64.trunc_sat_f32`/`f64_s`/`_u` via `trunc_sat_f64_to_i32`/`trunc_sat_f64_to_i64`, alongside `8..17` bulk-memory/table; all three `fa_runtime.c` decode sites — `runtime_decode_instruction`, `runtime_skip_immediates`, `runtime_prescan_skip_immediates` — now treat subopcodes `0..7` as immediate-free), and `0xFD` SIMD/relaxed-SIMD dispatch now routes through a prebuilt `g_simd_dispatch` table (built once in `init_simd_dispatch`, hooked from `init_ops_once`) mapping each subopcode to one of 14 contiguous-range family handlers (`op_simd_mem`/`build`/`lane`/`cmp`/`bitwise`/`memlane`/`i8x16`/`i16x8`/`i32x4`/`i64x2`/`f32x4`/`f64x2`/`convert`/`relaxed`) instead of the former 347-case switch tower; microcode scaffolding pre-stacks function pointer sequences for bitwise/bitcount/shift/rotate plus compare/arithmetic/convert and float unary/special/reinterpret/select ops, per-op handlers now use those microcode functions instead of switch-case towers where covered (gated by a RAM/CPU probe; override via `FAYASM_MICROCODE`), reference opcodes (`ref.null`/`ref.is_null`/`ref.func`) are wired with funcref encode/decode validation for `table.*` and `call_indirect`, and the file now includes section-level/macro-family comments that should be maintained with behavior changes. When adding a new SIMD subopcode, place it in the owning family handler and extend the matching `kSimdRanges` entry (or add a new range) so the dispatch table covers it.
-- `src/fa_jit.*` - JIT planning scaffolding (resource probe, budget/advantage scoring, microcode program preparation from decoded opcodes) used for microcode preparation and WASM-to-microcode conversions, plus prepared-op execution helpers, opcode import/export helpers for stable spill formats, optional prescan configuration (`FAYASM_JIT_PRESCAN`/`FAYASM_JIT_PRESCAN_FORCE`), and `fa_jit_context_apply_env_overrides`. Also defines the runtime-wide versioned spill envelope (`FA_SPILL_MAGIC`/`FA_SPILL_VERSION`/`fa_SpillKind`, fixed 16-byte little-endian header via `fa_spill_write_header`/`fa_spill_read_header` plus the LE `fa_spill_get_*`/`fa_spill_put_*` accessors) shared by all spill blobs, and the JIT serializers `fa_jit_program_serialize`/`fa_jit_program_deserialize`/`fa_jit_program_serialized_size` (kind `FA_SPILL_KIND_JIT_OPCODES`; persists opcode streams, never raw function pointers, and rebuilds microcode on load).
-- `src/fa_wasm.*` - disk or in-memory parser for module sections (types, functions, exports, globals, memories, tables, elements, data segments), including typed element-expression payloads (`ref.func`/`ref.null`/`global.get`) for funcref/externref tables. Filename ownership now uses a local C99-safe duplicate helper (`wasm_strdup`) for strict/newlib toolchains.
-- `src/fa_wasm_stream.*` - cursor helpers used in the tests to exercise streaming reads.
-- `src/helpers/dynamic_list.h` - pointer vector used by ancillary tools.
-- `src/fa_types.h` - scalar type aliases plus shared funcref helpers (`fa_funcref_encode_u32` / `fa_funcref_decode_u32`) used to keep null/function-index-0 unambiguous.
-- `src/fa_arch.h` - architecture macros with override hooks (pointer width, endianness, CPU family), plus `FAYASM_TARGET_*` selection and embedded resource hints (`FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`).
-- `ROADMAP.md` - prioritized roadmap with near-term and medium-term planning directives.
-- `test/` - CMake target `fayasm_test_main` with wasm stream coverage plus runtime regression checks (stack effects, call depth, locals/globals, branching semantics incl. loop labels, multi-value returns, memory64/multi-memory, bulk memory copy/fill, table ops, `call_indirect` lookup/signature traps including function index `0`, element/data segments including typed expressions for funcref/externref tables, reference ops `ref.null`/`ref.is_null`/`ref.func`, SIMD v128.const/splat plus v128 load/store, lane ops, arithmetic, trunc_sat conversions, conversion traps, plus SIMD dispatch-table coverage exercising the per-family handlers (`v128.xor`, `i32x4.eq`, `i16x8.add`, `i32x4.mul`, `i64x2.add`, `f32x4.add`, `f32x4.relaxed_min`, `v128.load32_lane`, `v128.store32_lane`, `f64x2.add`), block unwinding, global type mismatch traps, function trap allow/block, imported memory/table rebind-after-attach, JIT opcode serialization roundtrip, versioned spill-envelope roundtrips for JIT programs and linear memory (`test_spill_envelope_jit_roundtrip`, `test_spill_envelope_memory_roundtrip`, plus the real-WASM `test_spill_envelope_jit_real_wasm` that executes `control_flow.wasm` then round-trips the live JIT program through the spill hook — all with magic/version/kind/truncation rejection), repeated memory spill/load cycles, grown-memory spill/load roundtrip (`fa_Runtime_loadMemory`), JIT eviction + trap-driven reload cycles, optional wasm-sample smoke tests including arithmetic/control-flow advanced fixtures plus parameterized/typed-return fixtures exercising arg transfer and i64 returns via `fa_Runtime_executeJobWithArgs`, advanced fixtures for f32/f64 arithmetic + int<->float conversions (`floating_point.wasm`), `call_indirect` through a real funcref table + `br_table` switch (`indirect_dispatch.wasm`), and array sort + data-segment lookup + `memory.copy`/`memory.fill` (`memory_ops.wasm`), plus a hand-built scalar `trunc_sat` saturation regression (`test_trunc_sat_f64_i32_saturation`: NaN->0, +/-inf and overflow clamp to type bounds), 8 statistical smoke tests against `stats_suite.wasm` (mean/variance/linreg/pearson/monte-carlo/sieve/matrix/pipeline, expected values are native-reference constants, f64 tolerance 1e-9 with bit-identical actuals), and the JIT regression `test_jit_large_body_prepare_once` (a >512-opcode body must not rebuild its microcode program on re-execution; asserts via the per-execution `fa_Runtime.jit_program_prepare_calls` counter, forces `FAYASM_MICROCODE=1` and prescan off)). Suite is 109 tests. The runner accepts `--list` and substring filters to locate tests and hints for relevant source files.
-- `samples/esp32-trap` - ESP32 sample wiring trap hooks plus SD-backed spill/load for JIT microcode and linear memory; now persists through the shared runtime-wide versioned spill envelope (`fa_jit_program_serialize`/`deserialize`, `fa_Runtime_serializeMemory`/`deserializeMemory`) instead of hand-rolled `fwrite` structs.
-- `integer_ops` coverage - paired C/Rust fixtures exercise signed division/remainder, i32/i64 rotate and bit-count operations, typed i64 calls, and nested-call operand preservation. These four regressions bring the suite to 113 tests.
-- `samples/host-import` - dynamic-library host import demo that binds `env.host_add` via `fa_Runtime_bindHostFunctionFromLibrary`.
-- `samples/cli-runner` - standalone CLI program (`fayasm_run`) that loads a module from disk, executes a selected exported function, and accepts typed CLI arguments (`i32/i64/f32/f64`) for parameterized exports.
-- `wasm_samples/` - fixture sources (`.c` for Emscripten, `.rs` for Rust fallback) plus `wasm_samples/build.sh` that generates standalone `.wasm` modules for runtime smoke tests; `typed_values.{c,rs}` covers parameterized exports (i32/i64 args via `fa_Runtime_executeJobWithArgs`) and i64-typed returns; `floating_point.{c,rs}` covers f32/f64 arithmetic, an open-coded sqrt loop, and int<->float conversions (incl. `trunc_sat`); `indirect_dispatch.{c,rs}` builds a real funcref table + element segment for `call_indirect` plus a dense switch lowered to `br_table`; `memory_ops.{c,rs}` covers array sort, a data-segment lookup table, and `memcpy`/`memset` lowered to `memory.copy`/`memory.fill` (built with `-mbulk-memory`); `stats_suite.{c,rs}` is the statistical/algorithmic benchmark+smoke module (xorshift32 PRNG, mean, Welford variance, least-squares slope, Pearson correlation with open-coded Newton sqrt, Monte Carlo pi, sieve of Eratosthenes with memset -> `memory.fill`, 40x40 integer matrix multiply + i64 checksum, combined `sample_stats_pipeline` entry; built with `-mbulk-memory`, parameterized by `n` so it doubles as a scalable benchmark through `fayasm_run`). All fixtures produce byte-identical results under both emcc and the rustc fallback — the stats kernels also match a native `cc -O2 -ffp-contract=off` reference bit-for-bit, which is where the smoke-test expected constants come from. On this project's toolchain (Homebrew emscripten + Xcode Python 3.9), `wasm_samples/build.sh` auto-detects Homebrew Python/LLVM/Binaryen; if invoking `emcc` manually, set `EMSDK_PYTHON=/opt/homebrew/bin/python3.14`, `EM_LLVM_ROOT=/opt/homebrew/Cellar/emscripten/<ver>/libexec/llvm/bin`, `EM_BINARYEN_ROOT=.../libexec/binaryen`.
-- `build.sh` - target-aware rebuild/test orchestrator (native/ESP32 presets, ESP-IDF toolchain personalization, pass-through CMake args); keep options in sync with documented build flags.
+### Microcode is the current compilation direction
 
-### Gaps Worth Watching
+- Replace remaining opcode switch towers incrementally with table-driven handlers and macro-built, pre-stacked micro-op sequences.
+- Keep `fa_jit` responsible for resource decisions, opcode-to-microcode preparation, and prepared-program persistence. Feed decoded opcode streams to `fa_jit_prepare_program_from_opcodes`.
+- Extend microcode coverage only with measured benefit on the real-toolchain fixtures, especially `stats_suite`; current benchmark evidence shows prepared dispatch near descriptor dispatch.
 
-- Multi-value returns and label arity checks are enforced; reference-type block signatures and full validation remain open.
-- Memory64 and multi-memory are supported; loads/stores and memory.size/grow honor memory indices and 64-bit addressing.
-- Table/bulk memory execution now covers memory.init/data.drop/memory.copy/fill and table.get/set/init/copy/grow/size/fill, and element segments now decode legacy vectors plus typed expressions (`ref.func`/`ref.null`/`global.get`) for funcref/externref tables; reference ops (`ref.null`/`ref.is_null`/`ref.func`) are wired; SIMD core opcodes plus relaxed SIMD are wired (v128 load/store, shuffle/swizzle, lane ops, integer/float arithmetic, conversions, relaxed swizzle/trunc/madd/nmadd/laneselect/min/max/q15mulr) and now dispatch through the prebuilt `g_simd_dispatch` family-handler table rather than a 347-case switch tower. All 14 family handlers now have direct regression coverage (the `op_simd_memlane` load/store-lane paths and `op_simd_f64x2` arithmetic are exercised by `test_simd_v128_load32_lane`/`test_simd_v128_store32_lane`/`test_simd_f64x2_add`). Remaining SIMD gaps are any future extension proposals plus deeper relaxed-edge-case coverage.
-- Interpreter tests now cover stack effects, call depth, locals/globals, branching semantics, multi-value returns, memory64/multi-memory, table ops, element/data segments, SIMD v128.const/splat plus load/store, lane ops, arithmetic, trunc_sat conversions (both SIMD lanes and the scalar `0xFC 0x00`–`0x07` family, with saturation edge cases), conversion traps, stack unwinding, imported-global overrides, and host import bindings (functions/memories/tables).
-- Scalar non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`) are implemented in `kBulkHandlers[0..7]`; trapping `trunc_*` conversions remain on the primary opcode descriptors. Real toolchain output relies on the saturating forms because emcc/LLVM enables `nontrapping-fptoint` by default.
-- `call_indirect` is implemented with table lookup + signature checks + trap paths, and funcref representation is now encoded (`null` = `0`, function index `n` = `n + 1`) so index `0` no longer collides with null across `ref.*`/`table.*`/`call_indirect`.
-- Runtime now propagates imported memory/table rebinds on already-attached modules; keep coverage for mismatched sizes/limits as import validation evolves.
-- JIT spill/load hooks now have opcode import/export helpers, and runtime-wide persistence is standardized around the shared versioned spill envelope (`FA_SPILL_*` in `fa_jit.h`): `fa_jit_program_serialize`/`deserialize` for JIT programs and `fa_Runtime_serializeMemory`/`deserializeMemory` for linear memory, both producing portable little-endian blobs (magic/version/kind/size, self-describing memory size + memory64 flag). `samples/esp32-trap` consumes this shared API. Tests cover eviction + trap-driven reload, repeated offload cycles, a grown-memory spill/load roundtrip (validates the spill blob captures the post-`memory.grow` size and that the full grown region survives repeated cycles via the explicit `fa_Runtime_loadMemory` API), and versioned-envelope roundtrips (including a real-WASM JIT spill path and corruption/version/kind/truncation rejection). Extending the envelope to other persisted state (tables/globals) and long-run wear/perf validation are still open.
+### Portable low-resource operation
 
-## Research Archive (studies/)
+- Keep ESP32/embedded selection compile-time through `FAYASM_TARGET_ESP32` and related `FAYASM_TARGET_*` defines; do not add runtime platform discovery.
+- Embedded builds must not depend on `dlopen`/`dlsym`. Dynamic-library binding returns `FA_RUNTIME_ERR_UNSUPPORTED` when loader support is unavailable.
+- Persist reconstructible data, never process-local function pointers. Spill formats must remain portable across boots and architectures.
 
-Use these references before re-running the same explorations:
+### Tested C99 boundaries
 
-- `studies/asm/aarch64_C_JIT.md` – Italian write-up on building a minimal AArch64 JIT in C with executable buffers.
-- `studies/asm/cJitRegisters.md` – Register allocation strategies for an AArch64 micro-JIT, including full sample code.
-- `studies/asm/ita_justInTime.md` – Introductory x86-64 JIT example in C covering executable memory management.
-- `studies/asm/registersNoStoreLoad.md` – Inline assembly approach for leveraging physical registers without load/store round-trips (AArch64 focus).
-- `studies/code_samples/callbacks.c` – Callback handler example showing function pointers embedded in structs.
-- `studies/external_ideas/esp_log.h` – ESP-IDF logging shim for potential embedded integrations.
-- `studies/external_ideas/fa_compile.c` / `fa_compile.h` – Prototype front-end for compiling instructions; review before revisiting compiler scaffolding.
-- `studies/external_ideas/for_cycle.wasm` – Sample WASM module for parser experiments.
-- `studies/external_ideas/operations_references.c` – Collection of operation reference implementations.
-- `studies/runtime/justInTime.c` – Hybrid bytecode engine prototype combining interpretation with native chunks and trampolines.
-- `studies/runtime/stats_benchmarks.md` – 2026-07 stats_suite benchmark data (fayasm vs native -O2 on M1 Pro): ~5-7M wasm ops/s interpreter throughput, microcode dispatch within +/-5% of descriptor dispatch, bit-identical IEEE f64 results, and the large-body re-preparation bug/fix writeup. Consult before re-benchmarking or extending microcode coverage.
-- `studies/runtime/prompt.md` – Design summary for the hybrid engine (superoperators, trampolines, native chunks).
-- `studies/runtime/test.c` – Companion C harness for the hybrid runtime concepts.
-- `studies/wasm/branchExamples.md` – Bytecode snippets illustrating branching and control flow in WASM.
-- `studies/wasm/functionsSections.md` – Notes on parsing WASM function/type sections.
-- `studies/wasm/justInTimeParser.c` – Streaming parser experiment for WASM binaries.
-- `studies/wasm/magic.md` – Explanation of WASM magic/version headers.
-- `studies/wasm/notes.md` – General-purpose WASM decoding notes and observations.
-- `studies/wasm/ops_reading.md` – Reference guide for interpreting opcode encodings.
-- `studies/wasm/sectionsVsFunctions.md` – Comparison of section ordering versus function declarations in WASM modules.
+- Keep the library C99-compatible and maintain the local portability shims used by strict/newlib toolchains.
+- Preserve allocator ownership, stack typing, bounds checks, and trap propagation across parser/runtime/opcode boundaries.
 
-Keep this index synchronized when new material lands in `studies/`.
+## Critical Implementation Contracts
 
-## When Starting a New Task
+- **Funcref representation:** `0` means null and function index `n` is stored as `n + 1`. Use `fa_funcref_encode_u32` and `fa_funcref_decode_u32` from [`src/fa_types.h`](src/fa_types.h); never store a raw function index in a funcref carrier. `test_call_indirect_function_zero`, `test_call_indirect_null_trap`, and `test_ref_ops_basic` in [`test/main.c`](test/main.c) guard this.
+- **Spill envelope:** every persisted JIT or memory blob starts with the fixed 16-byte little-endian `FA_SPILL_*` envelope from [`src/fa_jit.h`](src/fa_jit.h). JIT blobs contain opcode streams and rebuild microcode on load; raw `Operation` pointers must never be serialized. Memory blobs add the self-describing memory sub-header from [`src/fa_runtime.h`](src/fa_runtime.h). The `test_spill_envelope_*` regressions reject wrong magic, version, kind, size, and truncation.
+- **Call-frame stack base:** after callee arguments are removed, the function control frame records the remaining caller stack height in `runtime_push_frame`; result unwinding must preserve operands below that height. `test_wasm_sample_nested_calls` protects this fixed regression.
+- **Branch arity:** `runtime_branch_to_label` unwinds loop branches with loop parameter types when present and other branches with result types. `runtime_unwind_stack_to` must validate types before restoring values. The block/loop/branch tests in [`test/main.c`](test/main.c) enforce this.
+- **Decode-path parity:** instruction immediates are interpreted in `runtime_decode_instruction`, skipped during block scanning in `runtime_skip_immediates`, and skipped during JIT prescan in `runtime_prescan_skip_immediates`. Any opcode or prefixed subopcode change must update all applicable paths. Scalar `0xFC` subopcodes `0..7` are immediate-free.
+- **Budget-capped JIT preparation:** `runtime_jit_maybe_prepare` compares `prepared_source_count` with the capped `max_ops_per_chunk` target, not the uncapped recorded opcode count. Do not regress large bodies into per-instruction re-preparation; run `test_jit_large_body_prepare_once`.
+- **Imported resource ownership:** imported memory/table buffers remain host-owned. Runtime reset, growth, deserialization, and rebind paths must honor `is_host`/`owns_data` and must not free or overwrite buffers the runtime does not own. Run the imported binding/rebind tests and memory spill tests.
+- **Host-call type checking:** host callbacks consume arguments and set results only through the signature-aware `fa_RuntimeHostCall_*` helpers or equivalent checks. A callback returning mismatched result kinds must trap.
+- **SIMD dispatch coverage:** `g_simd_dispatch` is built from `kSimdRanges`. A new SIMD subopcode belongs in its owning family handler and requires a matching range update or new range plus a direct regression.
+- **Single dynamic-list implementation:** [`src/helpers/dynamic_list.h`](src/helpers/dynamic_list.h) is header-only and emits definitions when `LIST_IMPLEMENTATION` is set. Keep that define in exactly one linked translation unit, currently [`src/fa_runtime.c`](src/fa_runtime.c).
 
-- Skim outstanding TODOs in source files (search for `TODO` or `FIXME`).
-- Validate whether relevant studies already cover the topic; if not, add a new entry both under `studies/` and above.
-- Outline expected tests; if the suite lacks coverage, note the gap here so the next agent can prioritise it.
+## Architecture and Data/Control Flow
 
-## Roadmap Snapshot
+Primary execution:
 
-Keep this summary aligned with `ROADMAP.md` whenever priorities change.
+`host or fayasm_run` → `wasm_module_init*` and `wasm_load_*` → `fa_Runtime_attachModule` → `fa_Runtime_createJob` → `fa_Runtime_executeJob*` → `runtime_decode_instruction` → control handling or `fa_execute_op` → operand stack / memory / table → typed results on `fa_JobStack`
 
-### Near-term
-1. Spill/load persistence is standardized around the runtime-wide versioned envelope (`FA_SPILL_*`) shared by JIT programs and linear memory; extend the same convention to any further persisted runtime state (tables/globals) as it lands.
-2. Continue replacing remaining `src/fa_ops.c` switch/subopcode towers; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven. Benchmarks (`studies/runtime/stats_benchmarks.md`) show prepared-op dispatch within +/-5% of descriptor dispatch, so new microcode coverage must be justified by measured wins on the `stats_suite` fixtures.
-3. Expand runtime smoke coverage using `wasm_samples/` modules (floating point, `call_indirect`/`br_table`, bulk-memory, integer operations, and statistical/benchmark fixtures now landed; continue adding language/toolchain feature coverage).
-4. Validate offload behavior under repeated spill/load cycles on low-RAM targets.
-5. Reduce per-instruction interpreter overhead (~150-200 ns/op today); candidates: cheaper instruction-context setup/teardown in the execute loop and lighter operand-stack traffic than the linked-list `fa_JobStack`.
+Microcode side path:
 
-### Medium-term
-1. Expand smoke coverage with focus on non-SIMD language/toolchain outputs.
-2. Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
+`decoded opcode` → per-function runtime cache → `runtime_jit_maybe_prepare` → `fa_jit_prepare_program_from_opcodes` → prepared `Operation` steps → `fa_jit_execute_prepared_op`
 
-### Long-term
-1. Integrate background offload/prefetch for JIT/memory spill with wear-aware storage strategies.
-2. Validate embedded resource heuristics on additional targets and tune `FAYASM_TARGET_*` defaults.
+Offload side path:
 
-## Contact & Credits
+`trap or cache pressure` → runtime spill/load hook → `fa_jit_program_serialize` or `fa_Runtime_serializeMemory` → host-owned storage → matching deserialize function → validated, reconstructed runtime state
 
-- Project owner: Riccardo Cecchini (MIT License, 2025).
-- Inspiration: WASM3 project.
+Fixture flow:
 
-If any workflow rule changes, reflect it here immediately so human collaborators and AI agents remain aligned.
+`wasm_samples/src/*.{c,rs}` → [`wasm_samples/build.sh`](wasm_samples/build.sh) → ignored `wasm_samples/build/*.wasm` → optional `test_wasm_sample_*` cases or `build/bin/fayasm_run`
+
+The runtime owns jobs, internal memories/tables, globals, control frames, and JIT caches. `WasmModule` owns parsed module metadata and backing input. Host-provided imported buffers and external spill storage stay outside runtime ownership.
+
+## Linked Source Tree and File Reference
+
+### [`AGENTS.md`](AGENTS.md)
+
+This operational map owns agent-facing invariants, ownership, pitfalls, and validation routes. It is not a changelog or a replacement for user documentation.
+
+- **Update when:** durable behavior, symbols, ownership, interfaces, workflows, tests, generated paths, compatibility boundaries, or priorities change.
+- **Common mistake:** copying roadmap history or manual test totals into current-state sections.
+
+### [`LICENSE`](LICENSE)
+
+Defines the repository’s MIT terms and required copyright/license notice. It outranks implementation and documentation preferences.
+
+### [`.gitignore`](.gitignore)
+
+Excludes native build products, compiler/linker artifacts, generated WASM fixtures, and the named ESP32 compile-check directories.
+
+- **Common mistake:** assuming every `--build-dir` value or the wrapper’s `build-esp32/` default is ignored; verify with `git check-ignore` and never commit generated trees.
+
+### [`README.md`](README.md)
+
+Owns the public project explanation, supported quickstart, CLI examples, performance snapshot, and user-facing direction.
+
+- **Depends on:** [`build.sh`](build.sh), [`CMakeLists.txt`](CMakeLists.txt), [`ROADMAP.md`](ROADMAP.md), and real fixture exports.
+- **Common mistake:** documenting a command or status from memory without checking its script or registry.
+
+### [`ROADMAP.md`](ROADMAP.md)
+
+Owns active priorities and completed-work chronology. It does not establish shipped behavior by itself.
+
+- **Related evidence:** [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md).
+- **Common mistake:** leaving completed work in a planned status or duplicating its long history into this handbook.
+
+### [`CMakeLists.txt`](CMakeLists.txt)
+
+Defines project version `0.1.0`, C99 mode, shared/static/test/tool options, platform defines, the `fayasm_run` target, test inclusion, and CPack metadata.
+
+- **Key subparts:** `FAYASM_BUILD_SHARED`, `FAYASM_BUILD_STATIC`, `FAYASM_BUILD_TESTS`, `FAYASM_BUILD_TOOLS`, and `FAYASM_TARGET_ESP32`.
+- **Depends on:** [`src/CMakeLists.txt`](src/CMakeLists.txt) and [`test/CMakeLists.txt`](test/CMakeLists.txt).
+- **Common mistake:** assuming Windows is supported; configuration explicitly warns that it may not work.
+
+### [`build.sh`](build.sh)
+
+Owns the target-aware native/ESP32 build orchestration, optional fixture build, generated-directory cleanup, CMake forwarding, and native test execution.
+
+- **Key subparts:** `usage`, target preset resolution, ESP-IDF/toolchain resolution, `CMAKE_ARGS`, fixture invocation, configure/build, and optional harness run.
+- **Generated outputs:** `build/` or `build-esp32/`; the default invocation removes and recreates its selected build directory. The native path is ignored, while the default ESP32 path currently requires manual care not to commit.
+- **Common mistake:** enabling default ESP32 fixtures unintentionally; pass `--no-fixtures` for a static-only compile check.
+
+### [`src/CMakeLists.txt`](src/CMakeLists.txt)
+
+Builds `fa_*.c` into shared and/or static `fayasm` libraries, exports public headers, links threads/math and desktop loader dependencies, and installs the library.
+
+- **Common mistake:** its second `file(GLOB FAYASM_HEADERS_EXTRA ...)` replaces the first glob rather than appending; verify installed-header behavior before relying on it.
+
+### [`src/fa_types.h`](src/fa_types.h)
+
+Owns scalar aliases, allocator callback types, reference carriers, and canonical funcref encoding.
+
+- **Key symbols:** `fa_ptr`, `fa_funcref_encode_u32`, `fa_funcref_decode_u32`, `fa_Malloc`, `fa_Free`.
+- **Used by:** every runtime subsystem.
+- **Tests:** funcref and indirect-call cases in [`test/main.c`](test/main.c).
+
+### [`src/fa_arch.h`](src/fa_arch.h)
+
+Owns overridable pointer width, endianness, CPU-family detection, target selection, and embedded resource hints.
+
+- **Key symbols:** `FA_ARCH_*`, `FAYASM_TARGET_*`, `FAYASM_TARGET_RAM_BYTES`, `FAYASM_TARGET_CPU_COUNT`.
+- **Used by:** JIT/resource probes and compile-time platform paths.
+- **Common mistake:** converting target selection into runtime discovery or assuming the default little-endian fallback proves an unknown target’s byte order.
+
+### [`src/fa_job.h`](src/fa_job.h)
+
+Defines typed operand values, the doubly linked operand stack, the small register/data-flow window, and `fa_Job`.
+
+- **Key types:** `fa_JobValue`, `fa_V128`, `fa_JobStack`, `fa_JobDataFlow`, `fa_Job`.
+- **Contract:** value kind, signedness, and bit width travel with each payload.
+
+### [`src/fa_job.c`](src/fa_job.c)
+
+Implements stack lifetime and register-window list operations.
+
+- **Key functions:** `fa_JobStack_reset`, `fa_JobStack_push`, `fa_JobStack_pop`, `fa_JobStack_peek`, `fa_Job_init`, `fa_JobDataFlow_push`, `fa_JobDataFlow_pull`.
+- **Called by:** [`src/fa_runtime.c`](src/fa_runtime.c) and [`src/fa_ops.c`](src/fa_ops.c).
+- **Tests:** arithmetic, call, control-flow, and stack-effect cases in [`test/main.c`](test/main.c).
+- **Common mistake:** bypassing these helpers and losing typed-value or allocation semantics.
+
+### [`src/fa_wasm.h`](src/fa_wasm.h)
+
+Defines parsed module metadata for sections, signatures, functions, globals, memories, tables, element/data segments, exports, and disk/in-memory backing.
+
+- **Key types:** `WasmModule`, `WasmFunctionType`, `WasmFunction`, `WasmMemory`, `WasmTable`, `WasmElementSegment`, `WasmDataSegment`.
+- **Public flow:** `wasm_module_init*` followed by explicit `wasm_load_*` phases, then `wasm_module_free`.
+- **Common mistake:** assuming `wasm_module_init*` parses every section; callers must invoke the load phases they need.
+
+### [`src/fa_wasm.c`](src/fa_wasm.c)
+
+Implements bounded disk/in-memory reads, LEB128 decoding, section parsing, typed element expressions, function-body loading, and module cleanup.
+
+- **Key functions:** `wasm_module_init`, `wasm_module_init_from_memory`, `wasm_scan_sections`, `wasm_load_types`, `wasm_load_functions`, `wasm_load_exports`, `wasm_load_tables`, `wasm_load_memories`, `wasm_load_globals`, `wasm_load_elements`, `wasm_load_data`, `wasm_load_function_body`.
+- **Portability landmark:** `wasm_strdup` replaces non-C99 `strdup`.
+- **Called by:** runtime attachment, CLI/sample loaders, and tests.
+- **Tests:** real fixtures plus element/global/table cases in [`test/main.c`](test/main.c).
+
+### [`src/fa_wasm_stream.h`](src/fa_wasm_stream.h)
+
+Declares the lazy single-function instruction stream and cursor/LEB128/address-mapping API.
+
+- **Key type:** `WasmInstructionStream`.
+- **Boundary:** the main runtime decodes loaded function bodies directly; this stream helper remains a separate public utility.
+
+### [`src/fa_wasm_stream.c`](src/fa_wasm_stream.c)
+
+Implements stream initialization, function load/unload, byte and LEB128 reads, PC movement, and global-offset mapping.
+
+- **Key functions:** `wasm_instruction_stream_load_function`, `wasm_instruction_stream_read_uleb128`, `wasm_instruction_stream_read_sleb128`, `wasm_get_function_details_from_global_offset`.
+- **Tests:** [`test/test_fa_wasm_stream.c`](test/test_fa_wasm_stream.c) and [`test/test_branches_fa_wasm_stream.c`](test/test_branches_fa_wasm_stream.c), currently not registered in CMake.
+
+### [`src/fa_ops.h`](src/fa_ops.h)
+
+Defines opcode descriptors, operation callbacks, public descriptor lookup/execution, and microcode-step lookup.
+
+- **Key types/functions:** `fa_WasmOp`, `Operation`, `fa_get_op`, `fa_execute_op`, `fa_ops_microcode_enabled`, `fa_ops_get_microcode_steps`.
+- **Boundary:** descriptors describe operations; runtime decoding owns immediates and control context.
+
+### [`src/fa_ops.c`](src/fa_ops.c)
+
+Owns scalar operations, memory/table/ref behavior, prefixed opcode families, SIMD families, descriptor population, and macro-built microcode tables.
+
+- **Key subparts:** `kControlHandlers`, `kLocalHandlers`, `kGlobalHandlers`, `kRefHandlers`, `kTableHandlers`, `kBulkHandlers`, the 14 `op_simd_*` family handlers, `kSimdRanges`, `g_simd_dispatch`, `init_microcode_once`, `init_ops_once`.
+- **Called by:** runtime descriptor dispatch and [`src/fa_jit.c`](src/fa_jit.c) preparation.
+- **Tests:** arithmetic, conversion, memory, table, ref, `call_indirect`, SIMD, and microcode areas in [`test/main.c`](test/main.c).
+- **Common mistakes:** adding a handler without matching descriptor/decoder support, dropping explanatory macro comments, or forgetting a SIMD range.
+
+### [`src/fa_jit.h`](src/fa_jit.h)
+
+Defines resource probes/configuration, decisions and budgets, prepared operations/programs, opcode import/export, and the shared spill envelope.
+
+- **Key contracts:** `FA_SPILL_MAGIC`, `FA_SPILL_VERSION`, `fa_SpillKind`, `fa_JitConfig`, `fa_JitProgram`.
+- **Key APIs:** `fa_jit_decide`, `fa_jit_context_apply_env_overrides`, `fa_jit_prepare_program_from_opcodes`, `fa_jit_program_serialize`, `fa_jit_program_deserialize`.
+
+### [`src/fa_jit.c`](src/fa_jit.c)
+
+Implements system probing, resource/advantage decisions, environment overrides, microcode preparation, stable opcode persistence, and prepared-op execution.
+
+- **Key functions:** `fa_jit_probe_system`, `fa_jit_default_config`, `fa_jit_compute_budget`, `fa_jit_score_advantage`, `fa_jit_prepare_op`, `fa_jit_prepare_program_from_opcodes`, `fa_spill_read_header`, `fa_spill_write_header`, `fa_jit_execute_prepared_op`.
+- **Tests:** JIT cache, large-body, opcode round-trip, and spill-envelope cases in [`test/main.c`](test/main.c).
+- **Common mistake:** calling this a native-code JIT or serializing the prepared `Operation` pointers.
+
+### [`src/fa_runtime.h`](src/fa_runtime.h)
+
+Declares runtime state, status codes, memory/table ownership, execution APIs, host import ABI, trap/spill hooks, and linear-memory serializers.
+
+- **Key types:** `fa_Runtime`, `fa_RuntimeMemory`, `fa_RuntimeTable`, `fa_RuntimeHostCall`, `fa_RuntimeTrapHooks`, `fa_RuntimeSpillHooks`.
+- **Primary API:** `fa_Runtime_attachModule`, `fa_Runtime_createJob`, `fa_Runtime_executeJob`, `fa_Runtime_executeJobWithArgs`, host/import binders, trap/spill controls, and memory serialization.
+- **Common mistake:** mutating public runtime fields without preserving their ownership and lifecycle invariants.
+
+### [`src/fa_runtime.c`](src/fa_runtime.c)
+
+Owns module attachment, execution frames, locals/globals, control-flow unwinding, imports, runtime memories/tables, instruction decoding, JIT caches, traps, and offload.
+
+- **Key phases:** `runtime_init_globals`/`runtime_memory_init`/`runtime_tables_init`/`runtime_segments_init`; `runtime_push_frame`; `runtime_decode_instruction`; `runtime_execute_control_op`; `runtime_execute_job_internal`.
+- **JIT landmarks:** `runtime_jit_cache_prescan`, `runtime_jit_record_opcode`, `runtime_jit_maybe_prepare`, `runtime_jit_lookup_prepared`.
+- **Boundary landmarks:** `runtime_call_imported`, `runtime_apply_attached_memory_rebind`, `runtime_apply_attached_table_rebind`, `fa_Runtime_serializeMemory`, `fa_Runtime_deserializeMemory`.
+- **Tests:** most runtime areas in [`test/main.c`](test/main.c).
+- **Common mistakes:** changing only one decoder/skip path, losing caller operands during frame setup/unwind, freeing host buffers, or enabling desktop loader code on embedded targets.
+
+### [`src/helpers/dynamic_list.h`](src/helpers/dynamic_list.h)
+
+Provides the header-only `list_t` pointer vector used for runtime jobs.
+
+- **Key symbols:** `list_create`, `list_push`, `list_remove`, `list_destroy`; implementation is gated by `LIST_IMPLEMENTATION`.
+- **Common mistake:** defining `LIST_IMPLEMENTATION` in more than one translation unit or assuming `list_destroy` frees pointed-to objects.
+
+### [`src/fayasm.h`](src/fayasm.h)
+
+Currently contains only basic includes and is not a complete umbrella for the public runtime API. Include the specific `fa_*.h` owner until this facade is intentionally expanded.
+
+### [`test/CMakeLists.txt`](test/CMakeLists.txt)
+
+Builds and registers only `test/main.c` as `fayasm_test_main`, adds the `check` target, and registers one CTest test.
+
+- **Common mistake:** assuming the unused `TEST_SOURCES` glob causes every `test/*.c` file to compile.
+
+### [`test/main.c`](test/main.c)
+
+Owns the active regression harness, in-memory module builders, offload/host test doubles, optional real-WASM smoke tests, filters, and `kTestCases`.
+
+- **Key subparts:** `ByteBuffer` module construction, `OffloadState`, `run_wasm_sample_export_checked`, `kTestCases`, `test_matches_filter`, `run_tests`.
+- **Interface:** `--list`, `--jit-prescan`, `--jit-prescan-force`, and substring filtering by name, area, or hint.
+- **Common mistake:** fixture tests skip successfully when generated `.wasm` files are absent; a green harness without fixtures does not prove real-toolchain smoke coverage ran.
+
+### [`test/test_fa_wasm_stream.c`](test/test_fa_wasm_stream.c)
+
+Standalone stream API tests with their own `main`. This file is tracked but is not built or registered by the current CMake test target.
+
+### [`test/test_branches_fa_wasm_stream.c`](test/test_branches_fa_wasm_stream.c)
+
+Standalone branch-oriented stream tests with their own `main`. This file is tracked but is not built or registered by the current CMake test target.
+
+### [`samples/cli-runner/main.c`](samples/cli-runner/main.c)
+
+Implements `fayasm_run`: loads all needed module sections, finds a function export, parses typed `i32/i64/f32/f64` arguments, validates the signature, executes it, and prints typed results.
+
+- **Key functions:** `load_module_from_path`, `module_find_exported_function`, `parse_typed_argument`, `print_value`, `main`.
+- **Tests:** exercised manually and indirectly by the same runtime paths as fixture tests.
+
+### [`samples/cli-runner/README.md`](samples/cli-runner/README.md)
+
+Owns the CLI-specific build and usage contract. Keep its accepted types and output path aligned with the target in [`CMakeLists.txt`](CMakeLists.txt).
+
+### [`samples/host-import/main.c`](samples/host-import/main.c)
+
+Builds an in-memory module importing `env.host_add`, loads a host shared library, binds the symbol, executes export `run`, and validates the result.
+
+- **Boundary:** loading a shared library executes native code; use only trusted library paths.
+
+### [`samples/host-import/host_add.c`](samples/host-import/host_add.c)
+
+Exports `fayasm_host_add`, demonstrating the `fa_RuntimeHostCall_*` ABI and signature/result validation.
+
+### [`samples/host-import/README.md`](samples/host-import/README.md)
+
+Owns manual macOS/Linux compile and loader-path commands for the dynamic host-import demo.
+
+### [`samples/esp32-trap/main.c`](samples/esp32-trap/main.c)
+
+Demonstrates function traps plus SD-backed JIT and memory spill/load using shared serializers.
+
+- **Key functions:** `jit_spill`, `jit_load`, `memory_spill`, `memory_load`, `function_trap`.
+- **Runtime data:** `/sdcard/fayasm_jit_*.bin` and `/sdcard/fayasm_mem_*.bin` are external device state, not repository artifacts.
+- **Common mistake:** treating this demonstration’s direct file writes as a complete durable-storage policy; checksum and atomic replacement remain host responsibilities.
+
+### [`samples/esp32-trap/README.md`](samples/esp32-trap/README.md)
+
+Owns ESP32 setup plus SD wear, performance, corruption, and retention guidance.
+
+### [`wasm_samples/build.sh`](wasm_samples/build.sh)
+
+Generates all smoke fixtures with Emscripten first and Rust `wasm32-unknown-unknown` as fallback.
+
+- **Key subparts:** Homebrew Emscripten environment repair, sanity check, `build_all_with_emcc`, Rust target validation.
+- **Generated output:** `wasm_samples/build/` is ignored and intentionally absent from version control.
+- **Common mistake:** editing generated `.wasm` files or claiming both toolchains ran when the script selects one.
+
+### [`wasm_samples/README.md`](wasm_samples/README.md)
+
+Owns fixture prerequisites, generated outputs, and the rule that missing fixtures make smoke cases skip.
+
+### [`wasm_samples/src/`](wasm_samples/src/)
+
+Contains paired C and Rust sources with matching exported behavior. Keep both variants aligned when changing a fixture.
+
+- [`arithmetic.c`](wasm_samples/src/arithmetic.c) / [`arithmetic.rs`](wasm_samples/src/arithmetic.rs) — constants and multiply/add.
+- [`control_flow.c`](wasm_samples/src/control_flow.c) / [`control_flow.rs`](wasm_samples/src/control_flow.rs) — loops and factorial.
+- [`advanced_runtime.c`](wasm_samples/src/advanced_runtime.c) / [`advanced_runtime.rs`](wasm_samples/src/advanced_runtime.rs) — memory mixing and call chains.
+- [`typed_values.c`](wasm_samples/src/typed_values.c) / [`typed_values.rs`](wasm_samples/src/typed_values.rs) — parameter passing and i64 results.
+- [`floating_point.c`](wasm_samples/src/floating_point.c) / [`floating_point.rs`](wasm_samples/src/floating_point.rs) — float arithmetic, conversions, and open-coded square root.
+- [`indirect_dispatch.c`](wasm_samples/src/indirect_dispatch.c) / [`indirect_dispatch.rs`](wasm_samples/src/indirect_dispatch.rs) — funcref tables, `call_indirect`, and `br_table`.
+- [`memory_ops.c`](wasm_samples/src/memory_ops.c) / [`memory_ops.rs`](wasm_samples/src/memory_ops.rs) — sorting, data lookup, and bulk memory.
+- [`integer_ops.c`](wasm_samples/src/integer_ops.c) / [`integer_ops.rs`](wasm_samples/src/integer_ops.rs) — signed division/remainder, bit operations, and nested-call operand preservation.
+- [`stats_suite.c`](wasm_samples/src/stats_suite.c) / [`stats_suite.rs`](wasm_samples/src/stats_suite.rs) — deterministic statistical/algorithmic smoke and benchmark workloads.
+
+### [`studies/`](studies/)
+
+Research and prototypes are non-production references. Read the relevant study before repeating work:
+
+- [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md) — current benchmark method, measurements, and large-body JIT regression analysis.
+- [`studies/runtime/jit/runtimeCompiledFunctions.md`](studies/runtime/jit/runtimeCompiledFunctions.md) and [`studies/runtime/jit/inRuntimeExec.c`](studies/runtime/jit/inRuntimeExec.c) — runtime-compiled-function concepts and prototype code.
+- [`studies/runtime/prompt.md`](studies/runtime/prompt.md), [`studies/runtime/justInTime.c`](studies/runtime/justInTime.c), and [`studies/runtime/test.c`](studies/runtime/test.c) — hybrid engine design and harness prototypes.
+- [`studies/asm/`](studies/asm/) — AArch64/x86 JIT and register-allocation notes.
+- [`studies/wasm/`](studies/wasm/) — WASM encoding, section, branch, and streaming-decoder notes.
+- [`studies/external_ideas/`](studies/external_ideas/) — borrowed/prototype compiler, opcode, logging, and WASM material; do not compile it into the runtime without a deliberate port and license/behavior review.
+- [`studies/code_samples/callbacks.c`](studies/code_samples/callbacks.c) — callback structure example.
+
+## Features and Recurring Development Pitfalls
+
+### Module parsing and execution — Shipped, experimental runtime
+
+- **Behavior:** loads modules from files or memory and executes implemented exports with typed arguments/results, locals/globals, nested calls, control flow, memory, tables, refs, bulk operations, and multi-value returns.
+- **Flow and owners:** [`src/fa_wasm.c`](src/fa_wasm.c) → [`src/fa_runtime.c`](src/fa_runtime.c) → [`src/fa_ops.c`](src/fa_ops.c) → [`src/fa_job.c`](src/fa_job.c).
+- **Constraints:** full WASM validation and reference-type block signatures are incomplete; do not market execution of untrusted modules as sandbox-hardened.
+- **Tests and gaps:** active harness areas in [`test/main.c`](test/main.c); broaden non-SIMD language/toolchain coverage.
+
+### Table, reference, bulk-memory, and SIMD families — Shipped subset
+
+- **Behavior:** supports the documented table/ref/bulk operations, scalar non-trapping truncations, core SIMD, and relaxed-SIMD families currently mapped by descriptors and dispatch tables.
+- **Flow and owners:** runtime immediate decode → `kBulkHandlers` or `g_simd_dispatch` in [`src/fa_ops.c`](src/fa_ops.c).
+- **Constraints:** new proposal opcodes require explicit decode, handler, descriptor/range, comments, and tests.
+- **Tests and gaps:** `call-indirect`, `table`, `bulk-memory`, `convert`, and `simd` filters; deeper relaxed edge-case coverage remains open.
+
+### Microcode preparation and cache — Experimental/scaffold
+
+- **Behavior:** resource-gated descriptor-to-microcode preparation, optional function prescan, per-function caches, budgeted eviction, and prepared dispatch.
+- **Configuration:** `FAYASM_MICROCODE`, `FAYASM_JIT_PRESCAN`, `FAYASM_JIT_PRESCAN_FORCE`; default microcode probe requires at least 64 MiB RAM and two CPUs unless overridden.
+- **Constraints:** this is not native code generation. Preserve `prepared_source_count` semantics and benchmark changes.
+- **Tests and gaps:** `jit` filter and [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md); prepared dispatch does not yet provide a demonstrated general speedup.
+
+### Host imports and resource rebinding — Shipped with platform boundary
+
+- **Behavior:** binds imported functions through callbacks or desktop dynamic libraries and binds imported memories/tables before or after attach.
+- **Constraints:** embedded targets reject dynamic-library binding; host buffers remain host-owned; host callback results are signature-checked.
+- **Tests and gaps:** host import and imported memory/table binding/rebind cases; validation of mismatched limits needs further expansion.
+
+### Versioned spill/load and ESP32 sample — Shipped API, experimental deployment
+
+- **Behavior:** portable JIT opcode and linear-memory blobs plus trap/spill/load callbacks; the sample stores them on SD.
+- **Constraints:** envelope validation covers structure, not durability, freshness, authenticity, or checksums. Hosts own atomicity and wear policy.
+- **Tests and gaps:** `offload` filter; tables/globals persistence and long-run low-RAM/wear validation are planned.
+
+### Real-toolchain fixtures and CLI — Shipped developer tooling
+
+- **Behavior:** paired C/Rust modules exercise runtime paths, and `fayasm_run` invokes exported functions with typed scalar arguments.
+- **Constraints:** fixture outputs are generated and optional; the Rust fallback must remain behaviorally aligned with C.
+- **Tests and gaps:** `wasm-sample` filter; skipped fixtures must be reported separately from executed smoke coverage.
+
+### Decoder drift across three paths
+
+- **Symptom / wrong assumption:** direct execution works while block scanning or forced JIT prescan fails, misaligns the cursor, or records immediates as opcodes.
+- **Cause and invariant:** decode, block-skip, and prescan-skip logic are separate in [`src/fa_runtime.c`](src/fa_runtime.c).
+- **Safe pattern / regression check:** update all three applicable functions and test both default and `--jit-prescan-force` execution.
+- **Status:** fixed regression risk.
+
+### Function index zero confused with null
+
+- **Symptom / wrong assumption:** `call_indirect` traps on a valid table entry for function zero.
+- **Cause and invariant:** raw zero cannot represent both null and index zero; encoded refs use `n + 1`.
+- **Safe pattern / regression check:** use the helpers in [`src/fa_types.h`](src/fa_types.h); run `test_call_indirect_function_zero`.
+- **Status:** fixed regression risk.
+
+### Callee unwinding destroys caller operands
+
+- **Symptom / wrong assumption:** nested expressions return the callee result but lose values evaluated before the call.
+- **Cause and invariant:** the function frame must record the stack height after popping only its arguments.
+- **Safe pattern / regression check:** preserve the base passed by `runtime_push_frame`; run `test_wasm_sample_nested_calls`.
+- **Status:** fixed regression risk.
+
+### Large bodies repeatedly rebuild microcode
+
+- **Symptom / wrong assumption:** a body larger than `max_ops_per_chunk` rebuilds on every instruction and becomes dramatically slower.
+- **Cause and invariant:** readiness is compared with the capped source target via `prepared_source_count`.
+- **Safe pattern / regression check:** keep the capped comparison in `runtime_jit_maybe_prepare`; run `test_jit_large_body_prepare_once`.
+- **Status:** fixed regression risk.
+
+### Optional smoke tests hide missing fixtures
+
+- **Symptom / wrong assumption:** the full harness passes even though no compiled WASM fixture was executed.
+- **Cause and invariant:** `resolve_wasm_sample_path` turns missing files into `SKIP`.
+- **Safe pattern / regression check:** run [`wasm_samples/build.sh`](wasm_samples/build.sh), then the `wasm-sample` filter and inspect output for skips.
+- **Status:** deliberate limitation.
+
+## Interface Ownership Map
+
+- Public parser/module API → [`src/fa_wasm.h`](src/fa_wasm.h), implemented by [`src/fa_wasm.c`](src/fa_wasm.c).
+- Public instruction-stream API → [`src/fa_wasm_stream.h`](src/fa_wasm_stream.h), implemented by [`src/fa_wasm_stream.c`](src/fa_wasm_stream.c).
+- Public runtime/job/host/trap/offload API → [`src/fa_runtime.h`](src/fa_runtime.h), [`src/fa_job.h`](src/fa_job.h), implemented primarily by [`src/fa_runtime.c`](src/fa_runtime.c) and [`src/fa_job.c`](src/fa_job.c).
+- Opcode descriptor/microcode API → [`src/fa_ops.h`](src/fa_ops.h) and [`src/fa_jit.h`](src/fa_jit.h).
+- CLI `fayasm_run` → [`samples/cli-runner/main.c`](samples/cli-runner/main.c).
+- Test CLI and registry → `kTestCases` and `main` in [`test/main.c`](test/main.c).
+- Host function callback ABI → `fa_RuntimeHostFunction` and `fa_RuntimeHostCall_*` in [`src/fa_runtime.h`](src/fa_runtime.h).
+- Trap and spill extension hooks → `fa_RuntimeTrapHooks` and `fa_RuntimeSpillHooks` in [`src/fa_runtime.h`](src/fa_runtime.h).
+- Build/package options → [`CMakeLists.txt`](CMakeLists.txt); target-aware wrapper → [`build.sh`](build.sh).
+
+## Build, Run, Debug, and Release
+
+Prerequisites: CMake 3.10 or newer and a C99 compiler. Native fixture generation additionally needs Emscripten or Rust with `wasm32-unknown-unknown`. ESP32 builds require ESP-IDF and a matching toolchain file.
+
+```sh
+# Default native clean build, fixtures when possible, and full active harness
+./build.sh
+
+# Manual native configure/build/test
+cmake -S . -B build \
+  -DFAYASM_BUILD_TESTS=ON \
+  -DFAYASM_BUILD_SHARED=ON \
+  -DFAYASM_BUILD_STATIC=ON \
+  -DFAYASM_BUILD_TOOLS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+
+# Inspect and run focused tests
+build/bin/fayasm_test_main --list
+build/bin/fayasm_test_main call_indirect
+build/bin/fayasm_test_main --jit-prescan-force jit
+
+# Rebuild generated real-toolchain fixtures, then ensure smoke cases execute
+./wasm_samples/build.sh
+build/bin/fayasm_test_main wasm-sample
+
+# Run an export
+build/bin/fayasm_run wasm_samples/build/typed_values.wasm sample_add_i32 i32:7 i32:5
+
+# ESP32 compile-oriented preset; provide the real local ESP-IDF path
+./build.sh --target esp32 --esp-idf-path /path/to/esp-idf --no-fixtures
+
+# Build CPack packages from an already configured tree
+cmake --build build --target package
+```
+
+- `./build.sh` deletes and recreates its selected generated build directory by default; use `--no-clean` to retain it.
+- Fixture generation writes ignored files under `wasm_samples/build/`.
+- The ESP32 command sources ESP-IDF’s export script and requires a local toolchain; it does not flash hardware.
+- The host-import demo has separate trusted-library commands in [`samples/host-import/README.md`](samples/host-import/README.md).
+- There is no repository CI, formatter, linter, static-analysis, deployment, or automated release workflow currently tracked. Use compiler warnings, focused tests, full tests, and `git diff --check`.
+
+## Test Ownership Map
+
+- Operand stack, scalar arithmetic, conversions, and traps → `arith`/`conversion`/`convert` filters in [`test/main.c`](test/main.c).
+- Calls, frames, branch arity, loops, multi-value results, and call depth → `control` plus `test_wasm_sample_nested_calls`.
+- Parser/module integration → real `wasm-sample` cases and element/global/table module builders.
+- Memories, memory64, multi-memory, bulk memory, and ownership → `memory`, `memory64`, `bulk-memory`, and imported-memory cases.
+- Tables, refs, element expressions, and `call_indirect` → `table`, `refs`, and `call-indirect`.
+- SIMD family dispatch → `simd`; each of the 14 family handlers has a direct case in the active registry.
+- JIT/microcode/cache preparation → `jit`.
+- Spill envelope, eviction, trap reload, and repeated memory cycles → `offload`.
+- Host imports and live resource rebind → `test_host_import_call` and imported memory/table cases.
+- Stream cursor/LEB128 utilities → the two standalone stream test files; **known gap:** current CMake does not build or run them.
+- ESP32 hardware, SD wear, retention, power-loss behavior, and low-RAM footprint → **known gap:** no automated hardware test.
+
+## Data, Security, Privacy, and Compatibility Boundaries
+
+- WASM files and in-memory buffers are untrusted parser input in API shape, but the runtime lacks full module validation. Keep bounds/type/trap checks and do not claim a production security sandbox.
+- Imported function callbacks and dynamic libraries execute with host-process authority. Dynamic-library paths and symbols must be trusted; never treat WASM module names as authorization.
+- Host memory/table bindings remain host-owned. Runtime-owned buffers may be freed or replaced only when `owns_data` permits it.
+- Spill blobs are portable little-endian caches/state containers with magic/version/kind/length validation. They are not authenticated, encrypted, checksummed, transactionally committed, or automatically migrated.
+- Generated `.wasm`, build trees, packages, and device spill files are derived data. Tracked C/Rust fixture sources, C sources/headers, CMake, scripts, and docs are canonical.
+- `FA_SPILL_VERSION` is the persisted-format compatibility boundary. Bump it deliberately for incompatible layout changes and update serializers, samples, tests, and migration/invalidation guidance together.
+- Public C helpers follow scoped camelCase. Treat public struct layouts and status values as compatibility-sensitive even though no formal stability guarantee is published.
+- No secrets, credentials, telemetry, remote services, or user-data stores are part of the repository. Do not add real credentials to examples or research logs.
+
+## Current Status and Known Gaps
+
+### Shipped
+
+- Disk/in-memory module parsing and the documented experimental runtime feature slice.
+- Typed host execution, nested calls, control flow, memory64/multi-memory, multi-value returns, tables/refs, bulk memory, scalar conversions, and core/relaxed SIMD handlers covered by the active harness.
+- Callback host imports, desktop dynamic-library imports, imported memories/tables, and live rebind.
+- Resource-gated microcode preparation, opcode caches, prescan controls, and stable JIT/memory spill envelopes.
+- Native build wrapper, CLI runner, paired C/Rust fixtures, active regression harness, and CPack configuration.
+
+### Experimental / Scaffold
+
+- The runtime as a whole remains experimental and incomplete relative to the full WASM specification.
+- Microcode preparation is infrastructure for a compilation path, not a demonstrated native JIT or universal performance win.
+- ESP32 SD offload is a sample integration, not a production durability layer.
+
+### Known Gaps
+
+- Full WASM validation and reference-type block signatures remain incomplete.
+- Future extension proposals and deeper relaxed-SIMD edge cases are not covered.
+- Imported resource limit/mismatch validation needs broader coverage.
+- Tables and globals do not use the shared persisted-state envelope.
+- Standalone stream tests are not registered in CMake/CTest.
+- Low-RAM, repeated offload, SD wear/power-loss, and broader embedded-target behavior need hardware validation.
+- Per-instruction overhead and linked-list operand-stack traffic remain performance constraints.
+
+### Near-Term Priorities
+
+1. Extend the versioned persistence convention when tables/globals persistence lands.
+2. Replace remaining per-family operator selection only where `stats_suite` measurements justify it.
+3. Expand real-toolchain smoke coverage, especially non-SIMD outputs.
+4. Validate repeated offload and runtime footprint on ESP32-class hardware.
+5. Reduce instruction-context and operand-stack overhead without obscuring execution semantics.
+
+See [`ROADMAP.md`](ROADMAP.md) for detailed status and longer-term direction.
+
+## Task Start and Handoff Checklist
+
+1. Read all applicable agent instructions, run `git status --short --branch`, and preserve unrelated changes.
+2. Search `TODO|FIXME`, inspect the owning file subsections above, and consult the relevant [`studies/`](studies/) material.
+3. Trace the affected public entry point through parser/runtime/opcode/persistence ownership and identify focused tests before editing.
+4. Check funcref, stack/frame, ownership, spill-format, decode-parity, platform, and compatibility contracts as applicable.
+5. Update code, comments, tests, README/sample docs, roadmap, and this handbook in the same coherent batch when their facts change.
+6. Run focused tests, then the full harness when practical; distinguish executed fixture tests from skips.
+7. Validate touched commands and all local Markdown links, run `git diff --check`, and review the final diff for stale paths or planned/shipped confusion.
+8. Report tests run, tests not run, generated artifacts, and remaining gaps accurately.

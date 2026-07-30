@@ -236,7 +236,7 @@ What the numbers say:
 ## Contributing
 
 - Keep changes incremental and test-backed.
-- Update `README.md`, `AGENTS.md`, and `ROADMAP.md` when behavior or priorities change.
+- Treat `AGENTS.md` as the operational ownership/contract map: review it after every code change and update it, `README.md`, and `ROADMAP.md` whenever their documented behavior, commands, or priorities change.
 - Add/extend tests for runtime or opcode changes.
 - When editing `src/fa_ops.c`, keep its explanatory section/macro comments updated with the code paths they describe.
 - Log new research under `studies/` and index it in `AGENTS.md`.
