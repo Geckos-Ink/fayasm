@@ -8,7 +8,7 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Continue replacing remaining switch/subopcode towers in the focused `src/fa_ops_*.c` families; control/local/global/ref/table, `0xFC`, and `0xFD` SIMD prefix dispatch are table-driven. Remaining work is folding per-family operator selection into microcode where it pays off — note: the 2026-07 stats benchmarks (`studies/runtime/stats_benchmarks.md`) show prepared-op dispatch within +/-5% of descriptor dispatch on real workloads, so new microcode coverage must be justified by measured wins on the `stats_suite` fixtures.
 - Expand runtime smoke coverage using `wasm_samples/` modules (Emscripten primary toolchain, Rust fallback fixtures available).
 - Validate offload behavior under repeated spill/load cycles on low-RAM targets.
-- Reduce per-instruction interpreter overhead (currently ~150-200 ns/op, ~5-7M ops/s on M1-class hardware); candidates: cheaper instruction-context setup/teardown in the main execute loop and lighter operand-stack traffic than the linked-list `fa_JobStack`.
+- Continue reducing per-instruction interpreter overhead after the hybrid job-window change; the remaining candidate is cheaper instruction-context setup/teardown in the main execute loop. Tune `FA_JOB_REGISTER_WINDOW_SIZE`/`FA_JOB_STACK_MAX_DEPTH` only with native and embedded measurements.
 
 ## Medium-Term
 
@@ -16,6 +16,8 @@ This file captures near-term and medium-term priorities for fayasm. Update it al
 - Add low-RAM/runtime-footprint validation passes for ESP32-class targets (tables, call depth, spill/load cycles).
 
 ## Recently Completed
+
+- Restored register forwarding as a bounded hybrid job stack: the top eight typed operands stay in a circular inline window, deeper live values spill into a geometrically grown contiguous array retained across executions, and a configurable 65,536-value cap fails pushes safely instead of allowing unbounded growth. Replaced heap-allocated decoded-immediate nodes with a separate fixed eight-entry window that rejects overflow rather than silently evicting values, fixing the five-immediate multi-memory SIMD lane case. Added `job-window` and SIMD regressions covering 200,000 allocation-free shallow cycles, deep spill ordering/reuse, the depth cap, immediate overflow, and multi-memory `v128.load32_lane`. A controlled Release/static `stats_suite` comparison against `bf76305` reduced `sample_stats_pipeline(100000)` wall time from 3.43 s to 2.14 s without microcode and 3.47 s to 2.18 s with microcode (~37%, identical result); methodology is recorded in `studies/runtime/stats_benchmarks.md`. Address/undefined-behavior sanitizer validation also replaced signed-shift SLEB128 assembly in the parser, stream helper, and runtime decoder with unsigned bit assembly before bit-preserving conversion.
 
 - Split the former monolithic `src/fa_ops.c` into focused C99 translation units for shared typed-value/runtime helpers, core control/scalar operations, numeric microcode, calls/tables, bulk memory/table operations, and SIMD families. `fa_ops.c` now owns only the canonical descriptor registry, resource-gated microcode selection, and public dispatch; `fa_ops_internal.h` keeps cross-family implementation contracts out of the public API.
 

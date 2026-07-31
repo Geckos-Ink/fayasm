@@ -1093,6 +1093,160 @@ static void cleanup_job(fa_Runtime* runtime, fa_Job* job, WasmModule* module, By
     }
 }
 
+static fa_JobValue test_i32_stack_value(i32 value) {
+    fa_JobValue result;
+    memset(&result, 0, sizeof(result));
+    result.kind = fa_job_value_i32;
+    result.is_signed = true;
+    result.bit_width = 32U;
+    result.payload.i32_value = value;
+    return result;
+}
+
+/*
+ * The hot path must remain allocation-free no matter how many operations are
+ * performed, provided live operand depth stays inside the forwarding window.
+ * Deeper stacks spill contiguously and retain that capacity for job reuse.
+ */
+static int test_job_register_forwarding_window(void) {
+    fa_JobStack stack;
+    memset(&stack, 0, sizeof(stack));
+
+    for (uint32_t i = 0; i < 200000U; ++i) {
+        const fa_JobValue lhs = test_i32_stack_value((i32)i);
+        const fa_JobValue rhs = test_i32_stack_value((i32)(i + 1U));
+        fa_JobValue popped;
+        if (!fa_JobStack_push(&stack, &lhs) || !fa_JobStack_push(&stack, &rhs) ||
+            !fa_JobStack_pop(&stack, &popped) || popped.payload.i32_value != rhs.payload.i32_value ||
+            !fa_JobStack_pop(&stack, &popped) || popped.payload.i32_value != lhs.payload.i32_value) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+    if (stack.size != 0 || stack.spill_values != NULL || stack.spill_capacity != 0) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+
+    const size_t depth = (size_t)FA_JOB_REGISTER_WINDOW_SIZE + 37U;
+    for (size_t i = 0; i < depth; ++i) {
+        const fa_JobValue value = test_i32_stack_value((i32)i);
+        if (!fa_JobStack_push(&stack, &value)) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+    if (stack.size != depth || stack.window_count != FA_JOB_REGISTER_WINDOW_SIZE ||
+        stack.spill_count != depth - FA_JOB_REGISTER_WINDOW_SIZE || !stack.spill_values) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+    for (size_t i = 0; i < depth; ++i) {
+        const fa_JobValue* value = fa_JobStack_peek(&stack, i);
+        if (!value || value->kind != fa_job_value_i32 ||
+            value->payload.i32_value != (i32)(depth - 1U - i)) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+
+    fa_JobValue* retained_spill = stack.spill_values;
+    const size_t retained_capacity = stack.spill_capacity;
+    fa_JobStack_reset(&stack);
+    for (size_t i = 0; i < depth; ++i) {
+        const fa_JobValue value = test_i32_stack_value((i32)i);
+        if (!fa_JobStack_push(&stack, &value)) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+    if (stack.spill_values != retained_spill || stack.spill_capacity != retained_capacity) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+    for (size_t i = depth; i > 0; --i) {
+        fa_JobValue value;
+        if (!fa_JobStack_pop(&stack, &value) || value.kind != fa_job_value_i32 ||
+            value.payload.i32_value != (i32)(i - 1U)) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+    if (stack.size != 0 || stack.window_count != 0 || stack.spill_count != 0) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+
+    fa_JobStack_free(&stack);
+    return 0;
+}
+
+static int test_job_stack_depth_limit(void) {
+    fa_JobStack stack;
+    memset(&stack, 0, sizeof(stack));
+    const fa_JobValue value = test_i32_stack_value(7);
+    const fa_JobValue overflow = test_i32_stack_value(9);
+
+    for (size_t i = 0; i < (size_t)FA_JOB_STACK_MAX_DEPTH; ++i) {
+        if (!fa_JobStack_push(&stack, &value)) {
+            fa_JobStack_free(&stack);
+            return 1;
+        }
+    }
+    if (fa_JobStack_push(&stack, &overflow)) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+    const fa_JobValue* top = fa_JobStack_peek(&stack, 0);
+    if (stack.size != (size_t)FA_JOB_STACK_MAX_DEPTH || !top ||
+        top->payload.i32_value != value.payload.i32_value) {
+        fa_JobStack_free(&stack);
+        return 1;
+    }
+
+    fa_JobStack_free(&stack);
+    return 0;
+}
+
+static int test_job_immediate_window_bounds(void) {
+    fa_Job* job = fa_Job_init();
+    if (!job) {
+        return 1;
+    }
+    for (uint32_t i = 0; i < FA_JOB_DATA_FLOW_WINDOW_SIZE; ++i) {
+        if (!fa_JobRegWindow_push(job, &i, sizeof(i))) {
+            fa_JobStack_free(&job->stack);
+            free(job);
+            return 1;
+        }
+    }
+    const uint32_t overflow = UINT32_MAX;
+    if (fa_JobRegWindow_push(job, &overflow, sizeof(overflow)) ||
+        job->reg_count != FA_JOB_DATA_FLOW_WINDOW_SIZE) {
+        fa_JobStack_free(&job->stack);
+        free(job);
+        return 1;
+    }
+    for (uint32_t i = FA_JOB_DATA_FLOW_WINDOW_SIZE; i > 0; --i) {
+        uint32_t value = UINT32_MAX;
+        if (!fa_JobRegWindow_pop(job, &value, sizeof(value)) || value != i - 1U) {
+            fa_JobStack_free(&job->stack);
+            free(job);
+            return 1;
+        }
+    }
+    if (job->reg_count != 0 || job->reg != NULL ||
+        fa_JobRegWindow_pop(job, &((uint32_t){0}), sizeof(uint32_t))) {
+        fa_JobStack_free(&job->stack);
+        free(job);
+        return 1;
+    }
+
+    fa_JobStack_free(&job->stack);
+    free(job);
+    return 0;
+}
+
 static int test_stack_arithmetic(void) {
     ByteBuffer instructions = {0};
     if (!bb_write_byte(&instructions, 0x41) || !bb_write_sleb32(&instructions, 7)) {
@@ -5759,6 +5913,83 @@ static int test_simd_v128_load32_lane(void) {
     return 0;
 }
 
+/*
+ * A multi-memory SIMD lane memarg carries five forwarded immediates including
+ * the 0xFD subopcode. This guards against the former four-entry window
+ * silently dropping the memory index.
+ */
+static int test_simd_multi_memory_load32_lane(void) {
+    ByteBuffer memory_payload = {0};
+    bb_write_uleb(&memory_payload, 2);
+    bb_write_byte(&memory_payload, 0x00);
+    bb_write_uleb(&memory_payload, 1);
+    bb_write_byte(&memory_payload, 0x00);
+    bb_write_uleb(&memory_payload, 1);
+
+    ByteBuffer instructions = {0};
+    const int32_t marker = 0x33333333;
+    const uint8_t zeros[16] = {0};
+
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (store addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0x41);          /* i32.const marker */
+    bb_write_sleb32(&instructions, marker);
+    bb_write_byte(&instructions, 0x36);          /* i32.store memory 1 */
+    bb_write_uleb(&instructions, 1);             /* memory index */
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+
+    bb_write_byte(&instructions, 0x41);          /* i32.const 0 (load addr) */
+    bb_write_sleb32(&instructions, 0);
+    bb_write_byte(&instructions, 0xFD);          /* v128.const zeros */
+    bb_write_uleb(&instructions, 0x0c);
+    bb_write_bytes(&instructions, zeros, sizeof(zeros));
+    bb_write_byte(&instructions, 0xFD);          /* v128.load32_lane memory 1 */
+    bb_write_uleb(&instructions, 0x56);
+    bb_write_uleb(&instructions, 1);             /* memory index */
+    bb_write_uleb(&instructions, 2);             /* align */
+    bb_write_uleb(&instructions, 0);             /* offset */
+    bb_write_byte(&instructions, 1);             /* lane index */
+    bb_write_byte(&instructions, 0xFD);          /* i32x4.extract_lane */
+    bb_write_uleb(&instructions, 0x1b);
+    bb_write_byte(&instructions, 1);
+    bb_write_byte(&instructions, 0x0B);
+
+    const uint8_t* bodies[] = { instructions.data };
+    const size_t sizes[] = { instructions.size };
+    ByteBuffer module_bytes = {0};
+    if (!build_module_with_custom_memory(&module_bytes, bodies, sizes, 1,
+                                         &memory_payload, kResultI32, 1, NULL, 0)) {
+        bb_free(&memory_payload);
+        cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
+        return 1;
+    }
+    bb_free(&memory_payload);
+
+    fa_Runtime* runtime = NULL;
+    fa_Job* job = NULL;
+    WasmModule* module = NULL;
+    if (!run_job(&module_bytes, &runtime, &job, &module)) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    int status = fa_Runtime_executeJob(runtime, job, 0);
+    if (status != FA_RUNTIME_OK) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != marker ||
+        fa_JobStack_peek(&job->stack, 1) != NULL) {
+        cleanup_job(runtime, job, module, &module_bytes, &instructions);
+        return 1;
+    }
+
+    cleanup_job(runtime, job, module, &module_bytes, &instructions);
+    return 0;
+}
+
 /* Exercises op_simd_memlane (v128.store32_lane) store + lane-index path. */
 static int test_simd_v128_store32_lane(void) {
     ByteBuffer instructions = {0};
@@ -7180,6 +7411,9 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_stats_prime_count", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_prime_count),
     TEST_CASE("test_wasm_sample_stats_matrix_checksum", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_matrix_checksum),
     TEST_CASE("test_wasm_sample_stats_pipeline", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_pipeline),
+    TEST_CASE("test_job_register_forwarding_window", "job-window", "src/fa_job.c (hybrid operand window + contiguous spill)", test_job_register_forwarding_window),
+    TEST_CASE("test_job_stack_depth_limit", "job-window", "src/fa_job.c (bounded operand depth)", test_job_stack_depth_limit),
+    TEST_CASE("test_job_immediate_window_bounds", "job-window", "src/fa_job.c (allocation-free decoded-immediate window)", test_job_immediate_window_bounds),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),
     TEST_CASE("test_multi_value_return", "control", "src/fa_runtime.c (multi-value returns)", test_multi_value_return),
@@ -7219,6 +7453,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_simd_f32x4_add", "simd", "src/fa_ops.c (op_simd_f32x4)", test_simd_f32x4_add),
     TEST_CASE("test_simd_f32x4_relaxed_min", "simd", "src/fa_ops.c (op_simd_relaxed)", test_simd_f32x4_relaxed_min),
     TEST_CASE("test_simd_v128_load32_lane", "simd", "src/fa_ops.c (op_simd_memlane load)", test_simd_v128_load32_lane),
+    TEST_CASE("test_simd_multi_memory_load32_lane", "simd", "src/fa_runtime.c (five-entry SIMD memarg forwarding)", test_simd_multi_memory_load32_lane),
     TEST_CASE("test_simd_v128_store32_lane", "simd", "src/fa_ops.c (op_simd_memlane store)", test_simd_v128_store32_lane),
     TEST_CASE("test_simd_f64x2_add", "simd", "src/fa_ops.c (op_simd_f64x2)", test_simd_f64x2_add),
     TEST_CASE("test_i32_clz", "arith", "src/fa_ops.c (i32 clz)", test_i32_clz),

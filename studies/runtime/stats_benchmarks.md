@@ -1,6 +1,39 @@
 # Statistical Workload Benchmarks (stats_suite.wasm)
 
-Date: 2026-07-04. Machine: Apple M1 Pro, 16 GB RAM, macOS (arm64). Toolchains:
+## Register-forwarding window comparison (2026-07-31)
+
+A focused before/after comparison measured the hybrid operand forwarding
+change against repository `HEAD` `bf76305` on the same Apple M1 Pro. Both
+trees used AppleClang 21, a static Release build (`-O3 -DNDEBUG`), the existing
+Emscripten `stats_suite.wasm`, and best-of-three whole-process wall time. These
+numbers include parse/startup time; the comparison is still valid because the
+binary, fixture, invocation, and build options differ only by the working-tree
+stack/window implementation.
+
+| `sample_stats_pipeline(100000)` | linked operand nodes | hybrid window | change |
+| --- | ---: | ---: | ---: |
+| descriptor dispatch (`FAYASM_MICROCODE=0`) | 3.43 s | 2.14 s | -37.6% |
+| prepared dispatch (`FAYASM_MICROCODE=1`) | 3.47 s | 2.18 s | -37.2% |
+
+Both implementations returned the identical f64 result
+`17.215848559835482`. The focused regression also performs 200,000 shallow
+push/pop cycles without creating spill storage. This establishes the intended
+property: execution count alone does not grow stack memory; only live operand
+depth beyond the inline window does. It does not establish the same speedup
+for every workload or embedded target.
+
+Implementation characteristics measured here:
+
+- the top eight typed operands stay in a circular inline window;
+- deeper live operands use one geometrically grown contiguous spill array,
+  retained across job resets;
+- decoded immediates use a separate fixed eight-entry inline window, with no
+  per-immediate allocation and no silent eviction;
+- live operand depth is capped by the overridable `FA_JOB_STACK_MAX_DEPTH`
+  boundary (65,536 by default).
+
+The broader full-suite benchmark below was recorded on 2026-07-04. Machine:
+Apple M1 Pro, 16 GB RAM, macOS (arm64). Toolchains:
 Emscripten 5.0.3 (`-O2 -s STANDALONE_WASM -mbulk-memory`), native reference
 `cc -O2 -ffp-contract=off` (FP contraction disabled so native IEEE f64 results
 match wasm semantics operation-for-operation).

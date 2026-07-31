@@ -28,108 +28,6 @@ size_t op_value_width(const fa_WasmOp* op) {
     return sizeof(fa_ptr);
 }
 
-/*
- * Reg-window helpers.
- * The runtime decoder pushes immediates into `job->reg`; opcode handlers
- * consume them in LIFO order through these utilities.
- */
-fa_JobDataFlow* job_node_from_value(const void* data, size_t size) {
-    if (!data || size == 0 || size > FA_JOB_DATA_FLOW_MAX_SIZE) {
-        return NULL;
-    }
-    fa_JobDataFlow* node = calloc(1, sizeof(fa_JobDataFlow) + size);
-    if (!node) {
-        return NULL;
-    }
-    node->size = (uint8_t)size;
-    node->ptr = (void*)((uint8_t*)(node + 1));
-    memcpy(node->ptr, data, size);
-    return node;
-}
-
-void job_node_destroy(fa_JobDataFlow* node) {
-    if (!node) {
-        return;
-    }
-    free(node);
-}
-
-uint8_t job_reg_count_and_head(const fa_Job* job, fa_JobDataFlow** head_out) {
-    uint8_t count = 0;
-    fa_JobDataFlow* head = NULL;
-    for (fa_JobDataFlow* cur = job ? job->reg : NULL; cur; cur = cur->precede) {
-        head = cur;
-        ++count;
-    }
-    if (head_out) {
-        *head_out = head;
-    }
-    return count;
-}
-
-void job_reg_enforce_limit(fa_Job* job) {
-    if (!job) {
-        return;
-    }
-
-    fa_JobDataFlow* head = NULL;
-    uint8_t count = job_reg_count_and_head(job, &head);
-    while (count > FA_JOB_DATA_FLOW_WINDOW_SIZE && head) {
-        fa_JobDataFlow* next = head->follows;
-        if (next) {
-            next->precede = NULL;
-        } else {
-            job->reg = NULL;
-        }
-        job_node_destroy(head);
-        head = next;
-        --count;
-    }
-}
-
-void job_reg_push_node(fa_Job* job, fa_JobDataFlow* node) {
-    if (!job || !node) {
-        return;
-    }
-    node->follows = NULL;
-    if (!job->reg) {
-        node->precede = NULL;
-        job->reg = node;
-    } else {
-        node->precede = job->reg;
-        job->reg->follows = node;
-        job->reg = node;
-    }
-    job_reg_enforce_limit(job);
-}
-
-fa_JobDataFlow* job_reg_pop_tail(fa_Job* job) {
-    if (!job) {
-        return NULL;
-    }
-    fa_JobDataFlow* tail = job->reg;
-    if (!tail) {
-        return NULL;
-    }
-    fa_JobDataFlow* new_tail = tail->precede;
-    if (new_tail) {
-        new_tail->follows = NULL;
-    }
-    job->reg = new_tail;
-    tail->precede = NULL;
-    tail->follows = NULL;
-    return tail;
-}
-
-bool job_reg_push_value(fa_Job* job, const void* data, size_t size) {
-    fa_JobDataFlow* node = job_node_from_value(data, size);
-    if (!node) {
-        return false;
-    }
-    job_reg_push_node(job, node);
-    return true;
-}
-
 u64 sign_extend_value(u64 value, uint8_t bits) {
     if (bits == 0 || bits >= 64) {
         return value;
@@ -484,26 +382,15 @@ u64 trunc_sat_f64_to_i64(double value, bool is_signed) {
     return (u64)truncated;
 }
 
-/* Immediates/subopcodes are read from the reg window as raw bytes/u64. */
+/*
+ * Immediates/subopcodes are read from the job's allocation-free forwarding
+ * window. A missing entry is a decode/handler parity failure and traps.
+ */
 bool pop_reg_to_buffer(fa_Job* job, void* buffer, size_t size) {
     if (!job || !buffer || size == 0) {
         return false;
     }
-    fa_JobDataFlow* node = job_reg_pop_tail(job);
-    if (!node) {
-        memset(buffer, 0, size);
-        return false;
-    }
-    size_t copy = node->size;
-    if (copy > size) {
-        copy = size;
-    }
-    memcpy(buffer, node->ptr, copy);
-    if (copy < size) {
-        memset((uint8_t*)buffer + copy, 0, size - copy);
-    }
-    job_node_destroy(node);
-    return true;
+    return fa_JobRegWindow_pop(job, buffer, size);
 }
 
 bool pop_reg_u64(fa_Job* job, u64* out) {
@@ -525,11 +412,10 @@ void discard_reg_arguments(fa_Job* job, uint8_t count) {
         return;
     }
     for (uint8_t i = 0; i < count; ++i) {
-        fa_JobDataFlow* node = job_reg_pop_tail(job);
-        if (!node) {
+        uint8_t discarded[FA_JOB_DATA_FLOW_MAX_SIZE];
+        if (!fa_JobRegWindow_pop(job, discarded, sizeof(discarded))) {
             break;
         }
-        job_node_destroy(node);
     }
 }
 

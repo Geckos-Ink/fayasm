@@ -39,7 +39,7 @@ static uint32_t read_uleb128_from_memory(const uint8_t* buffer, uint32_t buffer_
 
 static int32_t read_sleb128_from_memory(const uint8_t* buffer, uint32_t buffer_size,
                                         uint32_t* current_offset_ptr, uint32_t* bytes_read_count) {
-    int32_t result = 0;
+    uint32_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *bytes_read_count = 0;
@@ -53,7 +53,7 @@ static int32_t read_sleb128_from_memory(const uint8_t* buffer, uint32_t buffer_s
         byte = buffer[local_offset++];
         (*bytes_read_count)++;
 
-        result |= ((int32_t)(byte & 0x7F) << shift);
+        result |= ((uint32_t)(byte & 0x7FU) << shift);
         shift += 7;
     } while ((byte & 0x80) && (shift < 32));
 
@@ -63,11 +63,13 @@ static int32_t read_sleb128_from_memory(const uint8_t* buffer, uint32_t buffer_s
     }
 
     if ((shift < 32) && (byte & 0x40)) { // Sign extend
-        result |= (~((int32_t)0) << shift);
+        result |= UINT32_MAX << shift;
     }
 
     *current_offset_ptr = local_offset;
-    return result;
+    int32_t signed_result = 0;
+    memcpy(&signed_result, &result, sizeof(result));
+    return signed_result;
 }
 
 

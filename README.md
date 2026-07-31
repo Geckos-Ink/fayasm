@@ -156,10 +156,14 @@ Notes:
 - `FAYASM_JIT_PRESCAN=1` to enable per-function prescan.
 - `FAYASM_JIT_PRESCAN_FORCE=1` to force prescan mode.
 - `FAYASM_TARGET_RAM_BYTES` / `FAYASM_TARGET_CPU_COUNT` compile-time hints for embedded probes.
+- `FA_JOB_REGISTER_WINDOW_SIZE` controls the inline typed-operand window (default 8).
+- `FA_JOB_STACK_MAX_DEPTH` caps live operands before a push fails safely (default 65,536; lower it for constrained builds).
+- `FA_JOB_DATA_FLOW_WINDOW_SIZE` controls decoded-immediate forwarding (default 8, minimum 5 for current SIMD/multi-memory decoding).
 
 ## Performance Snapshot
 
-Measured 2026-07 on an Apple M1 Pro (16 GB) with the `stats_suite.wasm`
+The following table is the 2026-07 pre-register-window baseline measured on an
+Apple M1 Pro (16 GB) with the `stats_suite.wasm`
 fixture (Emscripten 5.0.3, `-O2`), best-of-3 wall time through
 `fayasm_run` with the ~10 ms startup baseline subtracted, against the same C
 compiled natively (`cc -O2 -ffp-contract=off`). Full data and methodology:
@@ -172,6 +176,19 @@ compiled natively (`cc -O2 -ffp-contract=off`). Full data and methodology:
 | Sieve of Eratosthenes, n=100k | 0.7 s | 0.26 ms | ~2,900x |
 | 40x40 int matrix multiply | 0.32 s | 0.03 ms | ~11,500x |
 | Combined stats pipeline, n=100k | 5.2 s | 1.9 ms | ~2,700x |
+
+A controlled Release/static comparison on 2026-07-31 measured the current
+hybrid forwarding window directly against repository `HEAD` `bf76305`, using
+the same binary options and fixture on both sides:
+
+| Combined pipeline, n=100k | linked-stack baseline | hybrid window | change |
+| --- | ---: | ---: | ---: |
+| descriptor dispatch | 3.43 s | 2.14 s | -37.6% |
+| prepared dispatch | 3.47 s | 2.18 s | -37.2% |
+
+Both sides returned the identical f64 result. See
+`studies/runtime/stats_benchmarks.md` for the exact scope and caveats; this
+focused comparison is not a claim that every workload improves by 37%.
 
 What the numbers say:
 
@@ -199,8 +216,13 @@ What the numbers say:
 - `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution.
 - `src/fa_wasm.*`: parser/loader for module structure and function bodies.
 - `src/fa_wasm_stream.*`: instruction cursor and immediate decoding helpers.
-- `src/fa_job.*`: operand stack and register window.
+- `src/fa_job.*`: an eight-value circular operand-forwarding window with bounded contiguous spill storage, plus a separate allocation-free decoded-immediate window. Shallow/steady computations do not allocate per operation; only live depth beyond the operand window grows spill storage.
 - `test/`: `fayasm_test_main` harness with runtime regressions + optional wasm fixture smoke tests.
+
+`fa_JobStack` and `fa_Job` are public C struct layouts in this experimental
+API. The hybrid-window change is layout-breaking for precompiled consumers;
+rebuild applications with the matching fayasm headers and use the stack/window
+helpers instead of addressing storage fields directly.
 
 ## Project Direction (Roadmap-Aligned)
 
@@ -209,7 +231,7 @@ What the numbers say:
 - Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
 - Continue replacing remaining per-family switch/subopcode towers under `src/fa_ops_*.c`; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
 - Expand smoke coverage using `wasm_samples/` modules; real-toolchain integer div/rem, bit-count, and rotate coverage now complements the floating-point, indirect-call, and bulk-memory fixtures.
-- Validate repeated offload cycles on low-RAM targets.
+- Validate repeated offload cycles and tune the bounded job-window sizes on low-RAM targets.
 
 ### Medium-term focus
 

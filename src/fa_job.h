@@ -5,8 +5,43 @@
 
 #include <stddef.h>
 
-#define FA_JOB_DATA_FLOW_WINDOW_SIZE 4 // resize in basis of strictly necessary
-#define FA_JOB_DATA_FLOW_MAX_SIZE 16 // bytes
+/*
+ * The immediate window is deliberately larger than the widest currently
+ * decoded instruction context (multi-memory SIMD lane operations need five
+ * entries). It is fixed-size: decode fails instead of allocating or silently
+ * discarding an older immediate.
+ */
+#ifndef FA_JOB_DATA_FLOW_WINDOW_SIZE
+#define FA_JOB_DATA_FLOW_WINDOW_SIZE 8U
+#endif
+
+#define FA_JOB_DATA_FLOW_MAX_SIZE 16U /* v128 immediate width, in bytes */
+
+/*
+ * Keep the hottest operand values in the job itself. Older live operands
+ * spill into a contiguous, geometrically grown array. The depth cap is a
+ * safety boundary for malformed/unvalidated inputs and can be lowered for an
+ * embedded build without changing runtime code.
+ */
+#ifndef FA_JOB_REGISTER_WINDOW_SIZE
+#define FA_JOB_REGISTER_WINDOW_SIZE 8U
+#endif
+
+#ifndef FA_JOB_STACK_MAX_DEPTH
+#define FA_JOB_STACK_MAX_DEPTH 65536U
+#endif
+
+#if FA_JOB_DATA_FLOW_WINDOW_SIZE < 5U || FA_JOB_DATA_FLOW_WINDOW_SIZE > 255U
+#error "FA_JOB_DATA_FLOW_WINDOW_SIZE must hold the widest decoded instruction context (5..255)"
+#endif
+
+#if FA_JOB_REGISTER_WINDOW_SIZE < 1U || FA_JOB_REGISTER_WINDOW_SIZE > 255U
+#error "FA_JOB_REGISTER_WINDOW_SIZE must be in the range 1..255"
+#endif
+
+#if FA_JOB_STACK_MAX_DEPTH < FA_JOB_REGISTER_WINDOW_SIZE
+#error "FA_JOB_STACK_MAX_DEPTH must be at least FA_JOB_REGISTER_WINDOW_SIZE"
+#endif
 
 typedef enum {
     fa_job_value_invalid = 0,
@@ -41,16 +76,18 @@ typedef struct {
     fa_JobValuePayload payload;
 } fa_JobValue;
 
-typedef struct fa_JobStackValue fa_JobStackValue;
-struct fa_JobStackValue {
-    fa_JobValue value;
-    fa_JobStackValue* next;
-    fa_JobStackValue* prev;
-};
-
 typedef struct {
-    fa_JobStackValue* head; // Oldest value
-    fa_JobStackValue* tail; // Most recent value
+    /* Oldest values beyond the forwarding window, in stack order. */
+    fa_JobValue* spill_values;
+    size_t spill_count;
+    size_t spill_capacity;
+
+    /* Circular window ordered from window_start (oldest) to newest. */
+    fa_JobValue window[FA_JOB_REGISTER_WINDOW_SIZE];
+    uint8_t window_start;
+    uint8_t window_count;
+
+    /* Publicly observed by runtime control-frame accounting. */
     size_t size;
 } fa_JobStack;
 
@@ -58,7 +95,8 @@ typedef struct fa_JobDataFlow {
     ptr ptr;
     uint8_t size;
     struct fa_JobDataFlow* follows;
-    struct fa_JobDataFlow* precede; // max precedes: FA_JOB_DATA_FLOW_WINDOW_SIZE
+    struct fa_JobDataFlow* precede;
+    uint8_t storage[FA_JOB_DATA_FLOW_MAX_SIZE];
 } fa_JobDataFlow;
 
 typedef uint32_t jobId_t;
@@ -70,7 +108,9 @@ typedef struct {
 
     fa_ptr instructionPointer; // what instruction address is executing
 
-    // pull and push registers
+    /* Allocation-free decoded-immediate forwarding window. */
+    fa_JobDataFlow reg_window[FA_JOB_DATA_FLOW_WINDOW_SIZE];
+    uint8_t reg_count;
     fa_JobDataFlow* reg;
 
 } fa_Job;
@@ -81,8 +121,12 @@ bool fa_JobStack_pop(fa_JobStack* stack, fa_JobValue* out);
 const fa_JobValue* fa_JobStack_peek(const fa_JobStack* stack, size_t depth);
 void fa_JobStack_free(fa_JobStack* stack);
 
-fa_Job* fa_Job_init();
+void fa_JobRegWindow_reset(fa_Job* job);
+bool fa_JobRegWindow_push(fa_Job* job, const void* value, size_t size);
+bool fa_JobRegWindow_pop(fa_Job* job, void* value_out, size_t size);
 
-fa_JobDataFlow* fa_JobDataFlow_init();
+fa_Job* fa_Job_init(void);
+
+fa_JobDataFlow* fa_JobDataFlow_init(void);
 void fa_JobDataFlow_push(fa_JobDataFlow* data, fa_JobDataFlow* to);
 fa_JobDataFlow* fa_JobDataFlow_pull(fa_JobDataFlow* from);

@@ -1262,16 +1262,7 @@ static int runtime_segments_init(fa_Runtime* runtime, const WasmModule* module) 
 }
 
 static void runtime_job_reg_clear(fa_Job* job) {
-    if (!job) {
-        return;
-    }
-    fa_JobDataFlow* node = job->reg;
-    while (node) {
-        fa_JobDataFlow* prev = node->precede;
-        free(node);
-        node = prev;
-    }
-    job->reg = NULL;
+    fa_JobRegWindow_reset(job);
 }
 
 static int runtime_control_reserve(fa_RuntimeCallFrame* frame, uint32_t count) {
@@ -2309,13 +2300,13 @@ static int runtime_read_sleb128(const uint8_t* buffer, uint32_t buffer_size, uin
     if (!buffer || !cursor || !out || *cursor >= buffer_size) {
         return FA_RUNTIME_ERR_STREAM;
     }
-    int64_t result = 0;
+    uint64_t result = 0;
     uint32_t shift = 0;
     uint32_t index = *cursor;
     uint8_t byte = 0;
     while (index < buffer_size) {
         byte = buffer[index++];
-        result |= ((int64_t)(byte & 0x7F) << shift);
+        result |= ((uint64_t)(byte & 0x7FU) << shift);
         shift += 7U;
         if ((byte & 0x80U) == 0U) {
             break;
@@ -2328,10 +2319,10 @@ static int runtime_read_sleb128(const uint8_t* buffer, uint32_t buffer_size, uin
         return FA_RUNTIME_ERR_STREAM;
     }
     if ((shift < 64U) && (byte & 0x40U)) {
-        result |= (~0LL) << shift;
+        result |= UINT64_MAX << shift;
     }
     *cursor = index;
-    *out = result;
+    memcpy(out, &result, sizeof(result));
     return FA_RUNTIME_OK;
 }
 
@@ -2744,43 +2735,7 @@ static int runtime_push_reg_value(fa_Job* job, const void* data, size_t size) {
     if (!job || !data || size == 0 || size > FA_JOB_DATA_FLOW_MAX_SIZE) {
         return FA_RUNTIME_ERR_INVALID_ARGUMENT;
     }
-    fa_JobDataFlow* node = (fa_JobDataFlow*)calloc(1, sizeof(fa_JobDataFlow) + size);
-    if (!node) {
-        return FA_RUNTIME_ERR_OUT_OF_MEMORY;
-    }
-    node->size = (uint8_t)size;
-    node->ptr = (void*)((uint8_t*)(node + 1));
-    memcpy(node->ptr, data, size);
-
-    node->follows = NULL;
-    if (!job->reg) {
-        node->precede = NULL;
-        job->reg = node;
-    } else {
-        node->precede = job->reg;
-        job->reg->follows = node;
-        job->reg = node;
-    }
-
-    // enforce window size
-    uint32_t count = 0;
-    fa_JobDataFlow* head = NULL;
-    for (fa_JobDataFlow* cur = job->reg; cur; cur = cur->precede) {
-        head = cur;
-        ++count;
-    }
-    while (count > FA_JOB_DATA_FLOW_WINDOW_SIZE && head) {
-        fa_JobDataFlow* next = head->follows;
-        if (next) {
-            next->precede = NULL;
-        } else {
-            job->reg = NULL;
-        }
-        free(head);
-        head = next;
-        --count;
-    }
-    return FA_RUNTIME_OK;
+    return fa_JobRegWindow_push(job, data, size) ? FA_RUNTIME_OK : FA_RUNTIME_ERR_TRAP;
 }
 
 static int runtime_parse_locals(fa_Runtime* runtime, fa_RuntimeCallFrame* frame) {

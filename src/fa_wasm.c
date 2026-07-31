@@ -150,7 +150,7 @@ uint64_t read_uleb128_64(WasmModule* module, uint32_t* size_read) {
 
 // Legge un valore LEB128 signed a 32 bit
 int32_t read_sleb128(WasmModule* module, uint32_t* size_read) {
-    int32_t result = 0;
+    uint32_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
@@ -161,21 +161,23 @@ int32_t read_sleb128(WasmModule* module, uint32_t* size_read) {
         }
         (*size_read)++;
 
-        result |= ((byte & 0x7f) << shift);
+        result |= ((uint32_t)(byte & 0x7fU) << shift);
         shift += 7;
     } while (byte & 0x80 && shift < 32);
 
     // Gestisce il segno
     if (shift < 32 && (byte & 0x40)) {
-        result |= (~0 << shift);
+        result |= UINT32_MAX << shift;
     }
 
-    return result;
+    int32_t signed_result = 0;
+    memcpy(&signed_result, &result, sizeof(result));
+    return signed_result;
 }
 
 // Legge un valore LEB128 signed a 64 bit
 int64_t read_sleb128_64(WasmModule* module, uint32_t* size_read) {
-    int64_t result = 0;
+    uint64_t result = 0;
     uint32_t shift = 0;
     uint8_t byte;
     *size_read = 0;
@@ -186,15 +188,17 @@ int64_t read_sleb128_64(WasmModule* module, uint32_t* size_read) {
         }
         (*size_read)++;
 
-        result |= ((int64_t)(byte & 0x7f) << shift);
+        result |= ((uint64_t)(byte & 0x7fU) << shift);
         shift += 7;
     } while (byte & 0x80 && shift < 64);
 
     if (shift < 64 && (byte & 0x40)) {
-        result |= (~0LL << shift);
+        result |= UINT64_MAX << shift;
     }
 
-    return result;
+    int64_t signed_result = 0;
+    memcpy(&signed_result, &result, sizeof(result));
+    return signed_result;
 }
 
 static int wasm_read_init_expr_offset(WasmModule* module, uint64_t* out) {

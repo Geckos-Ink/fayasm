@@ -27,13 +27,6 @@ typedef struct {
  * implementation details; the stable operation API remains in fa_ops.h.
  */
 size_t op_value_width(const fa_WasmOp* op);
-fa_JobDataFlow* job_node_from_value(const void* data, size_t size);
-void job_node_destroy(fa_JobDataFlow* node);
-uint8_t job_reg_count_and_head(const fa_Job* job, fa_JobDataFlow** head_out);
-void job_reg_enforce_limit(fa_Job* job);
-void job_reg_push_node(fa_Job* job, fa_JobDataFlow* node);
-fa_JobDataFlow* job_reg_pop_tail(fa_Job* job);
-bool job_reg_push_value(fa_Job* job, const void* data, size_t size);
 
 u64 sign_extend_value(u64 value, uint8_t bits);
 u64 mask_unsigned_value(u64 value, uint8_t bits);
