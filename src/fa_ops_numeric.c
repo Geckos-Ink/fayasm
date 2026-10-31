@@ -664,7 +664,8 @@ OP_RETURN_TYPE op_arith_rem_mc(OP_ARGUMENTS) {
             restore_stack_value(job, &rhs);
             return FA_RUNTIME_ERR_TRAP;
         }
-        i64 outcome = left % right;
+        /* WASM signed remainder of MIN / -1 is zero, not C signed UB. */
+        i64 outcome = (left == INT64_MIN && right == -1) ? 0 : left % right;
         return push_int_checked(job, (u64)outcome, result_bits, true);
     }
 

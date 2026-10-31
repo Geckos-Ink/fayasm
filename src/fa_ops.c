@@ -22,6 +22,8 @@ static bool g_microcode_enabled = false;
  * keep descriptor metadata and microcode routing synchronized with them.
  * Numeric register microcode is generated from the owning family's macro
  * list; it overrides generic binary programs after this registry is built.
+ * fa_ops_sequence.c separately emits typed serial delegates for prepared
+ * records: scalar operations and memory share registers across instructions.
  */
 
 /* Centralized descriptor constructor used by `fa_ops_defs_populate`. */

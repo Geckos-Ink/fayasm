@@ -1,5 +1,7 @@
 # Statistical Workload Benchmarks (stats_suite.wasm)
 
+The measurements below precede serial prepared execution. For the current executor, independent probe-only control, and latest timings, see [Serial Prepared Execution Benchmarks](sequence_benchmarks.md).
+
 ## Bytecode and operand backends (2026-10-31)
 
 This is a controlled comparison against pre-change revision `8db95103c625580f1388645169b86fc71c38dfb1`, which already has the hybrid operand window. It isolates this task's bytecode/macro work and fixed-slot alternative; it is not a comparison with the old linked stack.

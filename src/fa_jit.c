@@ -1,6 +1,7 @@
 #include "fa_jit.h"
 #include "fa_runtime.h"
 #include "fa_arch.h"
+#include "fa_sequence_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -114,6 +115,8 @@ fa_JitConfig fa_jit_default_config(void) {
     config.min_advantage_score = 0.55f;
     config.prescan_functions = false;
     config.prescan_force = false;
+    config.execute_sequences = true;
+    (void)jit_env_flag("FAYASM_JIT_SEQUENCES", &config.execute_sequences);
     (void)jit_env_flag("FAYASM_JIT_PRESCAN", &config.prescan_functions);
     bool force_prescan = false;
     if (jit_env_flag("FAYASM_JIT_PRESCAN_FORCE", &force_prescan) && force_prescan) {
@@ -202,7 +205,8 @@ void fa_jit_context_update(fa_JitContext* ctx, const fa_JitStats* stats) {
     if (!ctx) {
         return;
     }
-    ctx->probe = fa_jit_probe_system();
+    /* Physical RAM/CPU data belongs to context initialization. Re-probing
+     * here turned the 64-op statistics tick into a syscall-heavy hot path. */
     ctx->decision = fa_jit_decide(&ctx->probe, &ctx->config, stats);
 }
 
@@ -210,6 +214,7 @@ void fa_jit_context_apply_env_overrides(fa_JitContext* ctx) {
     if (!ctx) {
         return;
     }
+    (void)jit_env_flag("FAYASM_JIT_SEQUENCES", &ctx->config.execute_sequences);
     bool prescan = ctx->config.prescan_functions;
     if (jit_env_flag("FAYASM_JIT_PRESCAN", &prescan)) {
         ctx->config.prescan_functions = prescan;
@@ -246,6 +251,7 @@ bool fa_jit_prepare_op(const fa_WasmOp* descriptor, fa_JitPreparedOp* out) {
     }
     memset(out, 0, sizeof(*out));
     out->descriptor = descriptor;
+    out->sequence_operation = fa_ops_sequence_operation(descriptor->id);
     const Operation* mc_steps = NULL;
     uint8_t mc_count = 0;
     if (fa_ops_get_microcode_steps(descriptor->id, &mc_steps, &mc_count) && mc_steps && mc_count > 0) {

@@ -135,6 +135,8 @@ typedef struct fa_Runtime {
     uint64_t jit_prepared_executions;
     /* Instructions that reused a bound immediate instead of decoding it. */
     uint64_t jit_bytecode_executions;
+    uint64_t jit_sequence_executions;
+    uint64_t jit_sequence_ops;
     /* Number of microcode program (re)builds in the current execution; reset
      * alongside jit_prepared_executions. Steady-state executions of already
      * prepared functions must keep this at 0 (regression guard for the

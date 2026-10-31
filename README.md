@@ -23,7 +23,7 @@ fayasm already supports a substantial runtime slice:
 - Scalar integer<->float conversions including the non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`, `0xFC 0x00`–`0x07`) that toolchains emit by default for `(int)`/`(long)` casts of floats.
 - SIMD core + relaxed opcode coverage wired through `fa_ops.*` (with active regression tests).
 - Host import bindings for functions, memories, and tables; dynamic-library bindings on supported desktop targets.
-- Portable prepared bytecode/microcode (`fa_jit.*`) with macro-generated typed binary handlers, cached scalar immediates, per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory, plus a runtime-wide versioned spill envelope (`FA_SPILL_*`) for portable, endianness-stable persistence of JIT programs and memory.
+- Portable prepared bytecode/microcode (`fa_jit.*`) with serial pre-stacked instruction sequences, macro-generated scalar/memory delegates, cached decoded arguments, per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory, plus a runtime-wide versioned spill envelope (`FA_SPILL_*`) for portable, endianness-stable persistence of JIT programs and memory.
 - `fa_ops.*` now routes control/local/global/ref/table plus `0xFC` bulk-memory/table families through prebuilt delegate tables, and the `0xFD` SIMD/relaxed-SIMD prefix dispatches through a prebuilt family-handler table (`g_simd_dispatch`) instead of a 347-case switch tower, reducing per-call dispatch to a single indexed lookup.
 
 ## Quickstart (Native, Recommended)
@@ -153,6 +153,7 @@ Notes:
 ## Runtime Tuning Knobs
 
 - `FAYASM_MICROCODE=1|0` to force-enable/disable microcode tables (otherwise resource-gated: RAM/CPU probe).
+- `FAYASM_JIT_SEQUENCES=0` disables serial prepared execution for comparisons (enabled by default). Bound sequences use a temporary flat register bank, synchronize at control/call/host boundaries, and restore the public stack on every exit. Resource probes occur at context initialization, not on each statistics update.
 - `FAYASM_JIT_PRESCAN=1` to enable per-function prescan.
 - `FAYASM_JIT_PRESCAN_FORCE=1` to force prescan mode.
 - `FAYASM_TARGET_RAM_BYTES` / `FAYASM_TARGET_CPU_COUNT` compile-time hints for embedded probes.
@@ -181,55 +182,55 @@ RAM/CPU requirements.
 ## Performance Snapshot
 
 Measured **2026-10-31** on Apple M1 Pro (16 GiB), AppleClang 21, static
-Release builds. Every runner uses the same Rust 1.98.1 `stats_suite.wasm`
-fixture. Values are median-of-three whole-process wall time after an excluded
-warmup, including parsing, startup, preparation, and execution.
-**Microcode is enabled in every column**; prescan is disabled.
+Release builds, using one unchanged Rust 1.98.1 `stats_suite.wasm` fixture.
+Median of three fresh-process wall times after an excluded warmup, including
+startup, parsing, preparation, and execution. Microcode is enabled; prescan is off.
 
-“Before” is revision `8db9510`, which already used the circular window.
-“Fixed 4” also reduces immediate slots to five and caps operand depth at 2,048.
+“Before” is `bd7b632`. The middle column uses current code with
+`FAYASM_JIT_SEQUENCES=0`, isolating probe reuse from serial execution.
 
-| Workload | Before (window 8) | New window 8 | New fixed 8 | New fixed 4 |
+| Workload | Before | Current, sequences off | Serial circular | Speedup vs before |
 | --- | ---: | ---: | ---: | ---: |
-| Mean, 500k samples | 0.964 s | 0.888 s | 0.880 s | 0.882 s |
-| Welford variance, 500k | 1.754 s | 1.619 s | 1.607 s | 1.602 s |
-| Pearson correlation, 500k | 2.556 s | 2.343 s | 2.317 s | 2.323 s |
-| Monte Carlo pi, 500k | 2.262 s | 2.101 s | 2.075 s | 2.084 s |
-| Sieve, n=100k | 0.323 s | 0.307 s | 0.307 s | 0.303 s |
-| 40×40 matrix multiply | 0.110 s | 0.104 s | 0.103 s | 0.103 s |
-| Combined pipeline, n=100k | 2.175 s | 2.044 s | 2.028 s | 2.018 s |
+| Mean, 500k | 891.7 ms | 404.1 ms | 72.1 ms | 12.4× |
+| Welford variance, 500k | 1724.7 ms | 761.6 ms | 120.3 ms | 14.3× |
+| Linear regression, 500k | 1663.5 ms | 773.1 ms | 124.1 ms | 13.4× |
+| Pearson correlation, 500k | 2361.3 ms | 1109.3 ms | 170.5 ms | 13.8× |
+| Monte Carlo pi, 500k | 2111.5 ms | 972.5 ms | 155.7 ms | 13.6× |
+| Sieve, n=100k | 306.3 ms | 166.8 ms | 50.3 ms | 6.1× |
+| 40×40 matrix multiply | 104.5 ms | 59.5 ms | 14.9 ms | 7.0× |
+| Combined pipeline, n=100k | 2091.1 ms | 994.6 ms | 380.3 ms | 5.5× |
 
-The new circular microcode path takes **5.2–8.3% less time** across the eight
-nontrivial kernels; fixed-eight takes **5.2–9.3% less** than pre-change
-microcode. Differences between the new backends are about 0–1.2% here, so the
-circular backend remains the default. Descriptor-only controls stay close to
-the baseline, with small regressions on some kernels. All configurations
-return identical outputs, also matching the native C reference printed to
-17 significant digits.
+The combined change is **5.5–14.3× faster** on these workloads;
+serial execution adds **2.6–6.5×** beyond the cached-probe control.
+All outputs agree exactly across configurations and with the recorded native C
+reference values. These are portable precompiled C delegates sharing temporary
+registers, not native machine-code generation. Cold instructions, calls/control,
+and operations beyond the capped prepared prefix retain interpreter overhead.
 
-The compact profile reduces `sizeof(fa_Job)` from **648 to 408 bytes** on this
-ARM64 ABI by reducing slot counts. Fixed storage alone does not shrink the
-struct. Embedded speed and 32-bit footprint still require hardware measurements.
+Fixed-four-slot results are close to circular, so circular remains the default.
+The compact profile keeps `fa_Job` at **408 bytes** versus **648 bytes** by
+default on ARM64. Prepared records now cost **120 bytes** (60 KiB per full
+512-op chunk), and the register bank adds C-stack use. Generated native code
+also grows; embedded speed and footprint still need hardware measurements.
 
-See the [full benchmark study](studies/runtime/stats_benchmarks.md) for all
-kernels, microcode-off controls, cache/code-size costs, validation, and
-reproduction commands; [raw samples](studies/runtime/stats_2026-10-31.json)
-and the [comparison script](studies/runtime/benchmark_stats.py) are included.
-July's Emscripten/native ratios and linked-stack comparisons are preserved as
-historical results there and are not mixed with these measurements.
+See the [current benchmark study](studies/runtime/sequence_benchmarks.md) for
+fixed-backend results, costs, validation, and reproduction commands;
+[raw samples](studies/runtime/sequence_2026-10-31.json) and the
+[comparison script](studies/runtime/benchmark_stats.py) are included.
+[Earlier results](studies/runtime/stats_benchmarks.md) remain archived separately.
 
 ## Architecture At a Glance
 
 - `src/fa_runtime.*`: execution loop, frames, locals/globals, memory/table plumbing, trap + spill/load hooks, host bindings.
-- `src/fa_ops.c` / `src/fa_ops_*.c`: the central opcode registry and public dispatch, with focused translation units for shared typed-value helpers, control/scalar memory/ref ops, numeric microcode, calls/tables, `0xFC` bulk operations, and `0xFD` SIMD/relaxed-SIMD families.
-- `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution. Prepared records bind scalar local/global and constant immediates after their first decode; loops reuse them. Macro-generated typed binary handlers replace two operands with one using a single pop. Bound immediates count toward cache budgets and are rebuilt after spill/load.
+- `src/fa_ops.c` / `src/fa_ops_*.c`: the serial sequence executor and central opcode registry and public dispatch, with focused translation units for shared typed-value helpers, control/scalar memory/ref ops, numeric microcode, calls/tables, `0xFC` bulk operations, and `0xFD` SIMD/relaxed-SIMD families.
+- `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution. Prepared records bind decoded arguments and links once; a direct sequence of precompiled C delegates executes with shared temporary registers. All scalar numeric and scalar memory opcodes have macro-generated typed delegates. Generic operations synchronize registers and stop at the host boundary. Binding metadata counts toward cache budgets and is rebuilt after spill/load.
 - `src/fa_wasm.*`: parser/loader for module structure and function bodies.
 - `src/fa_wasm_stream.*`: instruction cursor and immediate decoding helpers.
 - `src/fa_job.*`: selectable circular forwarding or fixed operand slots, with bounded retained contiguous overflow storage and a separate allocation-free decoded-immediate window. Shallow/steady computations do not allocate per operation.
 - `test/`: `fayasm_test_main` harness with runtime regressions + optional wasm fixture smoke tests.
 
-`fa_JobStack`, `fa_Job`, `fa_JitPreparedOp`, and `fa_Runtime` are public C
-struct layouts in this experimental API. Prepared-bytecode fields change layout for precompiled consumers;
+`fa_JobStack`, `fa_Job`, `fa_JitPreparedOp`, `fa_JitConfig`, and `fa_Runtime` are public C
+struct layouts in this experimental API. Serial-bytecode fields change layout for precompiled consumers;
 rebuild applications with the matching fayasm headers and use the stack/window
 helpers instead of addressing storage fields directly.
 
@@ -238,7 +239,7 @@ helpers instead of addressing storage fields directly.
 ### Near-term focus
 
 - Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
-- Extend typed microcode, scalar bytecode binding, and bounded instruction fusion only where `stats_suite` measurements justify their code/cache footprint. Calls, control flow, memory, and prefixed operations retain the common decoder.
+- Extend typed microcode, scalar bytecode binding, and bounded instruction fusion only where `stats_suite` measurements justify their code/cache footprint. Calls/control remain synchronization boundaries; cold operations, generic adapters, and instructions beyond the capped prepared prefix retain ordinary dispatch.
 - Expand smoke coverage using `wasm_samples/` modules; real-toolchain integer div/rem, bit-count, and rotate coverage now complements the floating-point, indirect-call, and bulk-memory fixtures.
 - Validate repeated offload cycles, fixed versus circular operand storage, and prepared-cache footprint on low-RAM hardware before changing defaults.
 

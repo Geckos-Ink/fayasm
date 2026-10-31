@@ -1460,6 +1460,8 @@ static int test_jit_large_body_prepare_once(void) {
         cleanup_job(NULL, NULL, NULL, &module_bytes, &instructions);
         return 1;
     }
+    /* Even the minimum 64 KiB resident budget must fit a capped chunk. */
+    runtime->jit_context.config.max_cache_percent = 0;
     runtime->jit_context.config.min_ram_bytes = 0;
     runtime->jit_context.config.min_cpu_count = 1;
     runtime->jit_context.config.min_hot_loop_hits = 0;
@@ -1656,6 +1658,226 @@ static int test_microcode_register_binary(void) {
     fa_JobStack_free(&fast->stack); fa_JobStack_free(&reference->stack);
     free(fast); free(reference);
     return failed;
+}
+
+/* Every scalar opcode must agree with descriptor execution, including stack
+ * contents on failure. Exercise the serial path directly rather than relying
+ * on a hot-loop heuristic to happen to compile a fixture. */
+static fa_JobValue sequence_test_value(uint8_t code, unsigned edge, unsigned rhs) {
+    fa_JobValue v = {0};
+    if (code <= 0x4F || (code >= 0x67 && code <= 0x78) || code == 0xAC || code == 0xAD ||
+        code == 0xB2 || code == 0xB3 || code == 0xB7 || code == 0xB8 || code == 0xBE || code == 0xC0 || code == 0xC1)
+        v.kind = fa_job_value_i32;
+    else if (code <= 0x5A || (code >= 0x79 && code <= 0x8A) || code == 0xA7 || code == 0xB4 || code == 0xB5 ||
+             code == 0xB9 || code == 0xBA || code == 0xBF || code >= 0xC2) v.kind = fa_job_value_i64;
+    else if (code <= 0x60 || (code >= 0x8B && code <= 0x98) || code == 0xA8 || code == 0xA9 ||
+             code == 0xAE || code == 0xAF || code == 0xBB || code == 0xBC) v.kind = fa_job_value_f32;
+    else v.kind = fa_job_value_f64;
+    v.bit_width = (v.kind == fa_job_value_i32 || v.kind == fa_job_value_f32) ? 32 : 64;
+    v.is_signed = v.kind <= fa_job_value_i64 && edge != 4;
+    const i64 integers[] = {17, -7, 0, INT64_MIN, -1};
+    const double floats[] = {17.25, -7.5, -0.0, INFINITY, NAN};
+    if (v.kind == fa_job_value_i32) v.payload.i32_value = rhs ? (edge == 3 ? -1 : edge == 2 ? 0 : 3) : edge == 3 ? INT32_MIN : (i32)integers[edge];
+    if (v.kind == fa_job_value_i64) v.payload.i64_value = rhs ? (edge == 3 ? -1 : edge == 2 ? 0 : 3) : integers[edge];
+    if (v.kind == fa_job_value_f32) v.payload.f32_value = rhs ? 3.0f : (float)floats[edge];
+    if (v.kind == fa_job_value_f64) v.payload.f64_value = rhs ? 3.0 : floats[edge];
+    return v;
+}
+
+static int test_jit_sequence_scalar_parity(void) {
+    fa_Runtime* runtime = fa_Runtime_init();
+    fa_Job* serial = fa_Job_init(); fa_Job* reference = fa_Job_init();
+    if (!runtime || !serial || !reference) { fa_Runtime_free(runtime); free(serial); free(reference); return 1; }
+    int failed = 0;
+    for (unsigned code = 0x45; code <= 0xC4 && !failed; ++code) {
+        const fa_WasmOp* desc = fa_get_op((uint8_t)code);
+        fa_JitPreparedOp prepared;
+        if (!desc || !fa_jit_prepare_op(desc, &prepared)) { failed = 1; break; }
+        prepared.source_pc = 1; prepared.next_pc = 2;
+        fa_JitProgram program = {&prepared, 1, 1};
+        const int32_t map[] = {-1, 0, -1};
+        for (unsigned edge = 0; edge < 7 && !failed; ++edge) {
+            fa_JobStack_reset(&serial->stack); fa_JobStack_reset(&reference->stack);
+            const size_t base = edge % 2 ? FA_JOB_REGISTER_WINDOW_SIZE + 3U : 0;
+            const fa_JobValue sentinel = test_i32_stack_value(999);
+            for (size_t n = 0; n < base; ++n) {
+                if (!fa_JobStack_push(&serial->stack, &sentinel) || !fa_JobStack_push(&reference->stack, &sentinel)) failed = 1;
+            }
+            const unsigned arity = edge == 6 ? 0 : desc->num_pull;
+            for (unsigned n = 0; n < arity; ++n) {
+                fa_JobValue v = sequence_test_value((uint8_t)code, edge < 5 ? edge : 0, n);
+                if (edge == 5) v.kind = fa_job_value_v128;
+                if (!fa_JobStack_push(&serial->stack, &v) || !fa_JobStack_push(&reference->stack, &v)) failed = 1;
+            }
+            size_t executed = 0, immediates = 0; uint32_t pc = 1;
+            int a = fa_jit_execute_sequence(&program, map, 3, &pc, 64, runtime, serial, &executed, &immediates);
+            int b = desc->operation(runtime, reference, desc);
+            if (a != b || serial->stack.size != reference->stack.size || executed != 1 || pc != 2) failed = 1;
+            for (size_t n = 0; n < serial->stack.size && !failed; ++n) {
+                const fa_JobValue* x = fa_JobStack_peek(&serial->stack, n);
+                const fa_JobValue* y = fa_JobStack_peek(&reference->stack, n);
+                if (x->kind != y->kind || x->is_signed != y->is_signed || x->bit_width != y->bit_width ||
+                    memcmp(&x->payload, &y->payload, sizeof(x->payload))) failed = 1;
+            }
+            if (failed) fprintf(stderr, "sequence parity failed opcode=%02x edge=%u status=%d/%d\n", code, edge, a, b);
+        }
+    }
+    fa_JobStack_free(&serial->stack); fa_JobStack_free(&reference->stack);
+    free(serial); free(reference); fa_Runtime_free(runtime);
+    return failed;
+}
+
+static int test_jit_sequence_chain(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    ByteBuffer code = {0}, bytes = {0};
+    for (int i = 1; i <= 128; ++i) { bb_write_byte(&code, 0x41); bb_write_sleb32(&code, i); }
+    for (int i = 1; i < 128; ++i) bb_write_byte(&code, 0x6A);
+    bb_write_byte(&code, 0x0B);
+    const uint8_t* bodies[] = {code.data}; const size_t sizes[] = {code.size};
+    if (!build_module(&bytes, bodies, sizes, 1, 0, 0, 0, 0, kResultI32, 1, NULL, 0)) {
+        bb_free(&bytes); bb_free(&code); return 1;
+    }
+    fa_Runtime* runtime = NULL; fa_Job* job = NULL; WasmModule* module = NULL;
+    if (!run_job(&bytes, &runtime, &job, &module)) { bb_free(&bytes); bb_free(&code); return 1; }
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_executed_ops = 0;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_advantage_score = 0;
+    runtime->jit_context.config.execute_sequences = true;
+    int failed = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!execute_expect_i32(runtime, job, 0, 8256) ||
+            (i > 1 && (runtime->jit_sequence_ops != 255 || runtime->jit_sequence_executions < 4 ||
+                       runtime->jit_stats.executed_ops != 256))) { failed = 1; break; }
+    }
+    cleanup_job(runtime, job, module, &bytes, &code);
+    return failed;
+}
+
+static int test_jit_sequence_memory_parity(void) {
+    int failed = 0;
+    for (uint8_t code = 0x28; code <= 0x3E && !failed; ++code) {
+        for (unsigned edge = 0; edge < 4 && !failed; ++edge) {
+            fa_Runtime* a = fa_Runtime_init(); fa_Runtime* b = fa_Runtime_init();
+            fa_Job* x = fa_Job_init(); fa_Job* y = fa_Job_init();
+            if (!a || !b || !x || !y) { fa_Runtime_free(a); fa_Runtime_free(b); free(x); free(y); return 1; }
+            uint8_t data_a[64], data_b[64];
+            for (size_t n = 0; n < sizeof(data_a); ++n) data_a[n] = data_b[n] = (uint8_t)(n * 13 + 1);
+            a->memories = calloc(2, sizeof(*a->memories)); b->memories = calloc(2, sizeof(*b->memories));
+            if (!a->memories || !b->memories) { fa_Runtime_free(a); fa_Runtime_free(b); free(x); free(y); return 1; }
+            a->memories_count = b->memories_count = 2;
+            a->memories[1].data = data_a; b->memories[1].data = data_b;
+            a->memories[1].size_bytes = b->memories[1].size_bytes = 64;
+            a->memories[1].is_memory64 = b->memories[1].is_memory64 = true;
+            fa_JitPreparedOp prepared;
+            const fa_WasmOp* desc = fa_get_op(code);
+            if (!fa_jit_prepare_op(desc, &prepared)) failed = 1;
+            prepared.source_pc = 1; prepared.next_pc = 2;
+            prepared.arg_count = 3;
+            prepared.arg_sizes[0] = prepared.arg_sizes[1] = 4; prepared.arg_sizes[2] = 8;
+            const uint32_t mem_index = 1, align = 0; const u64 offset = 3;
+            memcpy(prepared.immediate, &mem_index, 4); memcpy(prepared.immediate + 4, &align, 4);
+            memcpy(prepared.immediate + 8, &offset, 8);
+            /* Binding metadata is the same information already decoded above. */
+            prepared.memory_index = mem_index; prepared.memory_offset = offset;
+            fa_JobValue addr = {0}; addr.kind = edge == 3 ? fa_job_value_i32 : fa_job_value_i64;
+            addr.bit_width = edge == 3 ? 32 : 64;
+            addr.payload.u64_value = edge == 0 ? 0 : edge == 1 ? 60 : UINT64_MAX;
+            fa_JobStack_push(&x->stack, &addr); fa_JobStack_push(&y->stack, &addr);
+            if (code >= 0x36) {
+                fa_JobValue value = {0}; value.bit_width = desc->type.size * 8U;
+                if (desc->type.type == wt_float) {
+                    value.kind = desc->type.size == 8 ? fa_job_value_f64 : fa_job_value_f32;
+                    if (value.kind == fa_job_value_f64) value.payload.f64_value = -17.5;
+                    else value.payload.f32_value = -17.5f;
+                } else {
+                    value.kind = desc->type.size == 8 ? fa_job_value_i64 : fa_job_value_i32;
+                    value.payload.u64_value = UINT64_MAX;
+                }
+                fa_JobStack_push(&x->stack, &value); fa_JobStack_push(&y->stack, &value);
+            }
+            fa_JobRegWindow_push(y, &mem_index, 4); fa_JobRegWindow_push(y, &align, 4); fa_JobRegWindow_push(y, &offset, 8);
+            fa_JitProgram program = {&prepared, 1, 1}; const int32_t map[] = {-1,0,-1};
+            size_t executed = 0, immediates = 0; uint32_t pc = 1;
+            int status_a = fa_jit_execute_sequence(&program, map, 3, &pc, 64, a, x, &executed, &immediates);
+            int status_b = desc->operation(b, y, desc);
+            if (status_a != status_b || x->stack.size != y->stack.size || memcmp(data_a, data_b, 64)) failed = 1;
+            for (size_t n = 0; n < x->stack.size && !failed; ++n) {
+                const fa_JobValue* v = fa_JobStack_peek(&x->stack, n);
+                const fa_JobValue* w = fa_JobStack_peek(&y->stack, n);
+                if (v->kind != w->kind || v->is_signed != w->is_signed || v->bit_width != w->bit_width ||
+                    memcmp(&v->payload, &w->payload, sizeof(v->payload))) failed = 1;
+            }
+            if (failed) fprintf(stderr, "sequence memory parity failed opcode=%02x edge=%u\n", code, edge);
+            fa_JobStack_free(&x->stack); fa_JobStack_free(&y->stack); free(x); free(y);
+            fa_Runtime_free(a); fa_Runtime_free(b);
+        }
+    }
+    return failed;
+}
+
+static int sequence_evict_on_memory_load(fa_Runtime* runtime, uint32_t index,
+                                        fa_RuntimeMemory* memory, void* user_data) {
+    (void)runtime; (void)index;
+    fa_jit_program_free((fa_JitProgram*)user_data);
+    static uint8_t data[8] = {42};
+    memory->data = data;
+    return FA_RUNTIME_OK;
+}
+
+static int test_jit_sequence_callback_eviction(void) {
+    fa_Runtime* runtime = fa_Runtime_init(); fa_Job* job = fa_Job_init();
+    if (!runtime || !job) { fa_Runtime_free(runtime); free(job); return 1; }
+    runtime->memories = calloc(1, sizeof(*runtime->memories)); runtime->memories_count = 1;
+    if (!runtime->memories) { fa_Runtime_free(runtime); free(job); return 1; }
+    runtime->memories[0].size_bytes = 8; runtime->memories[0].is_spilled = true;
+    const uint8_t code = 0x28; fa_JitProgram program = {0};
+    if (!fa_jit_prepare_program_from_opcodes(&code, 1, &program)) { fa_Runtime_free(runtime); free(job); return 1; }
+    program.ops[0].source_pc = 1; program.ops[0].next_pc = 2;
+    program.ops[0].arg_count = 2; program.ops[0].arg_sizes[0] = program.ops[0].arg_sizes[1] = 4;
+    fa_RuntimeSpillHooks hooks = {0}; hooks.memory_load = sequence_evict_on_memory_load; hooks.user_data = &program;
+    fa_Runtime_setSpillHooks(runtime, &hooks);
+    fa_JobValue addr = test_i32_stack_value(0); fa_JobStack_push(&job->stack, &addr);
+    const int32_t map[] = {-1,0,-1}; uint32_t pc = 1; size_t executed = 0, immediates = 0;
+    int status = fa_jit_execute_sequence(&program, map, 3, &pc, 64, runtime, job, &executed, &immediates);
+    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+    int failed = status != FA_RUNTIME_OK || program.ops != NULL || !value || value->payload.i32_value != 42 || executed != 1;
+    fa_jit_program_free(&program); fa_JobStack_free(&job->stack); free(job); fa_Runtime_free(runtime);
+    return failed;
+}
+
+static int test_jit_sequence_depth_cap(void) {
+    fa_Runtime* runtime = fa_Runtime_init(); fa_Job* job = fa_Job_init();
+    if (!runtime || !job) { fa_Runtime_free(runtime); free(job); return 1; }
+    fa_JobValue v = test_i32_stack_value(7);
+    for (size_t n = 0; n < FA_JOB_STACK_MAX_DEPTH; ++n) {
+        if (!fa_JobStack_push(&job->stack, &v)) { fa_JobStack_free(&job->stack); free(job); fa_Runtime_free(runtime); return 1; }
+    }
+    fa_JobStack_pop(&job->stack, NULL);
+    fa_JitPreparedOp ops[2];
+    int failed = !fa_jit_prepare_op(fa_get_op(0x41), &ops[0]);
+    ops[0].source_pc = 1; ops[0].next_pc = 2; ops[0].arg_count = 1;
+    ops[0].arg_sizes[0] = ops[0].immediate_size = 4;
+    const i32 one = 1; memcpy(ops[0].immediate, &one, sizeof(one));
+    ops[1] = ops[0]; ops[1].source_pc = 2; ops[1].next_pc = 3;
+    fa_JitProgram program = {ops,2,2}; const int32_t map[] = {-1,0,1,-1};
+    uint32_t pc = 1; size_t executed = 0, immediates = 0;
+    int status = fa_jit_execute_sequence(&program, map, 4, &pc, 64, runtime, job, &executed, &immediates);
+    const fa_JobValue* top = fa_JobStack_peek(&job->stack, 0);
+    failed |= status != FA_RUNTIME_ERR_OUT_OF_MEMORY || job->stack.size != FA_JOB_STACK_MAX_DEPTH ||
+              !top || top->payload.i32_value != 1 || executed != 2 || pc != 3;
+    fa_JobStack_free(&job->stack); free(job); fa_Runtime_free(runtime);
+    return failed;
+}
+
+static int test_jit_probe_snapshot(void) {
+    fa_JitContext ctx; fa_jit_context_init(&ctx, NULL);
+    const fa_JitProbe snapshot = {1024U * 1024U, 1, true};
+    ctx.probe = snapshot;
+    fa_JitStats stats = {100000,100000,100};
+    fa_jit_context_update(&ctx, &stats);
+    return ctx.probe.ram_bytes != snapshot.ram_bytes || ctx.probe.cpu_count != snapshot.cpu_count || !ctx.probe.ok;
 }
 
 static int test_jit_program_opcode_roundtrip(void) {
@@ -6103,6 +6325,7 @@ static int test_simd_v128_load32_lane(void) {
  * silently dropping the memory index.
  */
 static int test_simd_multi_memory_load32_lane(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
     ByteBuffer memory_payload = {0};
     bb_write_uleb(&memory_payload, 2);
     bb_write_byte(&memory_payload, 0x00);
@@ -6158,16 +6381,21 @@ static int test_simd_multi_memory_load32_lane(void) {
         return 1;
     }
 
-    int status = fa_Runtime_executeJob(runtime, job, 0);
-    if (status != FA_RUNTIME_OK) {
-        cleanup_job(runtime, job, module, &module_bytes, &instructions);
-        return 1;
-    }
-    const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
-    if (!value || value->kind != fa_job_value_i32 || value->payload.i32_value != marker ||
-        fa_JobStack_peek(&job->stack, 1) != NULL) {
-        cleanup_job(runtime, job, module, &module_bytes, &instructions);
-        return 1;
+    runtime->jit_context.config.min_ram_bytes = 0;
+    runtime->jit_context.config.min_cpu_count = 1;
+    runtime->jit_context.config.min_executed_ops = 0;
+    runtime->jit_context.config.min_hot_loop_hits = 0;
+    runtime->jit_context.config.min_advantage_score = 0;
+    runtime->jit_context.config.execute_sequences = true;
+    for (unsigned repeat = 0; repeat < 4; ++repeat) {
+        const int status = fa_Runtime_executeJob(runtime, job, 0);
+        const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+        if (status != FA_RUNTIME_OK || !value || value->kind != fa_job_value_i32 ||
+            value->payload.i32_value != marker || fa_JobStack_peek(&job->stack, 1) != NULL ||
+            (repeat > 1 && runtime->jit_sequence_ops == 0)) {
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
     }
 
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
@@ -7552,6 +7780,12 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_bound_scalar_immediates", "jit", "src/fa_runtime.c (bound constants and local indices)", test_jit_bound_scalar_immediates),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
     TEST_CASE("test_microcode_register_binary", "jit", "src/fa_ops_numeric.c (typed register arithmetic)", test_microcode_register_binary),
+    TEST_CASE("test_jit_sequence_scalar_parity", "jit", "src/fa_ops_sequence.c (all scalar delegates)", test_jit_sequence_scalar_parity),
+    TEST_CASE("test_jit_sequence_chain", "jit", "src/fa_ops_sequence.c (serial boundaries)", test_jit_sequence_chain),
+    TEST_CASE("test_jit_sequence_memory_parity", "jit", "src/fa_ops_sequence.c (serial boundaries)", test_jit_sequence_memory_parity),
+    TEST_CASE("test_jit_sequence_callback_eviction", "jit", "src/fa_ops_sequence.c (serial boundaries)", test_jit_sequence_callback_eviction),
+    TEST_CASE("test_jit_sequence_depth_cap", "jit", "src/fa_jit.c (resource and stack limits)", test_jit_sequence_depth_cap),
+    TEST_CASE("test_jit_probe_snapshot", "jit", "src/fa_jit.c (resource and stack limits)", test_jit_probe_snapshot),
     TEST_CASE("test_jit_program_opcode_roundtrip", "jit", "src/fa_jit.c (opcode serialization)", test_jit_program_opcode_roundtrip),
     TEST_CASE("test_spill_envelope_jit_roundtrip", "offload", "src/fa_jit.c (versioned spill envelope), fa_jit_program_serialize/deserialize", test_spill_envelope_jit_roundtrip),
     TEST_CASE("test_spill_envelope_jit_real_wasm", "offload", "src/fa_jit.c (versioned spill envelope) via real wasm + live spill hook", test_spill_envelope_jit_real_wasm),

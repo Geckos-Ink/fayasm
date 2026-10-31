@@ -108,6 +108,7 @@ typedef struct {
     float min_advantage_score;
     bool prescan_functions;
     bool prescan_force;
+    bool execute_sequences;
 } fa_JitConfig;
 
 typedef struct {
@@ -129,16 +130,28 @@ typedef struct {
     fa_JitBudget budget;
 } fa_JitDecision;
 
-typedef struct {
+struct fa_SequenceContext;
+struct fa_JitPreparedOp;
+typedef int (*fa_SequenceOperation)(struct fa_SequenceContext*, const struct fa_JitPreparedOp*);
+
+typedef struct fa_JitPreparedOp {
     const fa_WasmOp* descriptor;
     Operation steps[FA_JIT_MAX_STEPS_PER_OP];
     uint8_t step_count;
-    /* Runtime-bound scalar bytecode immediate. Zero size means unbound.
-     * Reconstructed from the module after preparation/load, never persisted.
-     * Its storage is included in the prepared-program budget. */
+    /* Runtime-bound argument bytes, in decoder push order, never persisted.
+     * immediate_size records scalar local/global/constant width for counters;
+     * next_pc == 0 marks an unbound instruction (including after spill/load).
+     * All metadata below is included in the prepared-program byte budget. */
     uint8_t immediate_size;
-    uint8_t immediate[8];
+    uint8_t immediate[32];
     uint32_t next_pc;
+    uint32_t source_pc;
+    uint32_t link_index; /* next prepared index + 1; zero resolves lazily */
+    uint8_t arg_sizes[5];
+    uint8_t arg_count;
+    fa_SequenceOperation sequence_operation;
+    uint64_t memory_offset;
+    uint32_t memory_index;
 } fa_JitPreparedOp;
 
 typedef struct {
@@ -184,3 +197,10 @@ bool fa_jit_program_serialize(const fa_JitProgram* program,
                               size_t* written_out);
 bool fa_jit_program_deserialize(const uint8_t* buffer, size_t size, fa_JitProgram* program_out);
 OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, struct fa_Runtime* runtime, fa_Job* job);
+
+/* Execute up to limit bound, straight-line instructions. Every exit restores
+ * the public job stack; calls/control remain runtime synchronization points. */
+int fa_jit_execute_sequence(fa_JitProgram* program, const int32_t* pc_to_index,
+                            size_t map_size, uint32_t* pc, size_t limit,
+                            struct fa_Runtime* runtime, fa_Job* job,
+                            size_t* executed, size_t* scalar_immediates);

@@ -1,6 +1,7 @@
 #define LIST_IMPLEMENTATION
 #include "fa_runtime.h"
 #include "fa_ops.h"
+#include "fa_sequence_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1639,14 +1640,21 @@ static bool runtime_jit_cache_reserve_bytes(fa_Runtime* runtime, size_t bytes_ne
     if (bytes_needed > budget) {
         return false;
     }
-    if (runtime->jit_cache_bytes + bytes_needed <= budget) {
+    /* All callers replace the protected entry. Charge resident cache bytes,
+     * not both old and replacement programs; otherwise growing a chunk can
+     * get stuck at half the budget and retry allocation on every opcode.
+     * The temporary candidate can coexist with the old program until commit. */
+    const size_t replaced_bytes = protect_index < runtime->jit_cache_count
+        ? runtime->jit_cache[protect_index].program_bytes : 0;
+    const size_t available = budget - bytes_needed;
+    if (runtime->jit_cache_bytes - replaced_bytes <= available) {
         return true;
     }
     if (!runtime->jit_cache || runtime->jit_cache_count == 0) {
         return false;
     }
     size_t attempts = runtime->jit_cache_count;
-    while (runtime->jit_cache_bytes + bytes_needed > budget && attempts > 0) {
+    while (runtime->jit_cache_bytes - replaced_bytes > available && attempts > 0) {
         uint32_t index = runtime->jit_cache_eviction_cursor % runtime->jit_cache_count;
         runtime->jit_cache_eviction_cursor = (index + 1U) % runtime->jit_cache_count;
         if (index == protect_index) {
@@ -1661,7 +1669,7 @@ static bool runtime_jit_cache_reserve_bytes(fa_Runtime* runtime, size_t bytes_ne
         runtime_jit_cache_evict_entry(runtime, entry);
         --attempts;
     }
-    return runtime->jit_cache_bytes + bytes_needed <= budget;
+    return runtime->jit_cache_bytes - replaced_bytes <= available;
 }
 
 static int runtime_jit_cache_load_entry(fa_Runtime* runtime, fa_JitProgramCacheEntry* entry) {
@@ -2145,6 +2153,9 @@ static int runtime_jit_cache_prescan(fa_Runtime* runtime) {
                     if (max_ops_per_chunk > 0 && opcode_count > max_ops_per_chunk) {
                         opcode_count = max_ops_per_chunk;
                     }
+                    if (opcode_count > budget_bytes / sizeof(fa_JitPreparedOp)) {
+                        opcode_count = budget_bytes / sizeof(fa_JitPreparedOp);
+                    }
                     const size_t estimate = runtime_jit_program_bytes_for_ops(opcode_count);
                     if (runtime->jit_cache_bytes + estimate <= budget_bytes) {
                         if (runtime_jit_prepare_program(runtime, entry, opcode_count)) {
@@ -2233,6 +2244,11 @@ static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* 
         opcode_count > runtime->jit_context.decision.budget.max_ops_per_chunk) {
         opcode_count = runtime->jit_context.decision.budget.max_ops_per_chunk;
     }
+    const size_t byte_budget = (size_t)runtime->jit_context.decision.budget.cache_budget_bytes;
+    if (byte_budget && opcode_count > byte_budget / sizeof(fa_JitPreparedOp)) {
+        opcode_count = byte_budget / sizeof(fa_JitPreparedOp);
+    }
+    if (!opcode_count) return;
     /* Compare against the budget-capped target: bodies larger than
      * max_ops_per_chunk stay prepared once their capped prefix is built,
      * instead of re-preparing on every executed instruction. */
@@ -3137,6 +3153,8 @@ fa_Runtime* fa_Runtime_init(void) {
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
     runtime->jit_bytecode_executions = 0;
+    runtime->jit_sequence_executions = 0;
+    runtime->jit_sequence_ops = 0;
     runtime->jit_program_prepare_calls = 0;
     runtime->jit_cache_bytes = 0;
     runtime->jit_cache_eviction_cursor = 0;
@@ -4779,6 +4797,8 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
     runtime->jit_program_prepare_calls = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
     runtime->jit_bytecode_executions = 0;
+    runtime->jit_sequence_executions = 0;
+    runtime->jit_sequence_ops = 0;
     if (runtime->jit_context.config.prescan_force && !runtime->jit_cache_prescanned) {
         int prescan_status = runtime_jit_cache_prescan(runtime);
         if (prescan_status != FA_RUNTIME_OK) {
@@ -4806,6 +4826,29 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
         }
         runtime->active_locals = frame->locals;
         runtime->active_locals_count = frame->locals_count;
+
+        if (runtime->jit_context.config.execute_sequences &&
+            runtime->jit_context.decision.tier == FA_JIT_TIER_MICROCODE &&
+            fa_ops_microcode_enabled()) {
+            fa_JitProgramCacheEntry* entry = runtime_jit_cache_entry(runtime, frame->func_index);
+            if (entry && entry->ready && entry->pc_to_index) {
+                size_t executed = 0, immediates = 0;
+                const uint64_t old_ops = runtime->jit_stats.executed_ops;
+                status = fa_jit_execute_sequence(&entry->program, entry->pc_to_index,
+                    entry->pc_to_index_len, &frame->pc, FA_JIT_UPDATE_INTERVAL,
+                    runtime, job, &executed, &immediates);
+                runtime->jit_stats.executed_ops += executed;
+                runtime->jit_stats.decoded_ops += executed;
+                runtime->jit_prepared_executions += executed;
+                runtime->jit_bytecode_executions += immediates;
+                runtime->jit_sequence_ops += executed;
+                if (executed) runtime->jit_sequence_executions++;
+                if (old_ops / FA_JIT_UPDATE_INTERVAL != runtime->jit_stats.executed_ops / FA_JIT_UPDATE_INTERVAL)
+                    fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
+                if (status != FA_RUNTIME_OK) break;
+                if (executed) continue;
+            }
+        }
 
         const uint8_t* body = frame->body;
         uint8_t opcode = body[frame->pc++];
@@ -4836,6 +4879,10 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
             /* Preparation/eviction may have invalidated the earlier pointer. */
             prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
             if (prepared) {
+                if (!bound) {
+                    prepared->source_pc = opcode_pc;
+                    prepared->next_pc = frame->pc;
+                }
                 status = fa_jit_execute_prepared_op(prepared, runtime, job);
                 runtime->jit_prepared_executions++;
             } else {
@@ -4878,12 +4925,25 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
         }
 
         prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
-        /* Bind only scalar local/global indices and constants. No variable
-         * control state or resource pointers enter the bytecode cache. */
-        if (prepared && job->reg_count == 1U && scalar_immediate) {
-            prepared->immediate_size = job->reg->size;
-            memcpy(prepared->immediate, job->reg->storage, prepared->immediate_size);
-            prepared->next_pc = frame->pc;
+        /* Bind decoded argument bytes for any non-call/control operation.
+         * No dynamic control state or resource pointers enter the cache. */
+        if (prepared && !ctx.has_call && job->reg_count <= 5U) {
+            size_t bytes = 0;
+            for (size_t i = 0; i < job->reg_count; ++i) bytes += job->reg_window[i].size;
+            if (bytes <= sizeof(prepared->immediate)) {
+                bytes = 0;
+                prepared->arg_count = job->reg_count;
+                for (size_t i = 0; i < job->reg_count; ++i) {
+                    const fa_JobDataFlow* arg = &job->reg_window[i];
+                    prepared->arg_sizes[i] = arg->size;
+                    memcpy(prepared->immediate + bytes, arg->storage, arg->size);
+                    bytes += arg->size;
+                }
+                prepared->immediate_size = scalar_immediate ? job->reg->size : 0;
+                prepared->source_pc = opcode_pc;
+                prepared->next_pc = frame->pc;
+                fa_ops_sequence_bind(prepared);
+            }
         }
         if (prepared) {
             status = fa_jit_execute_prepared_op(prepared, runtime, job);

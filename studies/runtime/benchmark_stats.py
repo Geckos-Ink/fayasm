@@ -35,21 +35,33 @@ def main():
     parser.add_argument("--fixture", type=Path, default=Path("wasm_samples/build/stats_suite.wasm"))
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--microcode", type=int, nargs="+", choices=[0, 1], default=[0, 1])
+    parser.add_argument("--sequence-mode", action="append", default=[], metavar="LABEL=0|1",
+                        help="Override serial execution for a named build (default: enabled)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
     fixture = args.fixture.resolve(strict=True)
     variants = []
+    sequence_modes = {}
+    overrides = dict(spec.split("=", 1) for spec in args.sequence_mode)
+    if any(value not in ("0", "1") for value in overrides.values()):
+        parser.error("--sequence-mode must be LABEL=0 or LABEL=1")
+    known = set()
     for spec in args.variant:
         label, binary = spec.split("=", 1)
+        known.add(label)
         for mode in args.microcode:
             variants.append((f"{label}/mc{mode}", str(Path(binary).resolve(strict=True)), mode))
+            sequence_modes[f"{label}/mc{mode}"] = int(overrides.get(label, "1"))
+    if overrides.keys() - known:
+        parser.error("--sequence-mode names an unknown variant")
     if len({v[0] for v in variants}) != len(variants):
         parser.error("variant labels and microcode modes must be unique")
     report = {"platform": platform.platform(), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
               "repeats": args.repeats, "timer": "perf_counter, whole process, seconds",
-              "variants": {label: {"binary": binary, "microcode": mode} for label, binary, mode in variants},
+              "variants": {label: {"binary": binary, "microcode": mode,
+                                   "sequences": sequence_modes[label]} for label, binary, mode in variants},
               "workloads": {}}
     for name, export, call_args in WORKLOADS:
         expected = None
@@ -59,6 +71,7 @@ def main():
             shift = max(0, repeat) % len(variants)
             for label, binary, mode in variants[shift:] + variants[:shift]:
                 env = dict(os.environ, FAYASM_MICROCODE=str(mode),
+                           FAYASM_JIT_SEQUENCES=str(sequence_modes[label]),
                            FAYASM_JIT_PRESCAN="0", FAYASM_JIT_PRESCAN_FORCE="0")
                 start = time.perf_counter()
                 result = subprocess.run([binary, str(fixture), export, *call_args],

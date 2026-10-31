@@ -3,6 +3,7 @@
 #include "fa_arch.h"
 #include "fa_ops.h"
 #include "fa_runtime.h"
+#include "fa_sequence_internal.h"
 
 #include <limits.h>
 #include <math.h>
