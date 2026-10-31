@@ -7,6 +7,7 @@ option(FAYASM_BUILD_STATIC "Build as static library" ON)
 option(FAYASM_BUILD_TESTS "Build tests" ON)
 option(FAYASM_BUILD_TOOLS "Build CLI tools" ON)
 option(FAYASM_TARGET_ESP32 "Target ESP32 at compile time" OFF)
+option(FAYASM_FIXED_REGISTERS "Use fixed operand slots instead of the circular window" OFF)
 
 # Impostazioni standard di compilazione
 set(CMAKE_C_STANDARD 99)

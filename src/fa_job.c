@@ -56,6 +56,19 @@ bool fa_JobStack_push(fa_JobStack* stack, const fa_JobValue* value){
         return false;
     }
 
+#if FA_JOB_FIXED_REGISTERS
+    if (stack->size < FA_JOB_REGISTER_WINDOW_SIZE) {
+        stack->window[stack->size] = *value;
+        stack->window_count++;
+    } else {
+        if (!fa_JobStack_reserve_spill(stack, stack->spill_count + 1U)) {
+            return false;
+        }
+        stack->spill_values[stack->spill_count++] = *value;
+    }
+    stack->size++;
+    return true;
+#else
     if (stack->window_count < FA_JOB_REGISTER_WINDOW_SIZE) {
         const size_t index = ((size_t)stack->window_start + stack->window_count) %
                              (size_t)FA_JOB_REGISTER_WINDOW_SIZE;
@@ -74,12 +87,28 @@ bool fa_JobStack_push(fa_JobStack* stack, const fa_JobValue* value){
                                     (size_t)FA_JOB_REGISTER_WINDOW_SIZE);
     stack->size++;
     return true;
+#endif
 }
 
 bool fa_JobStack_pop(fa_JobStack* stack, fa_JobValue* out){
     if (!stack || stack->size == 0 || stack->window_count == 0) {
         return false;
     }
+#if FA_JOB_FIXED_REGISTERS
+    if (stack->spill_count > 0) {
+        if (out) {
+            *out = stack->spill_values[stack->spill_count - 1U];
+        }
+        stack->spill_count--;
+    } else {
+        if (out) {
+            *out = stack->window[stack->window_count - 1U];
+        }
+        stack->window_count--;
+    }
+    stack->size--;
+    return true;
+#else
     const size_t newest = ((size_t)stack->window_start + stack->window_count - 1U) %
                           (size_t)FA_JOB_REGISTER_WINDOW_SIZE;
     if (out) {
@@ -99,6 +128,7 @@ bool fa_JobStack_pop(fa_JobStack* stack, fa_JobValue* out){
     }
     stack->size--;
     return true;
+#endif
 }
 
 const fa_JobValue* fa_JobStack_peek(const fa_JobStack* stack, size_t depth){
@@ -106,6 +136,11 @@ const fa_JobValue* fa_JobStack_peek(const fa_JobStack* stack, size_t depth){
         return NULL;
     }
 
+#if FA_JOB_FIXED_REGISTERS
+    const size_t index = stack->size - 1U - depth;
+    return index < FA_JOB_REGISTER_WINDOW_SIZE ? &stack->window[index] :
+        &stack->spill_values[index - FA_JOB_REGISTER_WINDOW_SIZE];
+#else
     if (depth < stack->window_count) {
         const size_t logical = (size_t)stack->window_count - 1U - depth;
         const size_t index = ((size_t)stack->window_start + logical) %
@@ -115,6 +150,7 @@ const fa_JobValue* fa_JobStack_peek(const fa_JobStack* stack, size_t depth){
 
     const size_t spill_depth = depth - stack->window_count;
     return &stack->spill_values[stack->spill_count - 1U - spill_depth];
+#endif
 }
 
 void fa_JobStack_free(fa_JobStack* stack){

@@ -2242,7 +2242,7 @@ static void runtime_jit_maybe_prepare(fa_Runtime* runtime, fa_RuntimeCallFrame* 
     (void)runtime_jit_prepare_program(runtime, entry, opcode_count);
 }
 
-static const fa_JitPreparedOp* runtime_jit_lookup_prepared(fa_Runtime* runtime,
+static fa_JitPreparedOp* runtime_jit_lookup_prepared(fa_Runtime* runtime,
                                                            fa_RuntimeCallFrame* frame,
                                                            uint32_t opcode_pc) {
     if (!runtime || !frame) {
@@ -3136,6 +3136,7 @@ fa_Runtime* fa_Runtime_init(void) {
     fa_jit_context_init(&runtime->jit_context, NULL);
     memset(&runtime->jit_stats, 0, sizeof(runtime->jit_stats));
     runtime->jit_prepared_executions = 0;
+    runtime->jit_bytecode_executions = 0;
     runtime->jit_program_prepare_calls = 0;
     runtime->jit_cache_bytes = 0;
     runtime->jit_cache_eviction_cursor = 0;
@@ -4777,6 +4778,7 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
     runtime->jit_prepared_executions = 0;
     runtime->jit_program_prepare_calls = 0;
     fa_jit_context_update(&runtime->jit_context, &runtime->jit_stats);
+    runtime->jit_bytecode_executions = 0;
     if (runtime->jit_context.config.prescan_force && !runtime->jit_cache_prescanned) {
         int prescan_status = runtime_jit_cache_prescan(runtime);
         if (prescan_status != FA_RUNTIME_OK) {
@@ -4808,6 +4810,39 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
         const uint8_t* body = frame->body;
         uint8_t opcode = body[frame->pc++];
         uint32_t opcode_pc = frame->pc - 1U;
+
+        /* Bound scalar bytecode and immediate-free numeric instructions need
+         * no control context. Calls, branches, memory and prefixes continue
+         * through the common decoder, preserving all three decode paths. */
+        const bool scalar_immediate = (opcode >= 0x20 && opcode <= 0x24) ||
+                                      (opcode >= 0x41 && opcode <= 0x44);
+        fa_JitPreparedOp* prepared = scalar_immediate ?
+            runtime_jit_lookup_prepared(runtime, frame, opcode_pc) : NULL;
+        const bool bound = prepared && prepared->immediate_size > 0;
+        if (bound || (opcode >= 0x45 && opcode <= 0xC4)) {
+            if (bound) {
+                status = runtime_push_reg_value(job, prepared->immediate, prepared->immediate_size);
+                if (status != FA_RUNTIME_OK) {
+                    break;
+                }
+                frame->pc = prepared->next_pc;
+                runtime->jit_bytecode_executions++;
+            }
+            status = runtime_jit_record_opcode(runtime, frame, opcode, opcode_pc);
+            if (status != FA_RUNTIME_OK) {
+                break;
+            }
+            runtime_jit_maybe_prepare(runtime, frame);
+            /* Preparation/eviction may have invalidated the earlier pointer. */
+            prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
+            if (prepared) {
+                status = fa_jit_execute_prepared_op(prepared, runtime, job);
+                runtime->jit_prepared_executions++;
+            } else {
+                status = fa_execute_op(opcode, runtime, job);
+            }
+            continue;
+        }
 
         fa_RuntimeInstructionContext ctx;
         status = runtime_decode_instruction(body, frame->body_size, runtime, frame, job, opcode, &ctx);
@@ -4842,7 +4877,14 @@ static int runtime_execute_job_internal(fa_Runtime* runtime,
             break;
         }
 
-        const fa_JitPreparedOp* prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
+        prepared = runtime_jit_lookup_prepared(runtime, frame, opcode_pc);
+        /* Bind only scalar local/global indices and constants. No variable
+         * control state or resource pointers enter the bytecode cache. */
+        if (prepared && job->reg_count == 1U && scalar_immediate) {
+            prepared->immediate_size = job->reg->size;
+            memcpy(prepared->immediate, job->reg->storage, prepared->immediate_size);
+            prepared->next_pc = frame->pc;
+        }
         if (prepared) {
             status = fa_jit_execute_prepared_op(prepared, runtime, job);
             runtime->jit_prepared_executions++;

@@ -23,7 +23,7 @@ fayasm already supports a substantial runtime slice:
 - Scalar integer<->float conversions including the non-trapping saturating truncations (`i32`/`i64.trunc_sat_f32`/`f64_s`/`_u`, `0xFC 0x00`–`0x07`) that toolchains emit by default for `(int)`/`(long)` casts of floats.
 - SIMD core + relaxed opcode coverage wired through `fa_ops.*` (with active regression tests).
 - Host import bindings for functions, memories, and tables; dynamic-library bindings on supported desktop targets.
-- JIT/microcode preparation scaffolding (`fa_jit.*`) with per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory, plus a runtime-wide versioned spill envelope (`FA_SPILL_*`) for portable, endianness-stable persistence of JIT programs and memory.
+- Portable prepared bytecode/microcode (`fa_jit.*`) with macro-generated typed binary handlers, cached scalar immediates, per-function opcode caches, optional prescan, and spill/load hooks for JIT programs and linear memory, plus a runtime-wide versioned spill envelope (`FA_SPILL_*`) for portable, endianness-stable persistence of JIT programs and memory.
 - `fa_ops.*` now routes control/local/global/ref/table plus `0xFC` bulk-memory/table families through prebuilt delegate tables, and the `0xFD` SIMD/relaxed-SIMD prefix dispatches through a prebuilt family-handler table (`g_simd_dispatch`) instead of a 347-case switch tower, reducing per-call dispatch to a single indexed lookup.
 
 ## Quickstart (Native, Recommended)
@@ -156,71 +156,80 @@ Notes:
 - `FAYASM_JIT_PRESCAN=1` to enable per-function prescan.
 - `FAYASM_JIT_PRESCAN_FORCE=1` to force prescan mode.
 - `FAYASM_TARGET_RAM_BYTES` / `FAYASM_TARGET_CPU_COUNT` compile-time hints for embedded probes.
-- `FA_JOB_REGISTER_WINDOW_SIZE` controls the inline typed-operand window (default 8).
+- `FA_JOB_REGISTER_WINDOW_SIZE` controls inline operand slots for either backend (default 8).
+- CMake `-DFAYASM_FIXED_REGISTERS=ON` selects fixed virtual operand slots instead of circular forwarding. The first eight operands stay at stable indices; deeper values use retained contiguous storage. This portable C99 alternative does not reserve physical CPU registers. The default remains the circular window.
 - `FA_JOB_STACK_MAX_DEPTH` caps live operands before a push fails safely (default 65,536; lower it for constrained builds).
 - `FA_JOB_DATA_FLOW_WINDOW_SIZE` controls decoded-immediate forwarding (default 8, minimum 5 for current SIMD/multi-memory decoding).
 
+For a smaller fixed-slot profile (the window sizes also affect public struct layouts):
+
+```bash
+cmake -S . -B build/fixed -DCMAKE_BUILD_TYPE=Release \
+  -DFAYASM_FIXED_REGISTERS=ON \
+  '-DCMAKE_C_FLAGS=-DFA_JOB_REGISTER_WINDOW_SIZE=4 -DFA_JOB_DATA_FLOW_WINDOW_SIZE=5 -DFA_JOB_STACK_MAX_DEPTH=2048'
+cmake --build build/fixed
+build/fixed/bin/fayasm_test_main
+```
+
+Both backends retain overflow capacity across resets and fail safely at the
+configured depth cap. The fixed backend avoids rotation/refill; the circular
+backend keeps the newest operands inline at greater depths. Measure both on
+the target processor. Microcode table enablement and JIT resource gates remain
+separate: forcing `FAYASM_MICROCODE=1` does not remove the JIT cache budget or
+RAM/CPU requirements.
+
 ## Performance Snapshot
 
-The following table is the 2026-07 pre-register-window baseline measured on an
-Apple M1 Pro (16 GB) with the `stats_suite.wasm`
-fixture (Emscripten 5.0.3, `-O2`), best-of-3 wall time through
-`fayasm_run` with the ~10 ms startup baseline subtracted, against the same C
-compiled natively (`cc -O2 -ffp-contract=off`). Full data and methodology:
-`studies/runtime/stats_benchmarks.md`.
+Measured **2026-10-31** on Apple M1 Pro (16 GiB), AppleClang 21, static
+Release builds. Every runner uses the same Rust 1.98.1 `stats_suite.wasm`
+fixture. Values are median-of-three whole-process wall time after an excluded
+warmup, including parsing, startup, preparation, and execution.
+**Microcode is enabled in every column**; prescan is disabled.
 
-| Workload | fayasm | native -O2 | slowdown |
-| --- | ---: | ---: | ---: |
-| Welford variance, 500k samples | 4.3 s | 3.7 ms | ~1,150x |
-| Monte Carlo pi, 500k points | 5.5 s | 2.5 ms | ~2,100x |
-| Sieve of Eratosthenes, n=100k | 0.7 s | 0.26 ms | ~2,900x |
-| 40x40 int matrix multiply | 0.32 s | 0.03 ms | ~11,500x |
-| Combined stats pipeline, n=100k | 5.2 s | 1.9 ms | ~2,700x |
+“Before” is revision `8db9510`, which already used the circular window.
+“Fixed 4” also reduces immediate slots to five and caps operand depth at 2,048.
 
-A controlled Release/static comparison on 2026-07-31 measured the current
-hybrid forwarding window directly against repository `HEAD` `bf76305`, using
-the same binary options and fixture on both sides:
+| Workload | Before (window 8) | New window 8 | New fixed 8 | New fixed 4 |
+| --- | ---: | ---: | ---: | ---: |
+| Mean, 500k samples | 0.964 s | 0.888 s | 0.880 s | 0.882 s |
+| Welford variance, 500k | 1.754 s | 1.619 s | 1.607 s | 1.602 s |
+| Pearson correlation, 500k | 2.556 s | 2.343 s | 2.317 s | 2.323 s |
+| Monte Carlo pi, 500k | 2.262 s | 2.101 s | 2.075 s | 2.084 s |
+| Sieve, n=100k | 0.323 s | 0.307 s | 0.307 s | 0.303 s |
+| 40×40 matrix multiply | 0.110 s | 0.104 s | 0.103 s | 0.103 s |
+| Combined pipeline, n=100k | 2.175 s | 2.044 s | 2.028 s | 2.018 s |
 
-| Combined pipeline, n=100k | linked-stack baseline | hybrid window | change |
-| --- | ---: | ---: | ---: |
-| descriptor dispatch | 3.43 s | 2.14 s | -37.6% |
-| prepared dispatch | 3.47 s | 2.18 s | -37.2% |
+The new circular microcode path takes **5.2–8.3% less time** across the eight
+nontrivial kernels; fixed-eight takes **5.2–9.3% less** than pre-change
+microcode. Differences between the new backends are about 0–1.2% here, so the
+circular backend remains the default. Descriptor-only controls stay close to
+the baseline, with small regressions on some kernels. All configurations
+return identical outputs, also matching the native C reference printed to
+17 significant digits.
 
-Both sides returned the identical f64 result. See
-`studies/runtime/stats_benchmarks.md` for the exact scope and caveats; this
-focused comparison is not a claim that every workload improves by 37%.
+The compact profile reduces `sizeof(fa_Job)` from **648 to 408 bytes** on this
+ARM64 ABI by reducing slot counts. Fixed storage alone does not shrink the
+struct. Embedded speed and 32-bit footprint still require hardware measurements.
 
-What the numbers say:
-
-- The structural interpreter executes roughly **5-7 million wasm
-  instructions/second** (~150-200 ns/op) on this class of hardware. fayasm
-  optimizes for clarity and hackability, not raw speed; the worst ratios are
-  kernels native LLVM auto-vectorizes.
-- **Numerical results are bit-identical to native IEEE semantics**: every
-  stats kernel (dependent Welford chains, Newton sqrt loops, PRNG-driven
-  Monte Carlo) reproduces the native reference exactly, under both the emcc
-  and rustc fixture builds.
-- Microcode-prepared dispatch is currently within +/-5% of plain descriptor
-  dispatch on real workloads — extensions to microcode coverage should be
-  justified by measured wins on these fixtures.
-- Benchmarking exposed (and fixed) a real defect: function bodies larger than
-  the JIT budget cap (512 recorded opcodes) were re-preparing their microcode
-  program on **every executed instruction** (~9.5x slowdown on the inlined
-  pipeline body). The runtime now tracks the budget-capped prepared count
-  (`test_jit_large_body_prepare_once` guards the fix).
+See the [full benchmark study](studies/runtime/stats_benchmarks.md) for all
+kernels, microcode-off controls, cache/code-size costs, validation, and
+reproduction commands; [raw samples](studies/runtime/stats_2026-10-31.json)
+and the [comparison script](studies/runtime/benchmark_stats.py) are included.
+July's Emscripten/native ratios and linked-stack comparisons are preserved as
+historical results there and are not mixed with these measurements.
 
 ## Architecture At a Glance
 
 - `src/fa_runtime.*`: execution loop, frames, locals/globals, memory/table plumbing, trap + spill/load hooks, host bindings.
 - `src/fa_ops.c` / `src/fa_ops_*.c`: the central opcode registry and public dispatch, with focused translation units for shared typed-value helpers, control/scalar memory/ref ops, numeric microcode, calls/tables, `0xFC` bulk operations, and `0xFD` SIMD/relaxed-SIMD families.
-- `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution.
+- `src/fa_jit.*`: resource probe, budget/advantage scoring, opcode import/export, prepared-op execution. Prepared records bind scalar local/global and constant immediates after their first decode; loops reuse them. Macro-generated typed binary handlers replace two operands with one using a single pop. Bound immediates count toward cache budgets and are rebuilt after spill/load.
 - `src/fa_wasm.*`: parser/loader for module structure and function bodies.
 - `src/fa_wasm_stream.*`: instruction cursor and immediate decoding helpers.
-- `src/fa_job.*`: an eight-value circular operand-forwarding window with bounded contiguous spill storage, plus a separate allocation-free decoded-immediate window. Shallow/steady computations do not allocate per operation; only live depth beyond the operand window grows spill storage.
+- `src/fa_job.*`: selectable circular forwarding or fixed operand slots, with bounded retained contiguous overflow storage and a separate allocation-free decoded-immediate window. Shallow/steady computations do not allocate per operation.
 - `test/`: `fayasm_test_main` harness with runtime regressions + optional wasm fixture smoke tests.
 
-`fa_JobStack` and `fa_Job` are public C struct layouts in this experimental
-API. The hybrid-window change is layout-breaking for precompiled consumers;
+`fa_JobStack`, `fa_Job`, `fa_JitPreparedOp`, and `fa_Runtime` are public C
+struct layouts in this experimental API. Prepared-bytecode fields change layout for precompiled consumers;
 rebuild applications with the matching fayasm headers and use the stack/window
 helpers instead of addressing storage fields directly.
 
@@ -229,9 +238,9 @@ helpers instead of addressing storage fields directly.
 ### Near-term focus
 
 - Spill/load persistence is now standardized around a runtime-wide versioned envelope (`FA_SPILL_*`) for JIT programs and linear memory; extend the same convention to any further persisted runtime state as it lands.
-- Continue replacing remaining per-family switch/subopcode towers under `src/fa_ops_*.c`; the prefix families (control/local/global/ref/table, `0xFC`, `0xFD` SIMD) are now table-driven, leaving per-family operator selection as the incremental microcode target.
+- Extend typed microcode, scalar bytecode binding, and bounded instruction fusion only where `stats_suite` measurements justify their code/cache footprint. Calls, control flow, memory, and prefixed operations retain the common decoder.
 - Expand smoke coverage using `wasm_samples/` modules; real-toolchain integer div/rem, bit-count, and rotate coverage now complements the floating-point, indirect-call, and bulk-memory fixtures.
-- Validate repeated offload cycles and tune the bounded job-window sizes on low-RAM targets.
+- Validate repeated offload cycles, fixed versus circular operand storage, and prepared-cache footprint on low-RAM hardware before changing defaults.
 
 ### Medium-term focus
 

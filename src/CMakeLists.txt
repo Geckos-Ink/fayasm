@@ -67,6 +67,14 @@ if(FAYASM_BUILD_STATIC)
     )
 endif()
 
+# This changes inline stack semantics in public headers as well as the library.
+foreach(fayasm_target fayasm fayasm_static)
+    if(TARGET ${fayasm_target})
+        target_compile_definitions(${fayasm_target} PUBLIC
+            FA_JOB_FIXED_REGISTERS=$<BOOL:${FAYASM_FIXED_REGISTERS}>)
+    endif()
+endforeach()
+
 # Librerie di sistema necessarie (esempio: pthread, rt, m)
 find_package(Threads REQUIRED)
 if(FAYASM_BUILD_SHARED)

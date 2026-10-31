@@ -94,6 +94,7 @@ u64 ctz64(u64 value);
 u64 popcnt64(u64 value);
 
 /* Opcode-family entry points used by the central descriptor registry. */
+void fa_ops_numeric_register_microcode(const fa_Microcode** table);
 OP_RETURN_TYPE op_arith_add_mc(OP_ARGUMENTS);
 OP_RETURN_TYPE op_arith_div_mc(OP_ARGUMENTS);
 OP_RETURN_TYPE op_arith_mul_mc(OP_ARGUMENTS);

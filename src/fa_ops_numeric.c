@@ -3,6 +3,78 @@
 /* Scalar numeric handlers and macro-built microcode sequences. */
 
 /*
+ * Register binary family: specialize width/kind at preparation time, inspect
+ * both operands before mutation, then replace two operands with one result.
+ * There is only one pop and no push/allocation. Reacquire the destination
+ * after pop because the circular backend may refill/reorder its window.
+ * Cross-kind legacy calls retain the descriptor handler as their fallback.
+ * Integer arithmetic uses unsigned C operations for WASM modulo semantics;
+ * f32 uses double intermediates to match the existing scalar handlers.
+ * This single list emits both handlers and their one-step microcode mapping.
+ */
+#define REGISTER_BINARY_OPS(X) \
+    X(6A, i32, u32, u32_value, left + right, op_arith_add_mc) \
+    X(6B, i32, u32, u32_value, left - right, op_arith_sub_mc) \
+    X(6C, i32, u32, u32_value, left * right, op_arith_mul_mc) \
+    X(71, i32, u32, u32_value, left & right, op_bitwise_and_mc) \
+    X(72, i32, u32, u32_value, left | right, op_bitwise_or_mc) \
+    X(73, i32, u32, u32_value, left ^ right, op_bitwise_xor_mc) \
+    X(74, i32, u32, u32_value, left << (right & 31U), op_shift_left_mc) \
+    X(76, i32, u32, u32_value, left >> (right & 31U), op_shift_right_unsigned_mc) \
+    X(7C, i64, u64, u64_value, left + right, op_arith_add_mc) \
+    X(7D, i64, u64, u64_value, left - right, op_arith_sub_mc) \
+    X(7E, i64, u64, u64_value, left * right, op_arith_mul_mc) \
+    X(83, i64, u64, u64_value, left & right, op_bitwise_and_mc) \
+    X(84, i64, u64, u64_value, left | right, op_bitwise_or_mc) \
+    X(85, i64, u64, u64_value, left ^ right, op_bitwise_xor_mc) \
+    X(86, i64, u64, u64_value, left << (right & 63U), op_shift_left_mc) \
+    X(88, i64, u64, u64_value, left >> (right & 63U), op_shift_right_unsigned_mc) \
+    X(92, f32, f64, f32_value, left + right, op_arith_add_mc) \
+    X(93, f32, f64, f32_value, left - right, op_arith_sub_mc) \
+    X(94, f32, f64, f32_value, left * right, op_arith_mul_mc) \
+    X(95, f32, f64, f32_value, left / right, op_arith_div_mc) \
+    X(A0, f64, f64, f64_value, left + right, op_arith_add_mc) \
+    X(A1, f64, f64, f64_value, left - right, op_arith_sub_mc) \
+    X(A2, f64, f64, f64_value, left * right, op_arith_mul_mc) \
+    X(A3, f64, f64, f64_value, left / right, op_arith_div_mc)
+
+#define DEFINE_REGISTER_BINARY(code, kind_name, ctype, field, expr, fallback) \
+    static OP_RETURN_TYPE op_register_##code(OP_ARGUMENTS) { \
+        if (!job || !descriptor) return FA_RUNTIME_ERR_INVALID_ARGUMENT; \
+        const fa_JobValue* rhs = fa_JobStack_peek(&job->stack, 0); \
+        const fa_JobValue* lhs = fa_JobStack_peek(&job->stack, 1); \
+        if (!lhs || !rhs || lhs->kind != fa_job_value_##kind_name || \
+            rhs->kind != fa_job_value_##kind_name || \
+            lhs->bit_width != descriptor->type.size * 8U || \
+            rhs->bit_width != descriptor->type.size * 8U) \
+            return fallback(runtime, job, descriptor); \
+        const ctype left = lhs->payload.field; \
+        const ctype right = rhs->payload.field; \
+        fa_JobValue result = {0}; \
+        result.kind = fa_job_value_##kind_name; \
+        result.bit_width = descriptor->type.size * 8U; \
+        result.is_signed = descriptor->type.type == wt_integer && descriptor->type.is_signed; \
+        result.payload.field = (expr); \
+        fa_JobStack_pop(&job->stack, NULL); \
+        /* peek returns const for public readers; this stack is mutable. */ \
+        *(fa_JobValue*)fa_JobStack_peek(&job->stack, 0) = result; \
+        return FA_RUNTIME_OK; \
+    } \
+    static const Operation register_steps_##code[] = {op_register_##code}; \
+    static const fa_Microcode register_mc_##code = {register_steps_##code, 1};
+
+REGISTER_BINARY_OPS(DEFINE_REGISTER_BINARY)
+#undef DEFINE_REGISTER_BINARY
+
+void fa_ops_numeric_register_microcode(const fa_Microcode** table) {
+#define MAP_REGISTER_BINARY(code, kind, ctype, field, expr, fallback) \
+    table[0x##code] = &register_mc_##code;
+    REGISTER_BINARY_OPS(MAP_REGISTER_BINARY)
+#undef MAP_REGISTER_BINARY
+}
+#undef REGISTER_BINARY_OPS
+
+/*
  * Macro family: bitwise operations.
  * All generated handlers:
  * - pop two stack operands (`rhs`, then `lhs`)
@@ -372,8 +444,8 @@ OP_RETURN_TYPE op_arith_add_mc(OP_ARGUMENTS) {
             restore_stack_value(job, &rhs);
             return FA_RUNTIME_ERR_TRAP;
         }
-        i64 outcome = left + right;
-        return push_int_checked(job, (u64)outcome, result_bits, true);
+        u64 outcome = (u64)left + (u64)right;
+        return push_int_checked(job, outcome, result_bits, true);
     }
 
     u64 right = 0;
@@ -423,8 +495,8 @@ OP_RETURN_TYPE op_arith_sub_mc(OP_ARGUMENTS) {
             restore_stack_value(job, &rhs);
             return FA_RUNTIME_ERR_TRAP;
         }
-        i64 outcome = left - right;
-        return push_int_checked(job, (u64)outcome, result_bits, true);
+        u64 outcome = (u64)left - (u64)right;
+        return push_int_checked(job, outcome, result_bits, true);
     }
 
     u64 right = 0;
@@ -474,8 +546,8 @@ OP_RETURN_TYPE op_arith_mul_mc(OP_ARGUMENTS) {
             restore_stack_value(job, &rhs);
             return FA_RUNTIME_ERR_TRAP;
         }
-        i64 outcome = left * right;
-        return push_int_checked(job, (u64)outcome, result_bits, true);
+        u64 outcome = (u64)left * (u64)right;
+        return push_int_checked(job, outcome, result_bits, true);
     }
 
     u64 right = 0;

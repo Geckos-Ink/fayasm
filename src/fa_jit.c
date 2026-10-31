@@ -429,6 +429,9 @@ OP_RETURN_TYPE fa_jit_execute_prepared_op(const fa_JitPreparedOp* prepared, stru
     if (prepared->step_count == 0) {
         return FA_RUNTIME_ERR_UNIMPLEMENTED_OPCODE;
     }
+    if (prepared->step_count == 1 && prepared->steps[0]) {
+        return prepared->steps[0](runtime, job, prepared->descriptor);
+    }
     for (uint8_t i = 0; i < prepared->step_count; ++i) {
         Operation step = prepared->steps[i];
         if (!step) {

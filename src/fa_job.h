@@ -18,13 +18,25 @@
 #define FA_JOB_DATA_FLOW_MAX_SIZE 16U /* v128 immediate width, in bytes */
 
 /*
- * Keep the hottest operand values in the job itself. Older live operands
- * spill into a contiguous, geometrically grown array. The depth cap is a
+ * By default keep the newest operand values in the job itself. Older values
+ * spill into a contiguous, geometrically grown array; fixed slots below use
+ * the opposite placement. The depth cap is a
  * safety boundary for malformed/unvalidated inputs and can be lowered for an
  * embedded build without changing runtime code.
  */
 #ifndef FA_JOB_REGISTER_WINDOW_SIZE
 #define FA_JOB_REGISTER_WINDOW_SIZE 8U
+#endif
+
+/* Fixed virtual registers R0..R(N-1) hold the first N operands. Values above
+ * them use the retained spill array; no rotation or refill is needed. This
+ * portable C99 backend does not reserve physical CPU registers. */
+#ifndef FA_JOB_FIXED_REGISTERS
+#define FA_JOB_FIXED_REGISTERS 0
+#endif
+
+#if FA_JOB_FIXED_REGISTERS != 0 && FA_JOB_FIXED_REGISTERS != 1
+#error "FA_JOB_FIXED_REGISTERS must be 0 or 1"
 #endif
 
 #ifndef FA_JOB_STACK_MAX_DEPTH
@@ -77,12 +89,14 @@ typedef struct {
 } fa_JobValue;
 
 typedef struct {
-    /* Oldest values beyond the forwarding window, in stack order. */
+    /* Window backend: oldest operands. Fixed backend: operands above R(N-1).
+     * Both are in stack order and retain capacity across resets. */
     fa_JobValue* spill_values;
     size_t spill_count;
     size_t spill_capacity;
 
-    /* Circular window ordered from window_start (oldest) to newest. */
+    /* Circular window, or fixed slots indexed by absolute operand depth.
+     * window_start stays zero in fixed mode. Use helpers for either backend. */
     fa_JobValue window[FA_JOB_REGISTER_WINDOW_SIZE];
     uint8_t window_start;
     uint8_t window_count;

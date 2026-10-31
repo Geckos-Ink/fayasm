@@ -1208,6 +1208,40 @@ static int test_job_stack_depth_limit(void) {
     return 0;
 }
 
+/* Interleave overflow and refill with mixed typed values. Fixed slots must
+ * keep their absolute positions; both backends must expose the same stack. */
+static int test_job_register_backend_ordering(void) {
+    fa_JobStack stack = {0};
+    const size_t count = FA_JOB_REGISTER_WINDOW_SIZE + 19U;
+    for (size_t i = 0; i < count; ++i) {
+        fa_JobValue value = test_i32_stack_value((i32)i);
+        if (!fa_JobStack_push(&stack, &value)) goto fail;
+    }
+    for (size_t i = count; i > 0; --i) {
+        const fa_JobValue* top = fa_JobStack_peek(&stack, 0);
+        if (!top || top->payload.i32_value != (i32)(i - 1U)) goto fail;
+        fa_JobValue vector = {0};
+        vector.kind = fa_job_value_v128;
+        vector.bit_width = 128;
+        vector.payload.v128_value.low = i;
+        vector.payload.v128_value.high = ~((u64)i);
+        if (!fa_JobStack_push(&stack, &vector)) goto fail;
+        fa_JobValue popped;
+        if (!fa_JobStack_pop(&stack, &popped) || popped.kind != fa_job_value_v128 ||
+            popped.payload.v128_value.low != i || popped.payload.v128_value.high != ~((u64)i)) goto fail;
+#if FA_JOB_FIXED_REGISTERS
+        if (stack.window_start != 0 || stack.window[0].payload.i32_value != 0) goto fail;
+#endif
+        if (!fa_JobStack_pop(&stack, &popped) || popped.payload.i32_value != (i32)(i - 1U)) goto fail;
+    }
+    if (fa_JobStack_peek(&stack, 0) || fa_JobStack_pop(&stack, NULL)) goto fail;
+    fa_JobStack_free(&stack);
+    return 0;
+fail:
+    fa_JobStack_free(&stack);
+    return 1;
+}
+
 static int test_job_immediate_window_bounds(void) {
     fa_Job* job = fa_Job_init();
     if (!job) {
@@ -1367,6 +1401,16 @@ static int test_jit_cache_dispatch(void) {
         return 1;
     }
 
+    /* Constants bind on first execution, then reuse exact bytes without a
+     * second decode. The count must reset rather than accumulate. */
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        if (!execute_expect_i32(runtime, job, 0, 12) ||
+            runtime->jit_bytecode_executions != 2 || runtime->jit_program_prepare_calls != 0) {
+            cleanup_job(runtime, job, module, &module_bytes, &instructions);
+            return 1;
+        }
+    }
+
     cleanup_job(runtime, job, module, &module_bytes, &instructions);
     return 0;
 }
@@ -1457,6 +1501,63 @@ static int test_jit_large_body_prepare_once(void) {
     return ok ? 0 : 1;
 }
 
+static int test_jit_bound_scalar_immediates(void) {
+    test_set_env("FAYASM_MICROCODE", "1");
+    const uint8_t types[] = {VALTYPE_I32, VALTYPE_I64, VALTYPE_F32, VALTYPE_F64};
+    const uint8_t adds[] = {0x6A, 0x7C, 0x92, 0xA0};
+    for (size_t type = 0; type < 4; ++type) {
+        ByteBuffer code = {0}, bytes = {0};
+        bb_write_byte(&code, 0x20); bb_write_uleb(&code, 0); /* get argument */
+        bb_write_byte(&code, (uint8_t)(0x41 + type));
+        if (type < 2) bb_write_sleb32(&code, -12345);
+        else if (type == 2) bb_write_f32(&code, -0.5f);
+        else bb_write_f64(&code, -0.5);
+        bb_write_byte(&code, adds[type]);
+        bb_write_byte(&code, 0x22); bb_write_uleb(&code, 0); /* tee */
+        bb_write_byte(&code, 0x21); bb_write_uleb(&code, 0); /* set */
+        bb_write_byte(&code, 0x20); bb_write_uleb(&code, 0); /* get */
+        bb_write_byte(&code, 0x0B);
+        const uint8_t* bodies[] = {code.data};
+        const size_t sizes[] = {code.size};
+        if (!build_module(&bytes, bodies, sizes, 1, 0, 0, 0, 0, &types[type], 1, &types[type], 1)) {
+            bb_free(&code); bb_free(&bytes); return 1;
+        }
+        fa_Runtime* runtime = NULL; fa_Job* job = NULL; WasmModule* module = NULL;
+        if (!run_job(&bytes, &runtime, &job, &module)) {
+            bb_free(&code); bb_free(&bytes); return 1;
+        }
+        runtime->jit_context.config.min_ram_bytes = 0;
+        runtime->jit_context.config.min_cpu_count = 1;
+        runtime->jit_context.config.min_hot_loop_hits = 0;
+        runtime->jit_context.config.min_executed_ops = 0;
+        runtime->jit_context.config.min_advantage_score = 0;
+        int failed = 0;
+        for (int repeat = 0; repeat < 4; ++repeat) {
+            fa_JobValue arg = {0};
+            arg.kind = (fa_JobValueKind)(fa_job_value_i32 + type);
+            arg.bit_width = (type == 0 || type == 2) ? 32 : 64;
+            arg.is_signed = type < 2;
+            if (type == 0) arg.payload.i32_value = 12350 + repeat;
+            if (type == 1) arg.payload.i64_value = 12350 + repeat;
+            if (type == 2) arg.payload.f32_value = 5.5f + repeat;
+            if (type == 3) arg.payload.f64_value = 5.5 + repeat;
+            const int status = fa_Runtime_executeJobWithArgs(runtime, job, 0, &arg, 1);
+            const fa_JobValue* value = fa_JobStack_peek(&job->stack, 0);
+            if (status != FA_RUNTIME_OK || !value || value->kind != arg.kind ||
+                (type == 0 && value->payload.i32_value != 5 + repeat) ||
+                (type == 1 && value->payload.i64_value != 5 + repeat) ||
+                (type == 2 && value->payload.f32_value != 5.0f + repeat) ||
+                (type == 3 && value->payload.f64_value != 5.0 + repeat) ||
+                /* Lazy preparation may rebuild during the first traversal;
+                 * the second binds the final program, the third reuses it. */
+                (repeat > 1 && runtime->jit_bytecode_executions != 5)) { failed = 1; break; }
+        }
+        cleanup_job(runtime, job, module, &bytes, &code);
+        if (failed) return 1;
+    }
+    return 0;
+}
+
 static int test_microcode_float_select(void) {
     test_set_env("FAYASM_MICROCODE", "1");
     if (!fa_ops_microcode_enabled()) {
@@ -1479,6 +1580,84 @@ static int test_microcode_float_select(void) {
     return 0;
 }
 
+/* Compare typed register microcode with descriptor execution at each side
+ * of the spill boundary. Includes modulo overflow, masked shift counts,
+ * signed zero, and infinities, plus underflow/type failure stack retention. */
+static int test_microcode_register_binary(void) {
+    const uint8_t opcodes[] = {0x6A,0x6B,0x6C,0x71,0x72,0x73,0x74,0x76,
+        0x7C,0x7D,0x7E,0x83,0x84,0x85,0x86,0x88,
+        0x92,0x93,0x94,0x95,0xA0,0xA1,0xA2,0xA3};
+    test_set_env("FAYASM_MICROCODE", "1");
+    fa_Job* fast = fa_Job_init();
+    fa_Job* reference = fa_Job_init();
+    if (!fast || !reference) { free(fast); free(reference); return 1; }
+    int failed = 0;
+    for (size_t o = 0; o < sizeof(opcodes) && !failed; ++o) {
+        const fa_WasmOp* descriptor = fa_get_op(opcodes[o]);
+        fa_JitPreparedOp prepared;
+        if (!descriptor || !fa_jit_prepare_op(descriptor, &prepared) ||
+            prepared.steps[0] == descriptor->operation) { failed = 1; break; }
+        for (size_t depth = 0; depth < FA_JOB_REGISTER_WINDOW_SIZE + 3U && !failed; ++depth) {
+            for (int edge = 0; edge < 4 && !failed; ++edge) {
+                fa_JobStack_reset(&fast->stack);
+                fa_JobStack_reset(&reference->stack);
+                fa_JobValue sentinel = test_i32_stack_value(123);
+                for (size_t i = 0; i < depth; ++i) {
+                    if (!fa_JobStack_push(&fast->stack, &sentinel) ||
+                        !fa_JobStack_push(&reference->stack, &sentinel)) failed = 1;
+                }
+                fa_JobValue lhs = {0}, rhs = {0};
+                lhs.bit_width = rhs.bit_width = descriptor->type.size * 8U;
+                lhs.is_signed = rhs.is_signed = true;
+                if (descriptor->type.type == wt_float) {
+                    lhs.kind = rhs.kind = descriptor->type.size == 8 ? fa_job_value_f64 : fa_job_value_f32;
+                    const double a[] = {1.5, -0.0, 1.0, -3.25};
+                    const double b[] = {2.0, 2.0, 0.0, 1.25};
+                    if (descriptor->type.size == 8) {
+                        lhs.payload.f64_value = a[edge]; rhs.payload.f64_value = b[edge];
+                    } else {
+                        lhs.payload.f32_value = (float)a[edge]; rhs.payload.f32_value = (float)b[edge];
+                    }
+                } else if (descriptor->type.size == 8) {
+                    lhs.kind = rhs.kind = fa_job_value_i64;
+                    const u64 a[] = {UINT64_MAX, INT64_MAX, 0, 0x8000000000000000ULL};
+                    const u64 b[] = {2, 1, 1, 65};
+                    lhs.payload.u64_value = a[edge]; rhs.payload.u64_value = b[edge];
+                } else {
+                    lhs.kind = rhs.kind = fa_job_value_i32;
+                    const u32 a[] = {UINT32_MAX, INT32_MAX, 0, 0x80000000U};
+                    const u32 b[] = {2, 1, 1, 33};
+                    lhs.payload.u32_value = a[edge]; rhs.payload.u32_value = b[edge];
+                }
+                if (!fa_JobStack_push(&fast->stack, &lhs) || !fa_JobStack_push(&fast->stack, &rhs) ||
+                    !fa_JobStack_push(&reference->stack, &lhs) || !fa_JobStack_push(&reference->stack, &rhs) ||
+                    fa_jit_execute_prepared_op(&prepared, NULL, fast) != FA_RUNTIME_OK ||
+                    descriptor->operation(NULL, reference, descriptor) != FA_RUNTIME_OK ||
+                    fast->stack.size != depth + 1U) { failed = 1; break; }
+                for (size_t i = 0; i <= depth; ++i) {
+                    const fa_JobValue* a = fa_JobStack_peek(&fast->stack, i);
+                    const fa_JobValue* b = fa_JobStack_peek(&reference->stack, i);
+                    if (!a || !b || a->kind != b->kind || a->is_signed != b->is_signed ||
+                        a->bit_width != b->bit_width || memcmp(&a->payload, &b->payload, sizeof(a->payload))) failed = 1;
+                }
+                const fa_JobValue* result = fa_JobStack_peek(&fast->stack, 0);
+                if (result && edge == 1 &&
+                    ((opcodes[o] == 0x6A && result->payload.u32_value != 0x80000000U) ||
+                     (opcodes[o] == 0x7C && result->payload.u64_value != 0x8000000000000000ULL))) failed = 1;
+            }
+        }
+        fa_JobStack_reset(&fast->stack);
+        fa_JobValue value = {0}; value.kind = fa_job_value_v128;
+        if (!fa_JobStack_push(&fast->stack, &value) ||
+            fa_jit_execute_prepared_op(&prepared, NULL, fast) != FA_RUNTIME_ERR_TRAP || fast->stack.size != 1 ||
+            !fa_JobStack_push(&fast->stack, &value) ||
+            fa_jit_execute_prepared_op(&prepared, NULL, fast) != FA_RUNTIME_ERR_TRAP || fast->stack.size != 2) failed = 1;
+    }
+    fa_JobStack_free(&fast->stack); fa_JobStack_free(&reference->stack);
+    free(fast); free(reference);
+    return failed;
+}
+
 static int test_jit_program_opcode_roundtrip(void) {
     const uint8_t opcodes[] = { 0x6A, 0x8B, 0x1B };
     fa_JitProgram prepared = {0};
@@ -1487,6 +1666,10 @@ static int test_jit_program_opcode_roundtrip(void) {
         return 1;
     }
 
+    /* Bound bytecode is deliberately absent from the opcode-only format. */
+    prepared.ops[0].immediate_size = 8;
+    memset(prepared.ops[0].immediate, 0xA5, 8);
+    prepared.ops[0].next_pc = 1234;
     uint8_t serialized[sizeof(opcodes)] = {0};
     size_t serialized_count = 0;
     if (!fa_jit_program_export_opcodes(&prepared, serialized, sizeof(serialized), &serialized_count) ||
@@ -1510,7 +1693,8 @@ static int test_jit_program_opcode_roundtrip(void) {
     for (size_t i = 0; i < restored.count; ++i) {
         if (!restored.ops[i].descriptor ||
             restored.ops[i].descriptor->id != opcodes[i] ||
-            restored.ops[i].step_count == 0) {
+            restored.ops[i].step_count == 0 || restored.ops[i].immediate_size != 0 ||
+            restored.ops[i].next_pc != 0) {
             fa_jit_program_free(&restored);
             fa_jit_program_free(&prepared);
             return 1;
@@ -7365,7 +7549,9 @@ static int test_local_f32_default(void) {
 static const TestCase kTestCases[] = {
     TEST_CASE("test_jit_cache_dispatch", "jit", "src/fa_runtime.c (jit dispatch), src/fa_jit.c (prepared ops)", test_jit_cache_dispatch),
     TEST_CASE("test_jit_large_body_prepare_once", "jit", "src/fa_runtime.c (runtime_jit_maybe_prepare capped-body staleness)", test_jit_large_body_prepare_once),
+    TEST_CASE("test_jit_bound_scalar_immediates", "jit", "src/fa_runtime.c (bound constants and local indices)", test_jit_bound_scalar_immediates),
     TEST_CASE("test_microcode_float_select", "jit", "src/fa_ops.c (microcode table)", test_microcode_float_select),
+    TEST_CASE("test_microcode_register_binary", "jit", "src/fa_ops_numeric.c (typed register arithmetic)", test_microcode_register_binary),
     TEST_CASE("test_jit_program_opcode_roundtrip", "jit", "src/fa_jit.c (opcode serialization)", test_jit_program_opcode_roundtrip),
     TEST_CASE("test_spill_envelope_jit_roundtrip", "offload", "src/fa_jit.c (versioned spill envelope), fa_jit_program_serialize/deserialize", test_spill_envelope_jit_roundtrip),
     TEST_CASE("test_spill_envelope_jit_real_wasm", "offload", "src/fa_jit.c (versioned spill envelope) via real wasm + live spill hook", test_spill_envelope_jit_real_wasm),
@@ -7413,6 +7599,7 @@ static const TestCase kTestCases[] = {
     TEST_CASE("test_wasm_sample_stats_pipeline", "wasm-sample", "wasm_samples/build/stats_suite.wasm", test_wasm_sample_stats_pipeline),
     TEST_CASE("test_job_register_forwarding_window", "job-window", "src/fa_job.c (hybrid operand window + contiguous spill)", test_job_register_forwarding_window),
     TEST_CASE("test_job_stack_depth_limit", "job-window", "src/fa_job.c (bounded operand depth)", test_job_stack_depth_limit),
+    TEST_CASE("test_job_register_backend_ordering", "job-window", "src/fa_job.c (fixed/window spill ordering)", test_job_register_backend_ordering),
     TEST_CASE("test_job_immediate_window_bounds", "job-window", "src/fa_job.c (allocation-free decoded-immediate window)", test_job_immediate_window_bounds),
     TEST_CASE("test_stack_arithmetic", "arith", "src/fa_ops.c (integer ops)", test_stack_arithmetic),
     TEST_CASE("test_div_by_zero_trap", "arith", "src/fa_ops.c (div traps)", test_div_by_zero_trap),

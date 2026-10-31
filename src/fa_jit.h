@@ -133,6 +133,12 @@ typedef struct {
     const fa_WasmOp* descriptor;
     Operation steps[FA_JIT_MAX_STEPS_PER_OP];
     uint8_t step_count;
+    /* Runtime-bound scalar bytecode immediate. Zero size means unbound.
+     * Reconstructed from the module after preparation/load, never persisted.
+     * Its storage is included in the prepared-program budget. */
+    uint8_t immediate_size;
+    uint8_t immediate[8];
+    uint32_t next_pc;
 } fa_JitPreparedOp;
 
 typedef struct {

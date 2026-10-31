@@ -20,6 +20,8 @@ static bool g_microcode_enabled = false;
  * Central opcode registry and dispatch.
  * Handler implementations live in the focused fa_ops_* translation units;
  * keep descriptor metadata and microcode routing synchronized with them.
+ * Numeric register microcode is generated from the owning family's macro
+ * list; it overrides generic binary programs after this registry is built.
  */
 
 /* Centralized descriptor constructor used by `fa_ops_defs_populate`. */
@@ -307,6 +309,7 @@ static void init_microcode_once(void) {
         g_microcode[0xC2] = &mc_convert_i64_extend8_s;     // i64.extend8_s
         g_microcode[0xC3] = &mc_convert_i64_extend16_s;    // i64.extend16_s
         g_microcode[0xC4] = &mc_convert_i64_extend32_s;    // i64.extend32_s
+        fa_ops_numeric_register_microcode(g_microcode);
     }
     g_microcode_initialized = true;
 }

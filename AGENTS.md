@@ -42,7 +42,8 @@ When sources disagree, inspect the relevant code and focused test. Fix stale doc
 
 - Replace remaining opcode switch towers incrementally with table-driven handlers and macro-built, pre-stacked micro-op sequences.
 - Keep `fa_jit` responsible for resource decisions, opcode-to-microcode preparation, and prepared-program persistence. Feed decoded opcode streams to `fa_jit_prepare_program_from_opcodes`.
-- Extend microcode coverage only with measured benefit on the real-toolchain fixtures, especially `stats_suite`; current benchmark evidence shows prepared dispatch near descriptor dispatch.
+- Prepared records bind scalar local/global indices and constants after successful decode. Bindings are budgeted cache data: spill only opcodes and rebind after load. `jit_bytecode_executions` counts reuse per execution. Numeric register macros specialize exact typed operands and retain generic fallbacks; reacquire stack pointers after a pop because circular refill can move values.
+- Extend microcode coverage only with measured benefit on the real-toolchain fixtures, especially `stats_suite`; use the controlled bytecode/backend comparisons in `studies/runtime/stats_benchmarks.md` and keep embedded claims separate from native timings.
 
 ### Portable low-resource operation
 
@@ -62,7 +63,7 @@ When sources disagree, inspect the relevant code and focused test. Fix stale doc
 - **Call-frame stack base:** after callee arguments are removed, the function control frame records the remaining caller stack height in `runtime_push_frame`; result unwinding must preserve operands below that height. `test_wasm_sample_nested_calls` protects this fixed regression.
 - **Branch arity:** `runtime_branch_to_label` unwinds loop branches with loop parameter types when present and other branches with result types. `runtime_unwind_stack_to` must validate types before restoring values. The block/loop/branch tests in [`test/main.c`](test/main.c) enforce this.
 - **Decode-path parity:** instruction immediates are interpreted in `runtime_decode_instruction`, skipped during block scanning in `runtime_skip_immediates`, and skipped during JIT prescan in `runtime_prescan_skip_immediates`. Any opcode or prefixed subopcode change must update all applicable paths. Scalar `0xFC` subopcodes `0..7` are immediate-free. Assemble signed LEB payload bits with unsigned shifts and then preserve the bit pattern when converting to the signed result; signed negative-mask shifts are undefined C.
-- **Bounded job windows:** `fa_JobStack` keeps its newest `FA_JOB_REGISTER_WINDOW_SIZE` typed operands inline and spills only older live values into retained contiguous storage. `FA_JOB_STACK_MAX_DEPTH` is a hard safety cap. Decoded immediates use the separate fixed `FA_JOB_DATA_FLOW_WINDOW_SIZE` window; overflow must fail, never evict an older entry. Keep the immediate window at least five entries for multi-memory SIMD lane instructions, preserve LIFO decode/handler parity, and run the `job-window` plus `test_simd_multi_memory_load32_lane` regressions.
+- **Bounded job windows:** `fa_JobStack` defaults to keeping its newest `FA_JOB_REGISTER_WINDOW_SIZE` typed operands inline, spilling older values. With `FA_JOB_FIXED_REGISTERS=1`, the first N operands stay at fixed indices and newer values overflow instead. Both use retained contiguous storage and the same public helpers. `FA_JOB_STACK_MAX_DEPTH` is a hard safety cap. Decoded immediates use the separate fixed `FA_JOB_DATA_FLOW_WINDOW_SIZE` window; overflow must fail, never evict an older entry. Keep the immediate window at least five entries for multi-memory SIMD lane instructions, preserve LIFO decode/handler parity, and run the `job-window` plus `test_simd_multi_memory_load32_lane` regressions.
 - **Budget-capped JIT preparation:** `runtime_jit_maybe_prepare` compares `prepared_source_count` with the capped `max_ops_per_chunk` target, not the uncapped recorded opcode count. Do not regress large bodies into per-instruction re-preparation; run `test_jit_large_body_prepare_once`.
 - **Imported resource ownership:** imported memory/table buffers remain host-owned. Runtime reset, growth, deserialization, and rebind paths must honor `is_host`/`owns_data` and must not free or overwrite buffers the runtime does not own. Run the imported binding/rebind tests and memory spill tests.
 - **Host-call type checking:** host callbacks consume arguments and set results only through the signature-aware `fa_RuntimeHostCall_*` helpers or equivalent checks. A callback returning mismatched result kinds must trap.
@@ -73,11 +74,11 @@ When sources disagree, inspect the relevant code and focused test. Fix stale doc
 
 Primary execution:
 
-`host or fayasm_run` → `wasm_module_init*` and `wasm_load_*` → `fa_Runtime_attachModule` → `fa_Runtime_createJob` → `fa_Runtime_executeJob*` → `runtime_decode_instruction` → fixed immediate window → control handling or `fa_execute_op` → inline operand window / bounded contiguous spill / memory / table → typed results on `fa_JobStack`
+`host or fayasm_run` → `wasm_module_init*` and `wasm_load_*` → `fa_Runtime_attachModule` → `fa_Runtime_createJob` → `fa_Runtime_executeJob*` → `runtime_decode_instruction` → fixed immediate window → control handling or `fa_execute_op` → circular or fixed operand slots / bounded contiguous spill / memory / table → typed results on `fa_JobStack`
 
 Microcode side path:
 
-`decoded opcode` → per-function runtime cache → `runtime_jit_maybe_prepare` → `fa_jit_prepare_program_from_opcodes` → prepared `Operation` steps → `fa_jit_execute_prepared_op`
+`decoded opcode` → per-function runtime cache → `runtime_jit_maybe_prepare` → `fa_jit_prepare_program_from_opcodes` → typed macro-built `Operation` steps + bound scalar immediates → `fa_jit_execute_prepared_op` (numeric/bound scalar paths bypass control-context setup)
 
 Offload side path:
 
@@ -126,7 +127,7 @@ Owns active priorities and completed-work chronology. It does not establish ship
 
 Defines project version `0.1.0`, C99 mode, shared/static/test/tool options, platform defines, the `fayasm_run` target, test inclusion, and CPack metadata.
 
-- **Key subparts:** `FAYASM_BUILD_SHARED`, `FAYASM_BUILD_STATIC`, `FAYASM_BUILD_TESTS`, `FAYASM_BUILD_TOOLS`, and `FAYASM_TARGET_ESP32`.
+- **Key subparts:** `FAYASM_BUILD_SHARED`, `FAYASM_BUILD_STATIC`, `FAYASM_BUILD_TESTS`, `FAYASM_BUILD_TOOLS`, `FAYASM_FIXED_REGISTERS`, and `FAYASM_TARGET_ESP32`.
 - **Depends on:** [`src/CMakeLists.txt`](src/CMakeLists.txt) and [`test/CMakeLists.txt`](test/CMakeLists.txt).
 - **Common mistake:** assuming Windows is supported; configuration explicitly warns that it may not work.
 
@@ -162,14 +163,14 @@ Owns overridable pointer width, endianness, CPU-family detection, target selecti
 
 ### [`src/fa_job.h`](src/fa_job.h)
 
-Defines typed operand values, the circular inline operand-forwarding window, bounded contiguous spill storage, the separate decoded-immediate window, and `fa_Job`.
+Defines typed operand values, compile-time circular/fixed operand backends, bounded contiguous overflow storage, the separate decoded-immediate window, and `fa_Job`.
 
 - **Key types:** `fa_JobValue`, `fa_V128`, `fa_JobStack`, `fa_JobDataFlow`, `fa_Job`.
 - **Contract:** value kind, signedness, and bit width travel with each payload. Shallow/steady operand traffic must not allocate; live depth beyond the inline window may grow the retained spill array geometrically up to `FA_JOB_STACK_MAX_DEPTH`.
 
 ### [`src/fa_job.c`](src/fa_job.c)
 
-Implements circular operand forwarding, contiguous spill growth/reuse, the allocation-free decoded-immediate window, and legacy standalone `fa_JobDataFlow` list helpers.
+Implements circular forwarding or fixed-depth slots, contiguous overflow growth/reuse, the allocation-free decoded-immediate window, and legacy standalone `fa_JobDataFlow` list helpers.
 
 - **Key functions:** `fa_JobStack_reset`, `fa_JobStack_push`, `fa_JobStack_pop`, `fa_JobStack_peek`, `fa_JobRegWindow_reset`, `fa_JobRegWindow_push`, `fa_JobRegWindow_pop`, `fa_Job_init`.
 - **Called by:** [`src/fa_runtime.c`](src/fa_runtime.c) and [`src/fa_ops.c`](src/fa_ops.c).
@@ -238,7 +239,7 @@ Owns control, local/global, scalar load/store, constant, equality-zero, and refe
 
 ### [`src/fa_ops_numeric.c`](src/fa_ops_numeric.c)
 
-Owns scalar integer/float arithmetic, comparison, conversion, reinterpretation, drop/select handlers, and macro-built microcode programs.
+Owns scalar integer/float arithmetic, comparison, conversion, reinterpretation, drop/select handlers, and macro-built microcode programs. `REGISTER_BINARY_OPS` generates typed binary handlers and their mapping together; integer add/sub/mul wrap through unsigned arithmetic.
 
 - **Common mistake:** changing a generated handler without updating its macro-family explanation and the central microcode/descriptor mapping.
 
@@ -390,7 +391,7 @@ Contains paired C and Rust sources with matching exported behavior. Keep both va
 
 Research and prototypes are non-production references. Read the relevant study before repeating work:
 
-- [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md) — current benchmark method, measurements, large-body JIT regression analysis, and the controlled hybrid register-window comparison.
+- [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md) — current bytecode/backend benchmark method and measurements, cache/ABI footprint, large-body JIT regression analysis, and historical window comparisons. [`benchmark_stats.py`](studies/runtime/benchmark_stats.py) interleaves existing builds, checks identical outputs, and records raw timings.
 - [`studies/runtime/jit/runtimeCompiledFunctions.md`](studies/runtime/jit/runtimeCompiledFunctions.md) and [`studies/runtime/jit/inRuntimeExec.c`](studies/runtime/jit/inRuntimeExec.c) — runtime-compiled-function concepts and prototype code.
 - [`studies/runtime/prompt.md`](studies/runtime/prompt.md), [`studies/runtime/justInTime.c`](studies/runtime/justInTime.c), and [`studies/runtime/test.c`](studies/runtime/test.c) — hybrid engine design and harness prototypes.
 - [`studies/asm/`](studies/asm/) — AArch64/x86 JIT and register-allocation notes.
@@ -407,12 +408,13 @@ Research and prototypes are non-production references. Read the relevant study b
 - **Constraints:** full WASM validation and reference-type block signatures are incomplete; do not market execution of untrusted modules as sandbox-hardened.
 - **Tests and gaps:** active harness areas in [`test/main.c`](test/main.c); broaden non-SIMD language/toolchain coverage.
 
-### Hybrid operand and immediate windows — Shipped, bounded optimization
+### Selectable operand storage and immediate windows — Shipped, bounded optimization
 
-- **Behavior:** the newest eight typed operands are forwarded through an inline circular window. Only older simultaneously live values spill to a contiguous geometric buffer, whose capacity is retained across resets. Decoder immediates use a separate allocation-free eight-entry LIFO window.
+- **Default behavior:** the newest eight typed operands are forwarded through an inline circular window. Only older simultaneously live values spill to a contiguous geometric buffer, whose capacity is retained across resets. Decoder immediates use a separate allocation-free eight-entry LIFO window.
 - **Configuration:** `FA_JOB_REGISTER_WINDOW_SIZE`, `FA_JOB_STACK_MAX_DEPTH`, and `FA_JOB_DATA_FLOW_WINDOW_SIZE` are compile-time overrides; the immediate window cannot be configured below five with current decode requirements.
+- **Fixed alternative:** CMake `FAYASM_FIXED_REGISTERS=ON` publishes `FA_JOB_FIXED_REGISTERS=1` to the library and consumers. The first N operands stay in fixed virtual slots and newer operands overflow contiguously, avoiding rotation/refill. The default remains circular forwarding. Use helpers instead of assuming either storage order; these are virtual, not reserved CPU registers.
 - **Safety boundary:** a push beyond the operand-depth cap or immediate-window capacity fails without mutating or evicting existing values. Long execution at stable shallow depth performs no stack/window allocations.
-- **Tests and evidence:** `job-window`, `test_simd_multi_memory_load32_lane`, the full runtime harness, and the 2026-07-31 comparison in [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md).
+- **Tests and evidence:** `job-window`, `test_simd_multi_memory_load32_lane`, the full runtime harness, the compact four-slot/five-immediate sanitizer configuration, and current/historical comparisons in [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md).
 
 ### Table, reference, bulk-memory, and SIMD families — Shipped subset
 
@@ -423,10 +425,10 @@ Research and prototypes are non-production references. Read the relevant study b
 
 ### Microcode preparation and cache — Experimental/scaffold
 
-- **Behavior:** resource-gated descriptor-to-microcode preparation, optional function prescan, per-function caches, budgeted eviction, and prepared dispatch.
+- **Behavior:** resource-gated descriptor-to-microcode preparation, optional function prescan, per-function caches, budgeted eviction, typed binary microcode, and bound scalar bytecode. Bound local/global indices and constants skip repeated immediate decode; immediate-free numeric instructions skip control-context setup.
 - **Configuration:** `FAYASM_MICROCODE`, `FAYASM_JIT_PRESCAN`, `FAYASM_JIT_PRESCAN_FORCE`; default microcode probe requires at least 64 MiB RAM and two CPUs unless overridden.
 - **Constraints:** this is not native code generation. Preserve `prepared_source_count` semantics and benchmark changes.
-- **Tests and gaps:** `jit` filter and [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md); prepared dispatch does not yet provide a demonstrated general speedup.
+- **Tests and gaps:** `jit` filter and [`studies/runtime/stats_benchmarks.md`](studies/runtime/stats_benchmarks.md); native results are workload/toolchain-specific; fixed-slot performance and cache budgets still need embedded hardware validation.
 
 ### Host imports and resource rebinding — Shipped with platform boundary
 
@@ -544,14 +546,14 @@ cmake --build build --target package
 
 ## Test Ownership Map
 
-- Hybrid operand forwarding, contiguous spill ordering/reuse, depth caps, and decoded-immediate bounds → `job-window`; five-entry multi-memory SIMD forwarding → `test_simd_multi_memory_load32_lane`.
+- Both operand backends, mixed-type overflow/refill ordering/reuse, depth caps, and decoded-immediate bounds → `job-window`; five-entry multi-memory SIMD forwarding → `test_simd_multi_memory_load32_lane`.
 - Operand stack, scalar arithmetic, conversions, and traps → `arith`/`conversion`/`convert` filters in [`test/main.c`](test/main.c).
 - Calls, frames, branch arity, loops, multi-value results, and call depth → `control` plus `test_wasm_sample_nested_calls`.
 - Parser/module integration → real `wasm-sample` cases and element/global/table module builders.
 - Memories, memory64, multi-memory, bulk memory, and ownership → `memory`, `memory64`, `bulk-memory`, and imported-memory cases.
 - Tables, refs, element expressions, and `call_indirect` → `table`, `refs`, and `call-indirect`.
 - SIMD family dispatch → `simd`; each of the 14 family handlers has a direct case in the active registry.
-- JIT/microcode/cache preparation → `jit`.
+- JIT/microcode/cache preparation, bound scalar reuse, and typed binary parity/overflow across spill boundaries → `jit`.
 - Spill envelope, eviction, trap reload, and repeated memory cycles → `offload`.
 - Host imports and live resource rebind → `test_host_import_call` and imported memory/table cases.
 - Stream cursor/LEB128 utilities → the two standalone stream test files; **known gap:** current CMake does not build or run them.
@@ -565,7 +567,7 @@ cmake --build build --target package
 - Spill blobs are portable little-endian caches/state containers with magic/version/kind/length validation. They are not authenticated, encrypted, checksummed, transactionally committed, or automatically migrated.
 - Generated `.wasm`, build trees, packages, and device spill files are derived data. Tracked C/Rust fixture sources, C sources/headers, CMake, scripts, and docs are canonical.
 - `FA_SPILL_VERSION` is the persisted-format compatibility boundary. Bump it deliberately for incompatible layout changes and update serializers, samples, tests, and migration/invalidation guidance together.
-- Public C helpers follow scoped camelCase. Treat public struct layouts and status values as compatibility-sensitive even though no formal stability guarantee is published.
+- Public C helpers follow scoped camelCase. Treat public struct layouts and status values as compatibility-sensitive even though no formal stability guarantee is published. Bound bytecode adds fields to `fa_JitPreparedOp` and a per-execution counter to `fa_Runtime`; rebuild consumers with matching headers/configuration. These fields do not change the persisted spill format.
 - No secrets, credentials, telemetry, remote services, or user-data stores are part of the repository. Do not add real credentials to examples or research logs.
 
 ## Current Status and Known Gaps
@@ -574,9 +576,9 @@ cmake --build build --target package
 
 - Disk/in-memory module parsing and the documented experimental runtime feature slice.
 - Typed host execution, nested calls, control flow, memory64/multi-memory, multi-value returns, tables/refs, bulk memory, scalar conversions, and core/relaxed SIMD handlers covered by the active harness.
-- Bounded hybrid operand forwarding and allocation-free decoded-immediate forwarding, including retained contiguous spill storage and compile-time depth/window limits.
+- Selectable circular/fixed operand storage and allocation-free decoded-immediate forwarding, including retained contiguous overflow storage and compile-time depth/window limits.
 - Callback host imports, desktop dynamic-library imports, imported memories/tables, and live rebind.
-- Resource-gated microcode preparation, opcode caches, prescan controls, and stable JIT/memory spill envelopes.
+- Resource-gated microcode preparation, macro-generated typed binary handlers, bound scalar bytecode, opcode caches, prescan controls, and stable JIT/memory spill envelopes.
 - Native build wrapper, CLI runner, paired C/Rust fixtures, active regression harness, and CPack configuration.
 
 ### Experimental / Scaffold
@@ -593,7 +595,7 @@ cmake --build build --target package
 - Tables and globals do not use the shared persisted-state envelope.
 - Standalone stream tests are not registered in CMake/CTest.
 - Low-RAM, repeated offload, SD wear/power-loss, and broader embedded-target behavior need hardware validation.
-- Per-instruction decode/context setup remains a performance constraint; the hybrid operand window removed linked-list stack traffic, but embedded window-size/footprint tuning still needs hardware evidence.
+- Calls, control flow, memory, and prefixed opcodes still use the common decoder/context path. Scalar bytecode caching remains capped by the prepared-op budget; broader predecode/fusion and embedded backend tuning need measurements.
 
 ### Near-Term Priorities
 
@@ -601,7 +603,7 @@ cmake --build build --target package
 2. Replace remaining per-family operator selection only where `stats_suite` measurements justify it.
 3. Expand real-toolchain smoke coverage, especially non-SIMD outputs.
 4. Validate repeated offload and runtime footprint on ESP32-class hardware.
-5. Reduce instruction-context overhead without obscuring execution semantics, and validate job-window sizing on embedded hardware.
+5. Extend bytecode binding/fusion only after measuring real workloads, and validate fixed/circular sizing and prepared-cache footprint on embedded hardware.
 
 See [`ROADMAP.md`](ROADMAP.md) for detailed status and longer-term direction.
 
